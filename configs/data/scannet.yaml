@@ -1,0 +1,56 @@
+_target_: src.data.MatchingDataModule
+
+train_npz_root: "${paths.data_dir}/scannet/index/scene_data/train"
+
+train_list_path: "${paths.data_dir}/scannet/index/scene_data/train_list/scannet_all.txt"
+
+train_dataset:
+  _target_: src.data.components.datasets.ScanNetDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/scannet/train"
+  intrinsic_path: "${paths.data_dir}/scannet/index/intrinsics.npz"
+  min_overlap_score: 0.4
+
+train_sampler:
+  _target_: src.data.components.samplers.RandomConcatSampler
+  _partial_: true
+  samples_count_per_subset: 200
+  seed: ${seed}
+
+train_batch_size_per_gpu: ???
+
+val_npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
+
+val_list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
+
+val_dataset:
+  _target_: src.data.components.datasets.ScanNetDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/scannet/test"
+  intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
+
+val_sampler:
+  _target_: torch.utils.data.DistributedSampler
+  _partial_: true
+  shuffle: false
+
+test_npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
+
+test_list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
+
+test_dataset:
+  _target_: src.data.components.datasets.ScanNetDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/scannet/test"
+  intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
+
+test_sampler:
+  _target_: torch.utils.data.DistributedSampler
+  _partial_: true
+  shuffle: false
+
+workers_count: 4
+
+seed: ${seed}
+
+parallel: true

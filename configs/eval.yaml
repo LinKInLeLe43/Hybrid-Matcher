@@ -1,0 +1,27 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: ???
+  - model: ???
+  - logger: null
+  - trainer: ???
+  - paths: default
+  - extras: default
+  - hydra: default
+  - experiment: ???
+
+trainer:
+  profiler: "simple"
+
+task_name: "eval"
+
+tags: ???
+
+train: false
+
+test: true
+
+ckpt_path: ???
+
+seed: 66

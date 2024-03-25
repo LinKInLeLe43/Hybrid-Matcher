@@ -1,0 +1,16 @@
+torch==1.13.1
+pytorch-lightning==1.9.5
+
+hydra-core==1.3.2
+hydra-colorlog==1.2.0
+
+tensorboard==2.15.1
+
+einops==0.7.0
+h5py==3.10.0
+joblib==1.3.2
+kornia==0.7.0
+matplotlib==3.8.2
+opencv-contrib-python-headless==4.8.1.78
+pyrootutils==1.0.4
+rich==13.7.0
