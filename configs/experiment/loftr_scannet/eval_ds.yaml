@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - loftr_scannet/default
+  - _self_
+
+tags: ["eval-loftr-scannet-ds", "bs=8"]
+
+model:
+  net:
+    coarse_matching:
+      type: "dual_softmax"
+      sparse: true  # no effect for evaluation
+
+trainer:
+  devices: 8

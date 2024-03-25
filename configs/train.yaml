@@ -1,0 +1,33 @@
+# @package _global_
+
+defaults:
+  - _self_
+  - data: ???
+  - model: ???
+  - callbacks: default
+  - logger: tensorboard
+  - trainer: ???
+  - paths: default
+  - extras: default
+  - hydra: default
+  - experiment: ???
+  - debug: null
+
+trainer:
+  gradient_clip_val: 0.5
+  max_epochs: 30
+  log_every_n_steps: 100
+  sync_batchnorm: true
+  num_sanity_val_steps: 10
+
+task_name: "train"
+
+tags: ???
+
+train: true
+
+test: false
+
+ckpt_path: null
+
+seed: 66

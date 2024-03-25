@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - hybrid_matcher_megadepth/default
+  - _self_
+
+tags: ["train-hybrid_matcher-megadepth-ds-sparse", "bs=8-image_size=832-samples=50"]
+
+data:
+  train_sampler:
+    samples_count_per_subset: 50
+
+model:
+  net:
+    coarse_matching:
+      type: "dual_softmax"
+      sparse: true
+  canonical_warmup_steps_count: 937.5
+
+trainer:
+  devices: 8
