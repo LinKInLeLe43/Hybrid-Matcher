@@ -384,7 +384,7 @@ class LocalCoC(nn.Module):
 
         layers = []
         for i in range(3):
-            layer = nn.Sequential()
+            layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
@@ -445,12 +445,31 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x0 = self.layer0(x)
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        x0 = x
+        mask0, r0 = mask, mask.shape[2] // x0.shape[3]
+        if r0 != 1:
+            mask0 = F.max_pool2d(mask0.float(), r0, stride=r0).bool()
+        for block in self.layer0:
+            x0 = block(x0, mask=mask0)
+
         x1 = self.point_reducer0(x0)
-        x1 = self.layer1(x1)
+        mask1, r1 = mask, mask.shape[2] // x1.shape[3]
+        if r1 != 1:
+            mask1 = F.max_pool2d(mask1.float(), r1, stride=r1).bool()
+        for block in self.layer1:
+            x1 = block(x1, mask=mask1)
+
         x2 = self.point_reducer1(x1)
-        x2 = self.layer2(x2)
+        mask2, r2 = mask, mask.shape[2] // x2.shape[3]
+        if r2 != 1:
+            mask2 = F.max_pool2d(mask2.float(), r2, stride=r2).bool()
+        for block in self.layer2:
+            x2 = block(x2, mask=mask2)
         return x2, x0
 
         # x1 = x1 + F.interpolate(
