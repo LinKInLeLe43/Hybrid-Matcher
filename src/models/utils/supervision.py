@@ -51,7 +51,8 @@ def create_coarse_supervision(
     point0 = scale0 * point0.reshape(1, -1, 2).repeat(n, 1, 1)
     point1 = scale1 * point1.reshape(1, -1, 2).repeat(n, 1, 1)
     if mask0 is not None:
-        point0[~mask0], point1[~mask1] = 0.0, 0.0
+        point0[~mask0.flatten(start_dim=1)] = 0.0
+        point1[~mask1.flatten(start_dim=1)] = 0.0
 
     point0_to_1 = _warp_point(
         point0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])

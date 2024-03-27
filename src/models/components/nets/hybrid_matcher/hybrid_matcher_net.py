@@ -62,8 +62,6 @@ class HybridMatcherNet(nn.Module):
     ) -> Dict[str, Any]:
         device = batch["image0"].device
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
-        center0_mask = batch.get("center0_mask")
-        center1_mask = batch.get("center1_mask")
         if (mask0 is None) == (mask1 is not None):
             raise ValueError("")
 
@@ -116,8 +114,7 @@ class HybridMatcherNet(nn.Module):
 
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
-            center0_mask=center0_mask, center1_mask=center1_mask)
+            pos0=pos_feature0, pos1=pos_feature1, mask0=mask0, mask1=mask1)
 
         result = self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow0=flow0,

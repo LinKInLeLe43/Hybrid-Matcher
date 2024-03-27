@@ -11,13 +11,9 @@ data:
     image_size: 832
     image_factor: 32
     mask_factor: 8
-    center_factor: 4
-  val_dataset:
-    center_factor: ${data.train_dataset.center_factor}
   train_batch_size_per_gpu: 1
   test_dataset:
     image_size: 832
-    center_factor: ${data.train_dataset.center_factor}
 
 model:
   net:

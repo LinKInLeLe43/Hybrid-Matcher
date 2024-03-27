@@ -18,8 +18,7 @@ class MegaDepthDataset(data.Dataset):
         image_factor: int,
         mask_factor: int,
         load_depth: bool = True,
-        min_overlap_score: float = 0.0,
-        center_factor: Optional[int] = None
+        min_overlap_score: float = 0.0
     ) -> None:
         super().__init__()
         self.data_root = data_root
@@ -27,7 +26,6 @@ class MegaDepthDataset(data.Dataset):
         self.image_factor = image_factor
         self.mask_factor = mask_factor
         self.load_depth = load_depth
-        self.center_factor = center_factor
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
         self.pair_idxes = self.scene_info.pop("pair_infos")
@@ -108,12 +106,7 @@ class MegaDepthDataset(data.Dataset):
 
         masks = torch.stack([data["mask0"], data["mask1"]])
         masks = F.max_pool2d(masks, self.mask_factor, stride=self.mask_factor)
-        data["mask0"], data["mask1"] = masks.flatten(start_dim=1).bool()
-        if self.center_factor is not None:
-            center_masks = F.max_pool2d(
-                masks, self.center_factor, stride=self.center_factor)
-            data["center0_mask"], data["center1_mask"] = center_masks.flatten(
-                start_dim=1).bool()
+        data["mask0"], data["mask1"] = masks.bool()
         return data
 
     def __len__(self) -> int:

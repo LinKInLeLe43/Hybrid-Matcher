@@ -38,7 +38,8 @@ class LoFTRLoss(nn.Module):
     ) -> torch.Tensor:
         valid_weight = None
         if mask0 is not None:
-            valid_weight = (mask0[:, :, None] & mask1[:, None, :]).float()
+            valid_weight = (mask0.flatten(start_dim=1)[:, :, None] &
+                            mask1.flatten(start_dim=1)[:, None, :]).float()
 
         pos_mask, neg_mask = gt_mask, ~gt_mask
         pos_weight = neg_weight = 1.0
