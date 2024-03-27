@@ -42,6 +42,8 @@ class MatchingModule(pl.LightningModule):
         pose_thresholds: List[int],
         plot_for_train: bool = True,
         val_figures_count: int = 32,
+        test_pose_ransac: str = "opencv ransac",
+        test_advanced_results: bool = True,
         dump_dir: Optional[str] = None
     ) -> None:
         super().__init__()
@@ -106,7 +108,8 @@ class MatchingModule(pl.LightningModule):
 
         if (self.hparams.plot_for_train and self.trainer.global_rank == 0 and
             self.trainer._logger_connector.should_update_logs):
-            error = utils.compute_error(batch, result, self.net.scales[0])
+            error = utils.compute_error(
+                batch, result, self.net.scales[0], advanced_results=False)
             figures = utils.plot_evaluation_figures(
                 batch, result, error, self.hparams.epipolar_thresholds[0])
             self.logger.experiment.add_figure(
@@ -128,7 +131,8 @@ class MatchingModule(pl.LightningModule):
         batch_idx: int
     ) -> Dict[str, Any]:
         result, loss = self._model_step(batch)
-        error = utils.compute_error(batch, result, self.net.scales[0])
+        error = utils.compute_error(
+            batch, result, self.net.scales[0], advanced_results=False)
 
         figures = []
         if batch_idx % self.hparams.val_figures_interval == 0:
@@ -156,19 +160,8 @@ class MatchingModule(pl.LightningModule):
             error[k] = v
         metric = utils.compute_metric(
             error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds)
-        self.log("val_metrics/coarse_precision", metric["coarse_precision"])
-        self.log(
-            "val_metrics/inlier_coarse_precision",
-            metric["inlier_coarse_precision"])
-        for threshold, precision in zip(self.hparams.end_point_thresholds,
-                                        metric["end_point_precisions"]):
-            self.log(f"val_metrics/end_point_precision@{threshold}", precision)
-        for threshold, precision in zip(self.hparams.end_point_thresholds,
-                                        metric["inlier_end_point_precisions"]):
-            self.log(
-                f"val_metrics/inlier_end_point_precision@{threshold}",
-                precision)
+            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
+            advanced_results=False)
         for threshold, precision in zip(self.hparams.epipolar_thresholds,
                                         metric["epipolar_precisions"]):
             self.log(f"val_metrics/epipolar_precision@{threshold}", precision)
@@ -192,7 +185,10 @@ class MatchingModule(pl.LightningModule):
         with self.trainer.profiler.profile("net"):
             result = self.net(batch)
         with self.trainer.profiler.profile("compute_error"):
-            error = utils.compute_error(batch, result, self.net.scales[0])
+            error = utils.compute_error(
+                batch, result, self.net.scales[0],
+                pose_ransac=self.hparams.test_pose_ransac,
+                advanced_results=self.hparams.test_advanced_results)
             out["error"] = error
         with self.trainer.profiler.profile("dump_results"):
             if self.hparams.dump_dir is not None:
@@ -218,19 +214,23 @@ class MatchingModule(pl.LightningModule):
             error[k] = v
         metric = utils.compute_metric(
             error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds)
-        self.log("val_metrics/coarse_precision", metric["coarse_precision"])
-        self.log(
-            "val_metrics/inlier_coarse_precision",
-            metric["inlier_coarse_precision"])
-        for threshold, precision in zip(self.hparams.end_point_thresholds,
-                                        metric["end_point_precisions"]):
-            self.log(f"val_metrics/end_point_precision@{threshold}", precision)
-        for threshold, precision in zip(self.hparams.end_point_thresholds,
-                                        metric["inlier_end_point_precisions"]):
+            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
+            advanced_results=self.hparams.test_advanced_results)
+        if self.hparams.test_advanced_results:
+            self.log("val_metrics/coarse_precision", metric["coarse_precision"])
             self.log(
-                f"val_metrics/inlier_end_point_precision@{threshold}",
-                precision)
+                "val_metrics/inlier_coarse_precision",
+                metric["inlier_coarse_precision"])
+            for threshold, precision in zip(self.hparams.end_point_thresholds,
+                                            metric["end_point_precisions"]):
+                self.log(
+                    f"val_metrics/end_point_precision@{threshold}", precision)
+            for threshold, precision in zip(
+                self.hparams.end_point_thresholds,
+                metric["inlier_end_point_precisions"]):
+                self.log(
+                    f"val_metrics/inlier_end_point_precision@{threshold}",
+                    precision)
         for threshold, precision in zip(self.hparams.epipolar_thresholds,
                                         metric["epipolar_precisions"]):
             self.log(f"val_metrics/epipolar_precision@{threshold}", precision)

@@ -4,6 +4,7 @@ import cv2
 from kornia import geometry
 import numpy as np
 from numpy import linalg
+import poselib
 import torch
 
 
@@ -103,7 +104,7 @@ def _compute_epipolar_errors(
     return errors_per_batch
 
 
-def _estimate_pose(
+def _estimate_pose_with_opencv_ransac(
     points0: torch.Tensor,
     points1: torch.Tensor,
     K0: torch.Tensor,
@@ -137,6 +138,30 @@ def _estimate_pose(
     return out
 
 
+def _estimate_pose_with_lo_ransac(
+    points0: torch.Tensor,
+    points1: torch.Tensor,
+    K0: torch.Tensor,
+    K1: torch.Tensor,
+    threshold: float = 2.0
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    camera0 = {"model": "PINHOLE",
+               "width": int(2 * K0[0, 2]),
+               "height": int(2 * K0[1, 2]),
+               "params": [K0[0, 0], K0[1, 1], K0[0, 2], K0[1, 2]]}
+    camera1 = {"model": "PINHOLE",
+               "width": int(2 * K1[0, 2]),
+               "height": int(2 * K1[1, 2]),
+               "params": [K1[0, 0], K1[1, 1], K1[0, 2], K1[1, 2]]}
+    pose, info = poselib.estimate_relative_pose(
+        points0.cpu().numpy(), points1.cpu().numpy(), camera0, camera1,
+        {"max_epipolar_error": threshold})
+    out = None
+    if pose is not None:
+        out = pose.R, pose.t, np.array(info["inliers"])
+    return out
+
+
 def _compute_relative_pose_error(
     est_R: np.ndarray,
     gt_R: np.ndarray,
@@ -161,17 +186,21 @@ def _compute_pose_errors(
     K1: torch.Tensor,
     R: torch.Tensor,
     t: torch.Tensor,
-    prob: float = 0.99999,
-    threshold: float = 0.5
+    ransac: str = "opencv ransac"
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     n = len(K0)
     R_errors, t_errors, inliers_per_batch = [], [], np.empty(n, dtype=object)
     for b in range(n):
         mask = b_idxes == b
         R_error, t_error, inliers = np.inf, np.inf, np.array([], dtype=np.bool_)
-        out = _estimate_pose(
-            points0[mask], points1[mask], K0[b], K1[b], prob=prob,
-            threshold=threshold)
+        if ransac == "opencv ransac":
+            out = _estimate_pose_with_opencv_ransac(
+                points0[mask], points1[mask], K0[b], K1[b])
+        elif ransac == "lo-ransac":
+            out = _estimate_pose_with_lo_ransac(
+                points0[mask], points1[mask], K0[b], K1[b])
+        else:
+            raise ValueError("")
         if out is not None:
             est_R, est_t, inliers = out
             gt_R, gt_t = R[b].cpu().numpy(), t[b].cpu().numpy()
@@ -187,13 +216,13 @@ def _compute_pose_errors(
 def compute_error(
     batch: Dict[str, Any],
     result: Dict[str, Any],
-    scale: int
+    scale: int,
+    pose_ransac: str = "opencv ransac",
+    advanced_results: bool = False
 ) -> Dict[str, Any]:
     identifiers = ["#".join(paths)
                    for paths in zip(batch["name0"], batch["name1"])]
     identifiers = np.array(identifiers, dtype=object)
-    scale1 = scale * batch["scale1"][:, None] if "scale1" in batch else scale
-    coarse_w1 = batch["image1"].shape[3] // scale
     epipolar_errors_per_batch = _compute_epipolar_errors(
         result["b_idxes"], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
@@ -201,24 +230,23 @@ def compute_error(
     R_errors, t_errors, inliers_per_batch = _compute_pose_errors(
         result["b_idxes"], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
-        batch["T0_to_1"][:, :3, 3])
-    (end_point_errors_per_batch,
-     inlier_end_point_errors_per_batch,
-     coarse_precisions,
-     inlier_coarse_precisions) = _compute_end_point_errors(
-        result["b_idxes"], result["j_idxes"], inliers_per_batch, scale1,
-        coarse_w1, result["points0"], result["points1"], batch["depth0"],
-        batch["depth1"], batch["K0"], batch["K1"], batch["T0_to_1"])
+        batch["T0_to_1"][:, :3, 3], ransac=pose_ransac)
     error = {"identifiers": identifiers,
-             "end_point_errors_per_batch": end_point_errors_per_batch,
-             "inlier_end_point_errors_per_batch":
-                 inlier_end_point_errors_per_batch,
-             "coarse_precisions": coarse_precisions,
-             "inlier_coarse_precisions": inlier_coarse_precisions,
              "epipolar_errors_per_batch": epipolar_errors_per_batch,
              "R_errors": R_errors,
              "t_errors": t_errors,
              "inliers_per_batch": inliers_per_batch}
+    if advanced_results:
+        scale1 = (scale * batch["scale1"][:, None]
+                  if "scale1" in batch else scale)
+        coarse_w1 = batch["image1"].shape[3] // scale
+        (error["end_point_errors_per_batch"],
+         error["inlier_end_point_errors_per_batch"],
+         error["coarse_precisions"],
+         error["inlier_coarse_precisions"]) = _compute_end_point_errors(
+            result["b_idxes"], result["j_idxes"], inliers_per_batch, scale1,
+            coarse_w1, result["points0"], result["points1"], batch["depth0"],
+            batch["depth1"], batch["K0"], batch["K1"], batch["T0_to_1"])
     return error
 
 
@@ -254,24 +282,24 @@ def compute_metric(
     error: Dict[str, Any],
     end_point_thresholds: List[float],
     epipolar_thresholds: List[float],
-    pose_thresholds: List[int]
+    pose_thresholds: List[int],
+    advanced_results: bool = False
 ) -> Dict[str, Any]:
     idxes = np.unique(error["identifiers"], return_index=True)[1]
-    end_point_precisions = _compute_precision(
-        error["end_point_errors_per_batch"][idxes], end_point_thresholds)
-    inlier_end_point_precisions = _compute_precision(
-        error["inlier_end_point_errors_per_batch"][idxes], end_point_thresholds)
-    coarse_precision = error["coarse_precisions"][idxes].mean()
-    inlier_coarse_precision = error["inlier_coarse_precisions"][idxes].mean()
     epipolar_precisions = _compute_precision(
         error["epipolar_errors_per_batch"][idxes], epipolar_thresholds)
     pose_aucs = _compute_aucs(
         np.maximum(error["R_errors"][idxes], error["t_errors"][idxes]),
         pose_thresholds)
-    metric = {"end_point_precisions": end_point_precisions,
-              "inlier_end_point_precisions": inlier_end_point_precisions,
-              "coarse_precision": coarse_precision,
-              "inlier_coarse_precision": inlier_coarse_precision,
-              "epipolar_precisions": epipolar_precisions,
+    metric = {"epipolar_precisions": epipolar_precisions,
               "pose_aucs": pose_aucs}
+    if advanced_results:
+        metric["end_point_precisions"] = _compute_precision(
+            error["end_point_errors_per_batch"][idxes], end_point_thresholds)
+        metric["inlier_end_point_precisions"] = _compute_precision(
+            error["inlier_end_point_errors_per_batch"][idxes],
+            end_point_thresholds)
+        metric["coarse_precision"] = error["coarse_precisions"][idxes].mean()
+        metric["inlier_coarse_precision"] = (
+            error["inlier_coarse_precisions"][idxes].mean())
     return metric
