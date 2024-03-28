@@ -88,6 +88,64 @@ class Mlp3x3(nn.Module):
         return x
 
 
+class LocallyEnhancedFeedForward(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        hidden_depth: int,
+        out_depth: int,
+        bias: bool = True,
+        dropout: float = 0.0
+    ) -> None:
+        super().__init__()
+
+        self.conv0 = nn.Conv2d(in_depth, hidden_depth, 1, bias=bias)
+        self.conv1 = nn.Conv2d(
+            hidden_depth, hidden_depth, 3, padding=1, groups=hidden_depth,
+            bias=bias)
+        self.conv2 = nn.Conv2d(hidden_depth, out_depth, 1, bias=bias)
+        self.gelu = nn.GELU()
+        self.dropout = nn.Dropout(p=dropout)
+
+        self.norm0 = nn.BatchNorm2d(hidden_depth)
+        self.norm1 = nn.BatchNorm2d(hidden_depth)
+        self.norm2 = nn.BatchNorm2d(out_depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        size: Optional[torch.Size] = None
+    ) -> torch.Tensor:
+        if len(x.shape) == 3:
+            if size is None:
+                raise ValueError("")
+            x = x.transpose(1, 2).unflatten(2, size).contiguous()
+            flatten = True
+        elif len(x.shape) == 4:
+            flatten = False
+        else:
+            raise ValueError("")
+
+        x = self.conv0(x)
+        x = self.norm0(x)
+        x = self.gelu(x)
+        x = self.dropout(x)
+
+        x = self.conv1(x)
+        x = self.norm1(x)
+        x = self.gelu(x)
+        x = self.dropout(x)
+
+        x = self.conv2(x)
+        x = self.norm2(x)
+        x = self.gelu(x)
+        x = self.dropout(x)
+
+        if flatten:
+            x = x.flatten(start_dim=2).transpose(1, 2)
+        return x
+
+
 class LocalCluster(nn.Module):
     def __init__(
         self,
