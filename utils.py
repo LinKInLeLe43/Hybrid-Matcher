@@ -18,11 +18,15 @@ def get_outdoor_hybrid_matcher(overrides: List[str]) -> nn.Module:
 
 if __name__ == "__main__":
     net = get_outdoor_hybrid_matcher([]).cuda()
+    mask0 = torch.zeros((1, 80, 60)).bool().cuda()
+    mask0[0, :50, :30] = True
+    mask1 = torch.zeros((1, 80, 60)).bool().cuda()
+    mask1[0, :40, :15] = True
     data = {
         "image0": torch.rand((1, 1, 640, 480)).cuda(),
         "image1": torch.rand((1, 1, 640, 480)).cuda(),
-        "mask0": torch.rand((1, 80, 60)).bool().cuda(),
-        "mask1": torch.rand((1, 80, 60)).bool().cuda()}
+        "mask0": mask0,
+        "mask1": mask1}
     with torch.no_grad():
         r = net(data)
     a = 1

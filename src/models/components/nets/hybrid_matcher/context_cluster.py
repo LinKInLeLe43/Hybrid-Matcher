@@ -125,11 +125,22 @@ class LocalCluster(nn.Module):
 
         x = self.proj(x)
         x = einops.rearrange(
-            x, "n (fc sc) (fh sh) (fw sw) -> (n fc fh fw) sc sh sw", fc=fc,
+            x, "n c (fh sh) (fw sw) -> (n fh fw) c sh sw", fh=fh, fw=fw)
+        if mask is not None and fh == 1 and fw == 1:
+            center = []
+            for b_x, b_mask in zip(x, mask):
+                b_h = b_mask.sum(dim=0).amax().item()
+                b_w = b_mask.sum(dim=1).amax().item()
+                center.append(self.center_proposal(b_x[:, :b_h, :b_w]))
+            center = torch.stack(center)
+        else:
+            center = self.center_proposal(x)
+        x = einops.rearrange(
+            x, "(n fh fw) (fc sc) sh sw -> (n fc fh fw) (sh sw) sc", fc=fc,
             fh=fh, fw=fw)
-        center = self.center_proposal(x)
-        x = x.flatten(start_dim=2).transpose(1, 2)
-        center = center.flatten(start_dim=2).transpose(1, 2)
+        center = einops.rearrange(
+            center, "(n fh fw) (fc sc) sh sw -> (n fc fh fw) (sh sw) sc", fc=fc,
+            fh=fh, fw=fw)
         x_point, x_value = x.chunk(2, dim=2)
         center_point, center_value = center.chunk(2, dim=2)
 
