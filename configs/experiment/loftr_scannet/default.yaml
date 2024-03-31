@@ -1,0 +1,27 @@
+# @package _global_
+
+defaults:
+  - override /data: scannet
+  - override /model: loftr
+  - override /trainer: ddp
+  - _self_
+
+data:
+  train_batch_size_per_gpu: 3
+
+model:
+  optimizer:
+    _target_: torch.optim.AdamW
+    _partial_: true
+    weight_decay: 0.1
+  scheduler:
+    _target_: torch.optim.lr_scheduler.MultiStepLR
+    _partial_: true
+    milestones: [3, 6, 9, 12, 17, 20, 23, 26, 29]
+    gamma: 0.5
+  canonical_batch_size: 64
+  canonical_learning_rate: 6e-3
+  canonical_warmup_steps_count: 4800
+  warmup_ratio: 0.0
+  epipolar_threshold: 5e-4
+  pose_thresholds: [5, 10, 20]

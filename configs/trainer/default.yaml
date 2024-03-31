@@ -1,0 +1,13 @@
+_target_: pytorch_lightning.Trainer
+
+default_root_dir: "${paths.output_dir}"
+
+devices: ???
+
+accelerator: ???
+
+strategy: ???
+
+benchmark: true
+
+replace_sampler_ddp: false

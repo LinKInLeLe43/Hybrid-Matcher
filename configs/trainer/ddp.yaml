@@ -1,0 +1,7 @@
+defaults:
+  - default
+  - _self_
+
+accelerator: "gpu"
+
+strategy: "ddp_find_unused_parameters_false"

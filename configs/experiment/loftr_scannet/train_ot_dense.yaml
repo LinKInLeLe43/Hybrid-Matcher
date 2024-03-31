@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - loftr_scannet/default
+  - _self_
+
+tags: ["train-loftr-scannet-ot-dense", "bs=24"]
+
+model:
+  net:
+    coarse_matching:
+      type: "optimal_transport"
+      sparse: false
+
+trainer:
+  devices: 8

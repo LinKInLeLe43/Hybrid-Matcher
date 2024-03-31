@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - loftr_megadepth/default
+  - _self_
+
+tags: ["train-loftr-megadepth-ds-dense", "bs=8-image_size=840"]
+
+model:
+  net:
+    coarse_matching:
+      type: "dual_softmax"
+      sparse: false  # no effect for evaluation
+
+trainer:
+  devices: 8

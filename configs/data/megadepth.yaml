@@ -1,0 +1,60 @@
+_target_: src.data.MatchingDataModule
+
+train_npz_root: "${paths.data_dir}/megadepth/index/scene_info_0.1_0.7"
+
+train_list_path: "${paths.data_dir}/megadepth/index/trainvaltest_list/train_list.txt"
+
+train_dataset:
+  _target_: src.data.components.datasets.MegaDepthDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/megadepth/train"
+  image_size: ???
+  image_factor: ???
+  mask_factor: ???
+
+train_sampler:
+  _target_: src.data.components.samplers.RandomConcatSampler
+  _partial_: true
+  samples_count_per_subset: 100
+  seed: ${seed}
+
+train_batch_size_per_gpu: ???
+
+val_npz_root: "${paths.data_dir}/megadepth/index/scene_info_val_1500"
+
+val_list_path: "${paths.data_dir}/megadepth/index/trainvaltest_list/val_list.txt"
+
+val_dataset:
+  _target_: src.data.components.datasets.MegaDepthDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/megadepth/test"
+  image_size: ${data.train_dataset.image_size}
+  image_factor: ${data.train_dataset.image_factor}
+  mask_factor: ${data.train_dataset.mask_factor}
+
+val_sampler:
+  _target_: torch.utils.data.DistributedSampler
+  _partial_: true
+  shuffle: false
+
+test_npz_root: "${paths.data_dir}/megadepth/index/scene_info_val_1500"
+
+test_list_path: "${paths.data_dir}/megadepth/index/trainvaltest_list/val_list.txt"
+
+test_dataset:
+  _target_: src.data.components.datasets.MegaDepthDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/megadepth/test"
+  image_size: ???
+  image_factor: ${data.train_dataset.image_factor}
+  mask_factor: ${data.train_dataset.mask_factor}
+  load_depth: false
+
+test_sampler:
+  _target_: torch.utils.data.DistributedSampler
+  _partial_: true
+  shuffle: false
+
+workers_count: 4
+
+seed: ${seed}

@@ -1,0 +1,26 @@
+# @package _global_
+
+task_name: "debug"
+
+callbacks: null
+
+logger: null
+
+extras:
+  ignore_warnings: false
+  enforce_tags: false
+
+hydra:
+  job_logging:
+    root:
+      level: "DEBUG"
+
+trainer:
+  max_epochs: 1
+  accelerator: "cpu"
+  devices: 1
+  detect_anomaly: true
+
+data:
+  workers_count: 0
+  pin_memory: false

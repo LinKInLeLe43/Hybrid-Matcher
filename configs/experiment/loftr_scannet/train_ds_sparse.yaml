@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - loftr_scannet/default
+  - _self_
+
+tags: ["train-loftr-scannet-ds-sparse", "bs=24"]
+
+model:
+  net:
+    coarse_matching:
+      type: "dual_softmax"
+      sparse: true
+
+trainer:
+  devices: 8
