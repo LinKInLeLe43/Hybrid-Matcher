@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import einops
 import torch
@@ -155,17 +155,19 @@ class LocalCluster(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
+        return_center: bool = False,
         use_efficient: bool = True
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.center_size = center_size
         self.fold_size = fold_size
+        self.return_center = return_center
         self.use_efficient = use_efficient
 
         self.proj = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
         self.center_proposal = nn.AdaptiveAvgPool2d(center_size)
-        self.merge = nn.Conv2d(hidden_depth, in_depth, 1, bias=bias)
+        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -174,7 +176,7 @@ class LocalCluster(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         fc, fh, fw = self.heads_count, self.fold_size, self.fold_size
         n, c, h, w = x.shape
         sh, sw = h // fh, w // fw
@@ -233,7 +235,7 @@ class LocalCluster(nn.Module):
                           aggregated.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
                 dispatched,
-                "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
         else:
             mask = torch.zeros_like(similarities)
@@ -246,10 +248,16 @@ class LocalCluster(nn.Module):
             dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
             dispatched = einops.rearrange(
                 dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
-        dispatched = self.merge(dispatched)
-        return dispatched
+        dispatched = self.merge(dispatched).permute(0, 3, 1, 2)
+        if self.return_center:
+            aggregated = einops.rearrange(
+                aggregated, "(n fc s) sc -> n s (fc sc)", fc=fc, s=s)
+            aggregated = self.merge(aggregated)
+            return dispatched, aggregated
+        else:
+            return dispatched
 
 
 class GlobalCluster(nn.Module):
@@ -296,7 +304,7 @@ class GlobalCluster(nn.Module):
             "mlc,msc->mls", norm_x0_point, norm_center1_point)
         similarities = self.alpha * similarities + self.beta
         if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
+            mask = einops.repeat(mask, "n l -> (n fc) l s", fc=fc, s=s)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
@@ -318,6 +326,51 @@ class GlobalCluster(nn.Module):
         return dispatched
 
 
+class BidirectionalCross(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        hidden_depth: int,
+        heads_count: int,
+        bias: bool = True,
+    ) -> None:
+        super().__init__()
+        self.heads_count = heads_count
+
+        self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        fc = self.heads_count
+        _, l, c = x0.shape
+        _, s, _ = x1.shape
+        sc = c // fc
+
+        x0, x1 = self.proj(x0), self.proj(x1)
+        x0_qk, x0_v = einops.rearrange(
+            x0, "n l (k fc sc) -> k n fc l sc", k=2, fc=fc)
+        x1_qk, x1_v = einops.rearrange(
+            x1, "n s (k fc sc) -> k n fc s sc", k=2, fc=fc)
+        if True:  # TODO: use flash attention
+            sim = torch.einsum("nfld,nfsd->nfls", x0_qk, x1_qk)
+            if mask is not None:
+                sim.masked_fill_(~mask[:, None], float("-inf"))
+            sim /= sc ** 0.5
+            attention01 = F.softmax(sim, dim=3).nan_to_num()
+            attention10 = F.softmax(sim.transpose(2, 3), dim=3).nan_to_num()
+            message0 = torch.einsum("nfls,nfsd->nfld", attention01, x1_v)
+            message1 = torch.einsum("nfsl,nfld->nfsd", attention10, x0_v)
+        message0 = message0.transpose(1, 2).flatten(start_dim=2)
+        message1 = message1.transpose(1, 2).flatten(start_dim=2)
+        message0, message1 = self.merge(message0), self.merge(message1)
+        return message0, message1
+
+
 class LocalClusterBlock(nn.Module):
     def __init__(
         self,
@@ -327,12 +380,14 @@ class LocalClusterBlock(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
+        return_center: bool = False,
         use_layer_scale: bool = False,
         layer_scale_value: Optional[float] = None,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
         self.use_layer_scale = use_layer_scale
+        self.return_center = return_center
 
         if use_layer_scale:
             if layer_scale_value is None:
@@ -342,7 +397,7 @@ class LocalClusterBlock(nn.Module):
 
         self.cluster = LocalCluster(
             in_depth, hidden_depth, heads_count, center_size, fold_size,
-            bias=bias)
+            bias=bias, return_center=return_center)
         self.norm0 = nn.GroupNorm(1, in_depth)
 
         self.mlp = Mlp(
@@ -353,8 +408,10 @@ class LocalClusterBlock(nn.Module):
         self,
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         new_x = self.cluster(x, mask=mask)
+        if self.return_center:
+            new_x, centers = new_x
         new_x = self.norm0(new_x)
 
         new_x = torch.cat([x, new_x], dim=1)
@@ -364,7 +421,10 @@ class LocalClusterBlock(nn.Module):
         if self.use_layer_scale:
             new_x *= self.layer_scale[:, None, None]
         new_x += x
-        return new_x
+        if self.return_center:
+            return new_x, centers
+        else:
+            return new_x
 
 
 class GlobalClusterBlock(nn.Module):
@@ -435,6 +495,83 @@ class GlobalClusterBlock(nn.Module):
         return new_x0, new_flow0
 
 
+class BidirectionalCrossBlock(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        hidden_depth: int,
+        heads_count: int,
+        bias: bool = True,
+        use_flow: bool = False,
+        flow_depth: Optional[int] = None,
+        use_layer_scale: bool = False,
+        layer_scale_value: Optional[float] = None,
+        dropout: float = 0.0
+    ) -> None:
+        super().__init__()
+        self.use_flow = use_flow
+        self.use_layer_scale = use_layer_scale
+
+        out_depth = in_depth
+        if use_flow:
+            if flow_depth is None:
+                raise ValueError("")
+            out_depth += flow_depth
+        if use_layer_scale:
+            if layer_scale_value is None:
+                raise ValueError("")
+            self.layer_scale = nn.Parameter(
+                layer_scale_value * torch.ones((out_depth,)))
+
+        self.bicross = BidirectionalCross(
+            in_depth, hidden_depth, heads_count, bias=bias)
+        self.norm0 = nn.LayerNorm(in_depth)
+
+        self.mlp3x3 = Mlp3x3(
+            in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias,
+            dropout=dropout)
+        self.norm1 = nn.LayerNorm(out_depth)
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        size0: torch.Size,
+        size1: torch.Size,
+        flow0: Optional[torch.Tensor] = None,
+        flow1: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor,
+               Optional[torch.Tensor], Optional[torch.Tensor]]:
+        new_flow0 = new_flow1 = None
+        if self.use_flow:
+            if flow0 is None or flow1 is None:
+                raise ValueError("")
+            c0, c1 = x0.shape[2], flow0.shape[2]
+
+        new_x0, new_x1 = self.bicross(x0, x1, mask=mask)
+        new_x0, new_x1 = self.norm0(new_x0), self.norm0(new_x1)
+
+        if self.use_flow:
+            x0 = torch.cat([x0, flow0], dim=2)
+            x1 = torch.cat([x1, flow1], dim=2)
+        new_x0 = torch.cat([x0, new_x0], dim=2)
+        new_x1 = torch.cat([x1, new_x1], dim=2)
+        new_x0 = self.mlp3x3(new_x0, size=size0)
+        new_x1 = self.mlp3x3(new_x1, size=size1)
+        new_x0, new_x1 = self.norm1(new_x0), self.norm1(new_x1)
+
+        if self.use_layer_scale:
+            new_x0 *= self.layer_scale
+            new_x1 *= self.layer_scale
+        new_x0 += x0
+        new_x1 += x1
+        if self.use_flow:
+            new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
+            new_x1, new_flow1 = new_x1.split([c0, c1], dim=2)
+        return new_x0, new_x1, new_flow0, new_flow1
+
+
 class LocalCoC(nn.Module):
     def __init__(
         self,
@@ -454,10 +591,11 @@ class LocalCoC(nn.Module):
         layers = []
         for i in range(3):
             layer = nn.ModuleList()
-            for _ in range(blocks_counts[i]):
+            for j in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
                     center_sizes[i], fold_sizes[i], bias=bias,
+                    return_center=(i == 2) and (j == blocks_counts[2] -1),
                     use_layer_scale=use_layer_scale,
                     layer_scale_value=layer_scale_value, dropout=dropout)
                 layer.append(block)
@@ -537,9 +675,10 @@ class LocalCoC(nn.Module):
         mask2, r2 = mask, mask.shape[2] // x2.shape[3]
         if r2 != 1:
             mask2 = F.max_pool2d(mask2.float(), r2, stride=r2).bool()
-        for block in self.layer2:
+        for block in self.layer2[:-1]:
             x2 = block(x2, mask=mask2)
-        return x2, x0
+        x2, x3 = self.layer2[-1](x2, mask=mask2)
+        return x3, x2, x0
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
@@ -637,6 +776,13 @@ class GlobalCoC(nn.Module):
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
 
+        bicross_block = BidirectionalCrossBlock(
+            in_depth, hidden_depth, heads_count, bias=bias, use_flow=use_flow,
+            flow_depth=flow_depth, use_layer_scale=use_layer_scale,
+            layer_scale_value=layer_scale_value, dropout=dropout)
+        self.bicross_blocks = nn.ModuleList(
+            [copy.deepcopy(bicross_block) for _ in types])
+
         # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -651,6 +797,8 @@ class GlobalCoC(nn.Module):
         x1: torch.Tensor,
         center0: torch.Tensor,
         center1: torch.Tensor,
+        anchor0: torch.Tensor,
+        anchor1: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
         pos0: Optional[torch.Tensor] = None,
@@ -659,38 +807,39 @@ class GlobalCoC(nn.Module):
         mask1: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
+        r = int((x0.shape[1] // center0.shape[1]) ** 0.5)
         flow0 = flow1 = None
         if self.use_flow:
             if pos0 is None or pos1 is None:
                 raise ValueError("")
             flow0, flow1 = self.flow_proj(pos0), self.flow_proj(pos1)
 
-        mask00 = mask11 = mask01 = mask10 = None
+        cross_mask = None
         if mask0 is not None:
-            r = int((x0.shape[1] // center0.shape[1]) ** 0.5)
             mask_0 = F.max_pool2d(mask0.float(), r, stride=r).bool()
             mask_1 = F.max_pool2d(mask1.float(), r, stride=r).bool()
-            mask0_, mask1_, mask_0, mask_1 = map(
+            mask0, mask1, mask_0, mask_1 = map(
                 lambda x: x.flatten(start_dim=1),
                 (mask0, mask1, mask_0, mask_1))
-            mask00 = mask0_[:, :, None] & mask_0[:, None, :]
-            mask11 = mask1_[:, :, None] & mask_1[:, None, :]
-            mask01 = mask0_[:, :, None] & mask_1[:, None, :]
-            mask10 = mask1_[:, :, None] & mask_0[:, None, :]
+            cross_mask = mask_0[:, :, None] & mask_1[:, None, :]
 
-        for merge_block, global_block, type in zip(
-            self.merge_blocks, self.global_blocks, self.types):
-            x0, center0 = merge_block(x0, center0, size0)
-            x1, center1 = merge_block(x1, center1, size1)
+        for merge_block, global_block, bicross_block, type in zip(
+            self.merge_blocks, self.global_blocks, self.bicross_blocks,
+            self.types):
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)
                 pass
             elif type == "cross":
-                x0, flow0 = global_block(
-                    x0, center1, size0, flow0=flow0, mask=mask01)
-                x1, flow1 = global_block(
-                    x1, center0, size1, flow0=flow1, mask=mask10)
+                x0, _ = global_block(
+                    x0, anchor1, size0, flow0=flow0, mask=mask0)
+                x1, _ = global_block(
+                    x1, anchor0, size1, flow0=flow1, mask=mask1)
+                center0, center1, _, _ = bicross_block(
+                    center0, center1,
+                    torch.Size([size0[0] // r, size0[1] // r]),
+                    torch.Size([size1[0] // r, size1[1] // r]), flow0, flow1,
+                    mask=cross_mask)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
                 # x0 = local_block(x0, mask=x0_mask)
@@ -699,4 +848,6 @@ class GlobalCoC(nn.Module):
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
             else:
                 raise ValueError("")
+            x0, center0 = merge_block(x0, center0, size0)
+            x1, center1 = merge_block(x1, center1, size1)
         return x0, x1, flow0, flow1

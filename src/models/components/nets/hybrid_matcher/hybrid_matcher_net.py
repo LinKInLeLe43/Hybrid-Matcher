@@ -74,9 +74,10 @@ class HybridMatcherNet(nn.Module):
             data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
             coarse_features, fine_features = self.backbone(data)
             mask = torch.cat([mask0, mask1])
-            centers, coarse_features = self.local_coc(
+            anchors, centers, coarse_features = self.local_coc(
                 coarse_features, mask=mask)
             centers0, centers1 = centers.chunk(2)
+            anchors0, anchors1 = anchors.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_features.chunk(2)
             fine_feature0, fine_feature1 = fine_features.chunk(2)
             if self.positional_encoding is not None:
@@ -91,7 +92,7 @@ class HybridMatcherNet(nn.Module):
             data = torch.cat([batch["image0"],
                               coors.repeat(n, 1, 1, 1)], dim=1)
             coarse_feature0, fine_feature0 = self.backbone(data)
-            centers0, coarse_feature0 = self.local_coc(
+            anchors0, centers0, coarse_feature0 = self.local_coc(
                 coarse_feature0, mask=mask0)
 
             n, _, h, w = batch["image1"].shape
@@ -100,7 +101,7 @@ class HybridMatcherNet(nn.Module):
             data = torch.cat([batch["image1"],
                               coors.repeat(n, 1, 1, 1)], dim=1)
             coarse_feature1, fine_feature1 = self.backbone(data)
-            centers1, coarse_feature1 = self.local_coc(
+            anchors1, centers1, coarse_feature1 = self.local_coc(
                 coarse_feature1, mask=mask1)
 
             if self.positional_encoding is not None:
@@ -117,8 +118,9 @@ class HybridMatcherNet(nn.Module):
             (coarse_feature0, coarse_feature1, centers0, centers1))
 
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
-            coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, mask0=mask0, mask1=mask1)
+            coarse_feature0, coarse_feature1, centers0, centers1, anchors0,
+            anchors1, size0, size1, pos0=pos_feature0, pos1=pos_feature1,
+            mask0=mask0, mask1=mask1)
 
         result = self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow0=flow0,

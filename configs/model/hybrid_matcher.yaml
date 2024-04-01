@@ -12,7 +12,7 @@ net:
     layer_depths: [256, 256, 256]
     hidden_depths: [256, 256, 256]
     heads_counts: [8, 8, 8]
-    center_sizes: [8, 4, 2]
+    center_sizes: [8, 8, 8]
     fold_sizes: [1, 1, 1]
   coarse_module:
     _target_: src.models.components.nets.hybrid_matcher.GlobalCoC
