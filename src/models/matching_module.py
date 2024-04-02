@@ -132,7 +132,8 @@ class MatchingModule(pl.LightningModule):
     ) -> Dict[str, Any]:
         result, loss = self._model_step(batch)
         error = utils.compute_error(
-            batch, result, self.net.scales[0], advanced_results=False)
+            batch, result, self.net.scales[0], pose_iteration_count=5,
+            advanced_results=False)
 
         figures = []
         if batch_idx % self.hparams.val_figures_interval == 0:
@@ -188,6 +189,7 @@ class MatchingModule(pl.LightningModule):
             error = utils.compute_error(
                 batch, result, self.net.scales[0],
                 pose_ransac=self.hparams.test_pose_ransac,
+                pose_iteration_count=5,
                 advanced_results=self.hparams.test_advanced_results)
             out["error"] = error
         with self.trainer.profiler.profile("dump_results"):

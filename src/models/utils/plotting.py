@@ -114,7 +114,7 @@ def plot_evaluation_figures(
 
         correct_count = mask.sum().item()
         precision = correct_count / total_count if total_count != 0 else 0.0
-        R_error, t_error = error["R_errors"][b], error["t_errors"][b]
+        R_error, t_error = error["R_errors"][b][0], error["t_errors"][b][0]
         text = [f"#Matches {total_count}",
                 f"Precision({epipolar_threshold:.2e}) "
                 f"({100 * precision:.1f}%): {correct_count}/{total_count}",
