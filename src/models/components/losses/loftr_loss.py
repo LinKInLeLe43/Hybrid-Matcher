@@ -85,6 +85,71 @@ class LoFTRLoss(nn.Module):
         loss = pos_weight * pos_losses.mean() + neg_weight * neg_losses.mean()
         return loss
 
+    def compute_hard_neg_coarse_loss(
+        self,
+        coarse_confidences: torch.Tensor,
+        gt_mask: torch.Tensor,
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        valid_weight = None
+        if mask0 is not None:
+            valid_weight = (mask0.flatten(start_dim=1)[:, :, None] &
+                            mask1.flatten(start_dim=1)[:, None, :]).float()
+
+        pos_mask = gt_mask
+        pos_weight = 1.0
+        if not pos_mask.any():
+            pos_mask[0, 0, 0] = True
+            pos_weight = 0.0
+            if valid_weight is not None:
+                valid_weight[0, 0, 0] = 0.0
+
+        std_confidences = confidences = coarse_confidences.clamp(
+            min=1e-6, max=1 - 1e-6)
+        if self.coarse_type == "optimal_transport" and self.coarse_sparse:
+            std_confidences = confidences[:, :-1, :-1]
+
+        neg_mask = torch.ones_like(std_confidences)
+        neg_mask[gt_mask] = std_confidences[gt_mask]
+        neg_mask = torch.minimum(
+            neg_mask.min(dim=2, keepdim=True),
+            neg_mask.min(dim=1, keepdim=True))
+        neg_mask = coarse_confidences > neg_mask
+        neg_weight = 1.0
+        if not neg_mask.any():
+            neg_mask[0, 0, 0] = True
+            neg_weight = 0.0
+            if valid_weight is not None:
+                valid_weight[0, 0, 0] = 0.0
+
+        pos_losses = self._compute_focal_loss(std_confidences[pos_mask])
+        if valid_weight is not None:
+            pos_losses *= valid_weight[pos_mask]
+        if self.coarse_sparse:
+            if self.coarse_type == "dual_softmax":
+                pos_loss = pos_weight * pos_losses.mean()
+                return pos_loss
+            elif self.coarse_type == "optimal_transport":
+                bin0_mask = gt_mask.sum(dim=2) == 0
+                bin1_mask = gt_mask.sum(dim=1) == 0
+                bin_confidences = torch.cat(
+                    [confidences[:, :-1, -1][bin0_mask],
+                     confidences[:, -1, :-1][bin1_mask]])
+                neg_losses = self._compute_focal_loss(bin_confidences)
+                if mask0 is not None:
+                    valid_bin_mask = torch.cat([mask0[bin0_mask],
+                                                mask1[bin1_mask]])
+                    neg_losses = neg_losses[valid_bin_mask]
+            else:
+                raise ValueError("")
+        else:
+            neg_losses = self._compute_focal_loss(1 - std_confidences[neg_mask])
+            if valid_weight is not None:
+                neg_losses *= valid_weight[neg_mask]
+        loss = pos_weight * pos_losses.mean() + neg_weight * neg_losses.mean()
+        return loss
+
     def compute_fine_loss(
         self,
         fine_biases: torch.Tensor,
@@ -144,7 +209,7 @@ class LoFTRLoss(nn.Module):
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None
     ) -> Dict[str, Any]:
-        coarse_loss = self.compute_coarse_loss(
+        coarse_loss = self.compute_hard_neg_coarse_loss(
             coarse_confidences, gt_mask, mask0=mask0, mask1=mask1)
         fine_loss = self.compute_fine_loss(fine_biases, gt_biases, fine_stddevs)
         total_loss = coarse_loss + fine_loss
