@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import einops
 import torch
@@ -318,6 +318,51 @@ class GlobalCluster(nn.Module):
         return dispatched
 
 
+class BidirectionalCross(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        hidden_depth: int,
+        heads_count: int,
+        bias: bool = True,
+    ) -> None:
+        super().__init__()
+        self.heads_count = heads_count
+
+        self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        fc = self.heads_count
+        _, l, c = x0.shape
+        _, s, _ = x1.shape
+        sc = c // fc
+
+        x0, x1 = self.proj(x0), self.proj(x1)
+        x0_qk, x0_v = einops.rearrange(
+            x0, "n l (k fc sc) -> k n fc l sc", k=2, fc=fc)
+        x1_qk, x1_v = einops.rearrange(
+            x1, "n s (k fc sc) -> k n fc s sc", k=2, fc=fc)
+        if True:  # TODO: use flash attention
+            sim = torch.einsum("nfld,nfsd->nfls", x0_qk, x1_qk)
+            if mask is not None:
+                sim.masked_fill_(~mask[:, None], float("-inf"))
+            sim /= sc ** 0.5
+            attention01 = F.softmax(sim, dim=3).nan_to_num()
+            attention10 = F.softmax(sim.transpose(2, 3), dim=3).nan_to_num()
+            message0 = torch.einsum("nfls,nfsd->nfld", attention01, x1_v)
+            message1 = torch.einsum("nfsl,nfld->nfsd", attention10, x0_v)
+        message0 = message0.transpose(1, 2).flatten(start_dim=2)
+        message1 = message1.transpose(1, 2).flatten(start_dim=2)
+        message0, message1 = self.merge(message0), self.merge(message1)
+        return message0, message1
+
+
 class LocalClusterBlock(nn.Module):
     def __init__(
         self,
@@ -433,6 +478,83 @@ class GlobalClusterBlock(nn.Module):
         if self.use_flow:
             new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
         return new_x0, new_flow0
+
+
+class BidirectionalCrossBlock(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        hidden_depth: int,
+        heads_count: int,
+        bias: bool = True,
+        use_flow: bool = False,
+        flow_depth: Optional[int] = None,
+        use_layer_scale: bool = False,
+        layer_scale_value: Optional[float] = None,
+        dropout: float = 0.0
+    ) -> None:
+        super().__init__()
+        self.use_flow = use_flow
+        self.use_layer_scale = use_layer_scale
+
+        out_depth = in_depth
+        if use_flow:
+            if flow_depth is None:
+                raise ValueError("")
+            out_depth += flow_depth
+        if use_layer_scale:
+            if layer_scale_value is None:
+                raise ValueError("")
+            self.layer_scale = nn.Parameter(
+                layer_scale_value * torch.ones((out_depth,)))
+
+        self.bicross = BidirectionalCross(
+            in_depth, hidden_depth, heads_count, bias=bias)
+        self.norm0 = nn.LayerNorm(in_depth)
+
+        self.mlp3x3 = Mlp3x3(
+            in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias,
+            dropout=dropout)
+        self.norm1 = nn.LayerNorm(out_depth)
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        size0: torch.Size,
+        size1: torch.Size,
+        flow0: Optional[torch.Tensor] = None,
+        flow1: Optional[torch.Tensor] = None,
+        mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor,
+               Optional[torch.Tensor], Optional[torch.Tensor]]:
+        new_flow0 = new_flow1 = None
+        if self.use_flow:
+            if flow0 is None or flow1 is None:
+                raise ValueError("")
+            c0, c1 = x0.shape[2], flow0.shape[2]
+
+        new_x0, new_x1 = self.bicross(x0, x1, mask=mask)
+        new_x0, new_x1 = self.norm0(new_x0), self.norm0(new_x1)
+
+        if self.use_flow:
+            x0 = torch.cat([x0, flow0], dim=2)
+            x1 = torch.cat([x1, flow1], dim=2)
+        new_x0 = torch.cat([x0, new_x0], dim=2)
+        new_x1 = torch.cat([x1, new_x1], dim=2)
+        new_x0 = self.mlp3x3(new_x0, size=size0)
+        new_x1 = self.mlp3x3(new_x1, size=size1)
+        new_x0, new_x1 = self.norm1(new_x0), self.norm1(new_x1)
+
+        if self.use_layer_scale:
+            new_x0 *= self.layer_scale
+            new_x1 *= self.layer_scale
+        new_x0 += x0
+        new_x1 += x1
+        if self.use_flow:
+            new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
+            new_x1, new_flow1 = new_x1.split([c0, c1], dim=2)
+        return new_x0, new_x1, new_flow0, new_flow1
 
 
 class LocalCoC(nn.Module):
@@ -637,6 +759,13 @@ class GlobalCoC(nn.Module):
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
 
+        bicross_block = BidirectionalCrossBlock(
+            in_depth, hidden_depth, heads_count, bias=bias, use_flow=use_flow,
+            flow_depth=flow_depth, use_layer_scale=use_layer_scale,
+            layer_scale_value=layer_scale_value, dropout=dropout)
+        self.bicross_blocks = nn.ModuleList(
+            [copy.deepcopy(bicross_block) for _ in types])
+
         # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -659,37 +788,40 @@ class GlobalCoC(nn.Module):
         mask1: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
+        r = int((x0.shape[1] // center0.shape[1]) ** 0.5)
         flow0 = flow1 = None
         if self.use_flow:
             if pos0 is None or pos1 is None:
                 raise ValueError("")
             flow0, flow1 = self.flow_proj(pos0), self.flow_proj(pos1)
 
-        mask00 = mask11 = mask01 = mask10 = None
+        cross_mask = mask01 = mask10 = None
         if mask0 is not None:
-            r = int((x0.shape[1] // center0.shape[1]) ** 0.5)
             mask_0 = F.max_pool2d(mask0.float(), r, stride=r).bool()
             mask_1 = F.max_pool2d(mask1.float(), r, stride=r).bool()
             mask0_, mask1_, mask_0, mask_1 = map(
                 lambda x: x.flatten(start_dim=1),
                 (mask0, mask1, mask_0, mask_1))
-            mask00 = mask0_[:, :, None] & mask_0[:, None, :]
-            mask11 = mask1_[:, :, None] & mask_1[:, None, :]
+            cross_mask = mask_0[:, :, None] & mask_1[:, None, :]
             mask01 = mask0_[:, :, None] & mask_1[:, None, :]
             mask10 = mask1_[:, :, None] & mask_0[:, None, :]
 
-        for merge_block, global_block, type in zip(
-            self.merge_blocks, self.global_blocks, self.types):
-            x0, center0 = merge_block(x0, center0, size0)
-            x1, center1 = merge_block(x1, center1, size1)
+        for merge_block, global_block, bicross_block, type in zip(
+            self.merge_blocks, self.global_blocks, self.bicross_blocks,
+            self.types):
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)
                 pass
             elif type == "cross":
-                x0, flow0 = global_block(
+                center0, center1, _, _ = bicross_block(
+                    center0, center1,
+                    torch.Size([size0[0] // r, size0[1] // r]),
+                    torch.Size([size1[0] // r, size1[1] // r]), flow0, flow1,
+                    mask=cross_mask)
+                x0, _ = global_block(
                     x0, center1, size0, flow0=flow0, mask=mask01)
-                x1, flow1 = global_block(
+                x1, _ = global_block(
                     x1, center0, size1, flow0=flow1, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
@@ -699,4 +831,6 @@ class GlobalCoC(nn.Module):
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
             else:
                 raise ValueError("")
+            x0, center0 = merge_block(x0, center0, size0)
+            x1, center1 = merge_block(x1, center1, size1)
         return x0, x1, flow0, flow1
