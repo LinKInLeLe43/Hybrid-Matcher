@@ -33,6 +33,8 @@ class HybridMatcherNet(nn.Module):
             self.positional_encoding = positional_encoding
 
         self.scales = backbone.scales
+        self.use_flow = getattr(coarse_module, "use_flow", False)
+        self.coarse_matching_type = coarse_matching.type
         self.window_size = fine_preprocess.window_size
 
     def _scale_points(
@@ -79,7 +81,7 @@ class HybridMatcherNet(nn.Module):
             centers0, centers1 = center.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
             fine_feature0, fine_feature1 = fine_feature.chunk(2)
-            if self.positional_encoding is not None:
+            if self.use_flow:
                 pos_feature = self.positional_encoding.get(
                     coarse_feature).repeat(2 * n, 1, 1, 1)
                 pos_feature = pos_feature.flatten(start_dim=2).transpose(1, 2)
@@ -101,7 +103,7 @@ class HybridMatcherNet(nn.Module):
             coarse_feature1, fine_feature1 = self.backbone(data)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
 
-            if self.positional_encoding is not None:
+            if self.use_flow:
                 pos_feature0 = self.positional_encoding.get(
                     coarse_feature0).repeat(n, 1, 1, 1)
                 pos_feature0 = pos_feature0.flatten(start_dim=2).transpose(1, 2)

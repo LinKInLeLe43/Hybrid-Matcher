@@ -65,7 +65,7 @@ canonical_batch_size: ???
 
 canonical_learning_rate: ???
 
-canonical_warmup_steps_count: ???
+canonical_warmup_step_count: ???
 
 warmup_ratio: ???
 

@@ -71,15 +71,16 @@ def create_coarse_supervision(
     mask[:, 0] = False
     b_idxes, i_idxes = mask.nonzero(as_tuple=True)
     j_idxes = idx0_to_1[b_idxes, i_idxes]
+    if len(b_idxes) != 0:
+        gt_idxes = b_idxes, i_idxes, j_idxes
+    else:
+        gt_idxes = 3 * (torch.tensor([0], device=device),)
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
-    if len(b_idxes) == 0:
-        b_idxes = i_idxes = j_idxes = torch.tensor([0], device=device)
-    gt_idxes = b_idxes, i_idxes, j_idxes
     supervision = {"point0_to_1": point0_to_1,
                    "point1": point1,
-                   "gt_mask": gt_mask,
-                   "gt_idxes": gt_idxes}
+                   "gt_idxes": gt_idxes,
+                   "gt_mask": gt_mask}
     if use_flow:
         supervision["gt_coor0_to_1"] = coor0_to_1[b_idxes, i_idxes]
         supervision["gt_coor1_to_0"] = coor1_to_0[b_idxes, j_idxes]

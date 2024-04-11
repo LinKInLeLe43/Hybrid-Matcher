@@ -26,6 +26,8 @@ class LoFTRNet(nn.Module):
         self.fine_matching = fine_matching
 
         self.scales = backbone.scales
+        self.use_flow = getattr(coarse_module, "use_flow", False)
+        self.coarse_matching_type = coarse_matching.type
         self.window_size = fine_preprocess.window_size
 
     def _scale_points(

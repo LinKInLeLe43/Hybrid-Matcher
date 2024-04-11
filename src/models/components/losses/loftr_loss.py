@@ -67,14 +67,13 @@ class LoFTRLoss(nn.Module):
             elif self.coarse_type == "optimal_transport":
                 bin0_mask = gt_mask.sum(dim=2) == 0
                 bin1_mask = gt_mask.sum(dim=1) == 0
-                bin_confidences = torch.cat(
-                    [confidences[:, :-1, -1][bin0_mask],
-                     confidences[:, -1, :-1][bin1_mask]])
-                neg_losses = self._compute_focal_loss(bin_confidences)
                 if mask0 is not None:
-                    valid_bin_mask = torch.cat([mask0[bin0_mask],
-                                                mask1[bin1_mask]])
-                    neg_losses = neg_losses[valid_bin_mask]
+                    bin0_mask &= mask0
+                    bin1_mask &= mask1
+                bin_confidences = torch.cat(
+                    [confidences[:, :-1, -1][self.bin0_mask],
+                     confidences[:, -1, :-1][self.bin1_mask]])
+                neg_losses = self._compute_focal_loss(bin_confidences)
             else:
                 raise ValueError("")
         else:

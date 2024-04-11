@@ -188,7 +188,7 @@ def _compute_pose_errors(
 def compute_error(
     batch: Dict[str, Any],
     result: Dict[str, Any],
-    advanced_results: bool = False,
+    advanced: bool = False,
     coarse_scale: Optional[int] = None
 ) -> Dict[str, Any]:
     identifiers = ["#".join(paths)
@@ -207,7 +207,7 @@ def compute_error(
              "R_errors": R_errors,
              "t_errors": t_errors,
              "inliers_per_batch": inliers_per_batch}
-    if advanced_results:
+    if advanced:
         if coarse_scale is None:
             raise ValueError("")
         coarse_scale1 = (coarse_scale * batch["scale1"][:, None]
@@ -257,7 +257,7 @@ def compute_metric(
     end_point_thresholds: List[float],
     epipolar_thresholds: List[float],
     pose_thresholds: List[int],
-    advanced_results: bool = False
+    advanced: bool = False
 ) -> Dict[str, Any]:
     idxes = np.unique(error["identifiers"], return_index=True)[1]
     epipolar_precisions = _compute_precision(
@@ -267,7 +267,7 @@ def compute_metric(
         pose_thresholds)
     metric = {"epipolar_precisions": epipolar_precisions,
               "pose_aucs": pose_aucs}
-    if advanced_results:
+    if advanced:
         metric["end_point_precisions"] = _compute_precision(
             error["end_point_errors_per_batch"][idxes], end_point_thresholds)
         metric["inlier_end_point_precisions"] = _compute_precision(

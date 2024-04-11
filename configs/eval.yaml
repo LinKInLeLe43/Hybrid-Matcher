@@ -11,9 +11,6 @@ defaults:
   - hydra: default
   - experiment: ???
 
-trainer:
-  profiler: "simple"
-
 task_name: "eval"
 
 tags: ???
