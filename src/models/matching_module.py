@@ -171,6 +171,11 @@ class MatchingModule(pl.LightningModule):
                     f"val_plot/pair-{i}", figure,
                     global_step=self.trainer.current_epoch)
 
+    def on_test_start(self) -> None:
+        for m in self.net.modules():
+            if hasattr(m, "switch_to_deploy"):
+                m.switch_to_deploy()
+
     def test_step(
         self,
         batch: Dict[str, Any],

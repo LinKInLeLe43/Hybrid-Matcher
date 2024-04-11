@@ -3,8 +3,8 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
   backbone:
-    _target_: src.models.components.nets.hybrid_matcher.ResNetFpn82
-    initial_depth: 128
+    _target_: src.models.components.nets.hybrid_matcher.backbone.RepVgg82
+    block_counts: [2, 4, 14]
     layer_depths: [128, 196, 256]
   positional_encoding:
     _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
