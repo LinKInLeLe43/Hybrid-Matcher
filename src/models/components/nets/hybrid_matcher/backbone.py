@@ -1,4 +1,4 @@
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 from torch import nn
@@ -93,7 +93,10 @@ class ResNetFpn82(nn.Module):
         self.in_depth = depth
         return layer
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)
@@ -112,4 +115,4 @@ class ResNetFpn82(nn.Module):
         #     x1_out, scale_factor=2.0, mode="bilinear", align_corners=True)
         # x0_out = self.layer0_out(x0_out)
         # return x2_out, x0_out
-        return x2, x0
+        return [x0, x1], x2

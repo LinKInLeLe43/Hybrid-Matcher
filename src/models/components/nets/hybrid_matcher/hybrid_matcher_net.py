@@ -76,11 +76,15 @@ class HybridMatcherNet(nn.Module):
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
             data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
-            coarse_feature, fine_feature = self.backbone(data)
+            fine_features, coarse_feature = self.backbone(data)
             center, coarse_feature = self.local_coc(coarse_feature)
             centers0, centers1 = center.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
-            fine_feature0, fine_feature1 = fine_feature.chunk(2)
+            fine_features0, fine_features1 = [], []
+            for fine_feature in fine_features:
+                fine_feature0, fine_feature1 = fine_feature.chunk(2)
+                fine_features0.append(fine_feature0)
+                fine_features1.append(fine_feature1)
             if self.use_flow:
                 pos_feature = self.positional_encoding.get(
                     coarse_feature).repeat(2 * n, 1, 1, 1)
@@ -92,7 +96,7 @@ class HybridMatcherNet(nn.Module):
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"],
                               coors.repeat(n, 1, 1, 1)], dim=1)
-            coarse_feature0, fine_feature0 = self.backbone(data)
+            fine_features0, coarse_feature0 = self.backbone(data)
             centers0, coarse_feature0 = self.local_coc(coarse_feature0)
 
             n, _, h, w = batch["image1"].shape
@@ -100,7 +104,7 @@ class HybridMatcherNet(nn.Module):
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image1"],
                               coors.repeat(n, 1, 1, 1)], dim=1)
-            coarse_feature1, fine_feature1 = self.backbone(data)
+            fine_features1, coarse_feature1 = self.backbone(data)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
 
             if self.use_flow:
@@ -126,8 +130,9 @@ class HybridMatcherNet(nn.Module):
             flow1=flow1, mask0=mask0, mask1=mask1, gt_idxes=gt_idxes)
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
-            coarse_feature0, coarse_feature1, fine_feature0, fine_feature1,
-            result["fine_idxes"], self.scales[0] // self.scales[1])
+            fine_features0 + [coarse_feature0],
+            fine_features1 + [coarse_feature1], size0, size1,
+            result["fine_idxes"])
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)

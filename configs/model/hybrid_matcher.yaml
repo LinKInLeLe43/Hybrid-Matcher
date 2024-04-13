@@ -33,8 +33,11 @@ net:
       radius: 8
   fine_preprocess:
     _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
-    coarse_depth: ${model.net.backbone.layer_depths.2}
-    fine_depth: ${model.net.backbone.layer_depths.0}
+    type: "fuse_all_before_crop"
+    window_size: 5
+    stride: 4
+    padding: 2
+    layer_depths: ${model.net.backbone.layer_depths}
   fine_module:
     _target_: src.models.components.nets.hybrid_matcher.LoFTR
     depth: ${model.net.backbone.layer_depths.0}
