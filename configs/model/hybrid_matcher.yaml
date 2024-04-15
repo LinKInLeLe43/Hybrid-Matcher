@@ -6,6 +6,9 @@ net:
     _target_: src.models.components.nets.hybrid_matcher.ResNetFpn82
     initial_depth: 128
     layer_depths: [128, 196, 256]
+  positional_encoding:
+    _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
+    depth: ${model.net.backbone.layer_depths.2}
   local_coc:
     _target_: src.models.components.nets.hybrid_matcher.LocalCoC
     blocks_counts: [2, 2, 2]
@@ -47,9 +50,6 @@ net:
     types: ["self", "cross"]
   fine_matching:
     _target_: src.models.components.nets.hybrid_matcher.FineMatching
-  positional_encoding:
-    _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss

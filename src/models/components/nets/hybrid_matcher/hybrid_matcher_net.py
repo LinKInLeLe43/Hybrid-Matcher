@@ -9,28 +9,23 @@ class HybridMatcherNet(nn.Module):
     def __init__(
         self,
         backbone: nn.Module,
+        positional_encoding: nn.Module,
         local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_matching: nn.Module,
-        positional_encoding: Optional[nn.Module] = None
+        fine_matching: nn.Module
     ) -> None:
         super().__init__()
         self.backbone = backbone
+        self.positional_encoding = positional_encoding
         self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
         self.fine_matching = fine_matching
-
-        self.positional_encoding = None
-        if coarse_module.use_flow:
-            if positional_encoding is None:
-                raise ValueError("")
-            self.positional_encoding = positional_encoding
 
         self.scales = backbone.scales
         self.use_flow = getattr(coarse_module, "use_flow", False)
@@ -62,7 +57,7 @@ class HybridMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        device = batch["image0"].device
+        n = batch["image0"].shape[0]
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
         center0_mask = batch.get("center0_mask")
         center1_mask = batch.get("center1_mask")
@@ -71,11 +66,7 @@ class HybridMatcherNet(nn.Module):
 
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
-            data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
             fine_features, coarse_feature = self.backbone(data)
             center, coarse_feature = self.local_coc(coarse_feature)
             centers0, centers1 = center.chunk(2)
@@ -91,20 +82,10 @@ class HybridMatcherNet(nn.Module):
                 pos_feature = pos_feature.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_feature.chunk(2)
         else:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image0"],
-                              coors.repeat(n, 1, 1, 1)], dim=1)
-            fine_features0, coarse_feature0 = self.backbone(data)
+            fine_features0, coarse_feature0 = self.backbone(batch["image0"])
             centers0, coarse_feature0 = self.local_coc(coarse_feature0)
 
-            n, _, h, w = batch["image1"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image1"],
-                              coors.repeat(n, 1, 1, 1)], dim=1)
-            fine_features1, coarse_feature1 = self.backbone(data)
+            fine_features1, coarse_feature1 = self.backbone(batch["image1"])
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
 
             if self.use_flow:
@@ -115,6 +96,9 @@ class HybridMatcherNet(nn.Module):
                     coarse_feature1).repeat(n, 1, 1, 1)
                 pos_feature1 = pos_feature1.flatten(start_dim=2).transpose(1, 2)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
+
+        coarse_feature0, _ = self.positional_encoding(coarse_feature0)
+        coarse_feature1, _ = self.positional_encoding(coarse_feature1)
 
         coarse_feature0, coarse_feature1, centers0, centers1 = map(
             lambda x: x.flatten(start_dim=2).transpose(1, 2),

@@ -56,7 +56,7 @@ class ResNetFpn82(nn.Module):
         self.scales = 8, 2
 
         self.conv = nn.Conv2d(
-            3, initial_depth, 7, stride=2, padding=3, bias=False)
+            1, initial_depth, 7, stride=2, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
 
