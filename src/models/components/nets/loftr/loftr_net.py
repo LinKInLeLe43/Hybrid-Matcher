@@ -41,7 +41,7 @@ class LoFTRNet(nn.Module):
             points0 *= scale0[result["b_idxes"]]
 
         points1 = self.scales[0] * result["points1"]
-        biases = result["fine_biases"][:len(points0)].detach()
+        biases = result["fine_reg_biases"][:len(points0)].detach()
         biases = self.scales[1] * (self.window_size // 2) * biases
         if scale1 is not None:
             points1 *= scale1[result["b_idxes"]]

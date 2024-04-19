@@ -77,21 +77,40 @@ class MatchingModule(pl.LightningModule):
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         supervision = {}
-        supervision.update(utils.create_coarse_supervision(
+        supervision.update(utils.create_cls_supervision(
             batch, self.net.scales[0], use_flow=self.net.use_flow))
         result = self.net(batch, gt_idxes=supervision["gt_idxes"])
-        supervision.update(utils.create_fine_supervision(
-            supervision.pop("point0_to_1"), supervision.pop("point1"),
-            result["fine_idxes"], self.net.scales[1], self.net.window_size,
-            scale1=batch.get("scale1")))
+        if self.net.fine_matching_type == "reg_only":
+            supervision.update(utils.create_fine_reg_supervision(
+                supervision.pop("point0_to_1"), supervision.pop("point1"),
+                result["fine_idxes"], self.net.scales[1],
+                self.net.reg_window_size, scale1=batch.get("scale1")))
+        elif self.net.fine_matching_type == "reg_only_with_std":
+            supervision.update(utils.create_fine_reg_supervision(
+                supervision.pop("point0_to_1"), supervision.pop("point1"),
+                result["fine_idxes"], self.net.scales[1],
+                self.net.reg_window_size, scale1=batch.get("scale1")))
+        elif self.net.fine_matching_type == "cls_and_reg":
+            supervision.update(utils.create_fine_cls_supervision(
+                batch, self.net.scales, result["fine_idxes"]))
+            supervision.update(utils.create_fine_reg_supervision(
+                supervision.pop("point0_to_1"), supervision.pop("point1"),
+                result["fine_idxes"], self.net.scales[1],
+                self.net.reg_window_size, scale1=batch.get("scale1")))
+        else:
+            assert False
         loss = self.loss(
-            result["coarse_confidences"], supervision["gt_mask"],
-            result["fine_biases"], supervision["gt_biases"],
-            result["fine_stddevs"], flow0_to_1=result.get("flow0_to_1"),
-            flow1_to_0=result.get("flow1_to_0"),
-            gt_coor0_to_1=supervision.get("gt_coor0_to_1"),
-            gt_coor1_to_0=supervision.get("gt_coor1_to_0"),
-            mask0=batch.get("mask0"), mask1=batch.get("mask1"))
+            coarse_cls_heatmap=result.get("coarse_cls_heatmap"),
+            coarse_gt_mask=supervision.get("gt_mask"),
+            fine_cls_heatmap=result.get("fine_cls_heatmap"),
+            fine_gt_mask=supervision.get("fine_gt_mask"),
+            fine_reg_biases=result.get("fine_reg_biases"),
+            fine_gt_biases=supervision.get("fine_gt_biases"),
+            fine_reg_stds=result.get("fine_reg_stds"),
+            flow0=result.get("flow0"), flow1=result.get("flow1"),
+            gt_coor0=supervision.get("gt_coor0"),
+            gt_coor1=supervision.get("gt_coor1"), mask0=batch.get("mask0"),
+            mask1=batch.get("mask1"))
         return result, loss
 
     def training_step(

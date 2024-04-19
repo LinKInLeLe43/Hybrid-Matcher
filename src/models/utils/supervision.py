@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import kornia as K
 import torch
+from torch.nn import functional as F
 
 
 def _warp_point(
@@ -29,9 +30,11 @@ def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
 
 
 @torch.no_grad()
-def create_coarse_supervision(
+def create_cls_supervision(  # TODO: add scale for keys
     batch: Dict[str, Any],
     scale: int,
+    use_offset: bool = False,
+    return_with_gt_mask: bool = True,
     use_flow: bool = False
 ) -> Dict[str, Any]:
     device = batch["image0"].device
@@ -48,6 +51,9 @@ def create_coarse_supervision(
         h0, w0, normalized_coordinates=False, device=device)
     point1 = K.create_meshgrid(
         h1, w1, normalized_coordinates=False, device=device)
+    if use_offset:
+        point0 += 0.5
+        point1 += 0.5
     point0 = scale0 * point0.reshape(1, -1, 2).repeat(n, 1, 1)
     point1 = scale1 * point1.reshape(1, -1, 2).repeat(n, 1, 1)
     if mask0 is not None:
@@ -58,6 +64,9 @@ def create_coarse_supervision(
     point1_to_0 = _warp_point(
         point1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
     coor0_to_1, coor1_to_0 = point0_to_1 / scale1, point1_to_0 / scale0
+    if use_offset:
+        coor0_to_1 -= 0.5
+        coor0_to_1 -= 0.5
     grid0_to_1 = coor0_to_1.round().long()
     grid1_to_0 = coor1_to_0.round().long()
     _mask_out_of_bound(grid0_to_1, h1, w1)
@@ -74,21 +83,77 @@ def create_coarse_supervision(
     if len(b_idxes) != 0:
         gt_idxes = b_idxes, i_idxes, j_idxes
     else:
-        gt_idxes = 3 * (torch.tensor([0], device=device),)
-    gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
-    gt_mask[b_idxes, i_idxes, j_idxes] = True
+        gt_idxes = 3 * (torch.tensor([0], device=device),)  # TODO: check whether need argument
     supervision = {"point0_to_1": point0_to_1,
                    "point1": point1,
-                   "gt_idxes": gt_idxes,
-                   "gt_mask": gt_mask}
+                   "gt_idxes": gt_idxes}
+    if return_with_gt_mask:
+        gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
+        gt_mask[b_idxes, i_idxes, j_idxes] = True
+        supervision["gt_mask"] = gt_mask
     if use_flow:
-        supervision["gt_coor0_to_1"] = coor0_to_1[b_idxes, i_idxes]
-        supervision["gt_coor1_to_0"] = coor1_to_0[b_idxes, j_idxes]
+        supervision["gt_coor0"] = coor0_to_1[b_idxes, i_idxes]
+        supervision["gt_coor1"] = coor1_to_0[b_idxes, j_idxes]
     return supervision
 
 
 @torch.no_grad()
-def create_fine_supervision(
+def create_fine_cls_supervision(
+    batch: Dict[str, Any],
+    scales: Tuple[int, int],
+    fine_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+) -> Dict[str, Any]:
+    device = batch["image0"].device
+    n, _, h0, w0 = batch["image0"].shape
+    _, _, h1, w1 = batch["image1"].shape
+    ((coarse_h0, _), (coarse_w0, fine_w0),
+     (coarse_h1, _), (coarse_w1, fine_w1)) = map(
+        lambda x: (x // scales[0], x // scales[1]), (h0, w0, h1, w1))
+    stride = scales[0] // scales[1]
+    m, ww = len(fine_idxes[0]), stride ** 2
+
+    coarse_mask0 = coarse_mask1 = None
+    if "mask0" in batch:
+        coarse_mask0, coarse_mask1 = batch.pop("mask0"), batch.pop("mask1")
+        mask0 = coarse_mask0.reshape(1, n, coarse_h0, coarse_w0).float()
+        batch["mask0"] = F.interpolate(
+            mask0, scale_factor=stride).reshape(n, -1).bool()
+        mask1 = coarse_mask1.reshape(1, n, coarse_h1, coarse_w1).float()
+        batch["mask1"] = F.interpolate(
+            mask1, scale_factor=stride).reshape(n, -1).bool()
+    supervision = create_cls_supervision(
+        batch, scales[1], use_offset=True, return_with_gt_mask=False)
+    if "mask0" in batch:
+        batch["mask0"], batch["mask1"] = coarse_mask0, coarse_mask1
+
+    b_idxes, i_idxes, j_idxes = supervision.pop("gt_idxes")
+    subi_idxes = (stride * (i_idxes // fine_w0 % stride) +
+                  i_idxes % fine_w0 % stride)
+    subj_idxes = (stride * (j_idxes // fine_w1 % stride) +
+                  j_idxes % fine_w1 % stride)
+    i_idxes = ((fine_w0 // stride) * (i_idxes // fine_w0 // stride) +
+               i_idxes % fine_w0 // stride)
+    j_idxes = ((fine_w1 // stride) * (j_idxes // fine_w1 // stride) +
+               j_idxes % fine_w1 // stride)
+
+    k0 = coarse_h0 * coarse_w0 * coarse_h1 * coarse_w1
+    k1 = coarse_h1 * coarse_w1
+    identifiers = k0 * fine_idxes[0] + k1 * fine_idxes[1] + fine_idxes[2]
+    identifiers = {v: i for i, v in enumerate(identifiers)}
+    m_idxes = k0 * b_idxes + k1 * i_idxes + j_idxes
+    m_idxes = torch.tensor(
+        [identifiers.get(v, -1) for v in m_idxes], device=device)
+    valid_mask = m_idxes != -1
+    gt_idxes = (m_idxes[valid_mask], subi_idxes[valid_mask],
+                subj_idxes[valid_mask])
+    gt_mask = torch.zeros((m, ww, ww), dtype=torch.bool, device=device)
+    gt_mask[gt_idxes] = True
+    supervision["fine_gt_mask"] = gt_mask
+    return supervision
+
+
+@torch.no_grad()
+def create_fine_reg_supervision(
     point0_to_1: torch.Tensor,
     point1: torch.Tensor,
     fine_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -102,5 +167,5 @@ def create_fine_supervision(
     gt_biases /= fine_scale * (window_size // 2)
     if scale1 is not None:
         gt_biases /= scale1[b_idxes]
-    supervision = {"gt_biases": gt_biases}
+    supervision = {"fine_gt_biases": gt_biases}
     return supervision

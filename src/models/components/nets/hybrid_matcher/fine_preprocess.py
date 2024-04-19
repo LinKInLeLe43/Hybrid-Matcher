@@ -36,6 +36,7 @@ class FinePreprocess(nn.Module):
         window_size: int,
         stride: int,
         padding: int,
+        right_extra: int = 0,
         layer_depths: Optional[List[int]] = None
     ) -> None:
         super().__init__()
@@ -43,6 +44,7 @@ class FinePreprocess(nn.Module):
         self.window_size = window_size
         self.stride = stride
         self.padding = padding
+        self.right_extra = right_extra
 
         if type == "only_crop_fine":
             pass
@@ -82,7 +84,8 @@ class FinePreprocess(nn.Module):
         fine_feature0 = _crop_windows(
             fine_feature0, self.window_size, self.stride, self.padding)
         fine_feature1 = _crop_windows(
-            fine_feature1, self.window_size, self.stride, self.padding)
+            fine_feature1, self.window_size + 2 * self.right_extra, self.stride,
+            self.padding + self.right_extra)
         fine_feature0 = fine_feature0[b_idxes, i_idxes]
         fine_feature1 = fine_feature1[b_idxes, j_idxes]
         return fine_feature0, fine_feature1
@@ -100,13 +103,27 @@ class FinePreprocess(nn.Module):
         coarse_feature1 = coarse_feature1[b_idxes, j_idxes]
         coarse_feature = torch.cat([coarse_feature0, coarse_feature1])
         coarse_feature = self.proj(coarse_feature)[:, None]
-        coarse_feature = coarse_feature.expand(-1, self.window_size ** 2, -1)
 
         fine_feature0, fine_feature1 = self._only_crop_fine(
             fine_feature0, fine_feature1, idxes)
-        fine_feature = torch.cat([fine_feature0, fine_feature1])
-        fine_feature = torch.cat([fine_feature, coarse_feature], dim=2)
-        fine_feature0, fine_feature1 = self.merge(fine_feature).chunk(2)
+
+        w = self.window_size
+        if self.right_extra == 0:
+            coarse_feature = coarse_feature.expand(-1, w ** 2, -1)
+
+            fine_feature = torch.cat([fine_feature0, fine_feature1])
+            fine_feature = torch.cat([fine_feature, coarse_feature], dim=2)
+            fine_feature0, fine_feature1 = self.merge(fine_feature).chunk(2)
+        else:
+            e = self.right_extra
+            coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
+            coarse_feature0 = coarse_feature0.expand(-1, w ** 2, -1)
+            coarse_feature1 = coarse_feature1.expand(-1, (w + 2 * e) ** 2, -1)
+
+            fine_feature0 = torch.cat([fine_feature0, coarse_feature0], dim=2)
+            fine_feature1 = torch.cat([fine_feature1, coarse_feature1], dim=2)
+            fine_feature0 = self.merge(fine_feature0)
+            fine_feature1 = self.merge(fine_feature1)
         return fine_feature0, fine_feature1
 
     def _fuse_all_impl(
@@ -153,10 +170,10 @@ class FinePreprocess(nn.Module):
         idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         b_idxes, i_idxes, j_idxes = idxes
-        w, ww = self.window_size, self.window_size ** 2
+        w, e, c = self.window_size, self.right_extra, features0[0].shape[1]
         if len(b_idxes) == 0:
-            fine_feature0 = fine_feature1 = features0[0].new_empty(
-                (0, ww, features0[0].shape[1]))
+            fine_feature0 = features0[0].new_empty((0, w ** 2, c))
+            fine_feature1 = features0[0].new_empty((0, (w + 2 * e) ** 2, c))
             return fine_feature0, fine_feature1
 
         if self.type == "only_crop_fine":

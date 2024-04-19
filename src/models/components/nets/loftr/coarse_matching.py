@@ -182,7 +182,7 @@ class CoarseMatching(nn.Module):
             confidences, size0, size1, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
         if self.type == "optimal_transport" and self.sparse:
-            coarse_matching["coarse_confidences"] = confidences_with_bin
+            coarse_matching["coarse_cls_heatmap"] = confidences_with_bin
         else:
-            coarse_matching["coarse_confidences"] = confidences
+            coarse_matching["coarse_cls_heatmap"] = confidences
         return coarse_matching

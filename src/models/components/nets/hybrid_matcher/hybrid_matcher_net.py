@@ -30,7 +30,9 @@ class HybridMatcherNet(nn.Module):
         self.scales = backbone.scales
         self.use_flow = getattr(coarse_module, "use_flow", False)
         self.coarse_matching_type = coarse_matching.type
-        self.window_size = fine_preprocess.window_size
+        self.fine_matching_type = fine_matching.type
+        self.cls_window_size = fine_matching.cls_window_size
+        self.reg_window_size = fine_matching.reg_window_size
 
     def _scale_points(
         self,
@@ -38,17 +40,42 @@ class HybridMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
+        reg_w = self.reg_window_size
+
         points0 = self.scales[0] * result["points0"]
+        points1 = self.scales[0] * result["points1"]
         if scale0 is not None:
             points0 *= scale0[result["b_idxes"]]
-
-        points1 = self.scales[0] * result["points1"]
-        biases = result["fine_biases"][:len(points0)].detach()
-        biases = self.scales[1] * (self.window_size // 2) * biases
-        if scale1 is not None:
             points1 *= scale1[result["b_idxes"]]
-            biases *= scale1[result["b_idxes"]]
-        points1 += biases
+
+        if self.fine_matching_type == "reg_only":
+            reg_biases = result["fine_reg_biases"][:len(points0)].detach()
+            reg_biases = self.scales[1] * (reg_w // 2) * reg_biases
+            if scale0 is not None:
+                reg_biases *= scale1[result["b_idxes"]]
+            points1 += reg_biases
+        elif self.fine_matching_type == "reg_only_with_std":
+            reg_biases = result["fine_reg_biases"][:len(points0)].detach()
+            reg_biases = self.scales[1] * (reg_w // 2) * reg_biases
+            if scale0 is not None:
+                reg_biases *= scale1[result["b_idxes"]]
+            points1 += reg_biases
+        elif self.fine_matching_type == "cls_and_reg":
+            cls_biases0 = result["fine_cls_biases0"][:len(points0)]
+            cls_biases1 = result["fine_cls_biases1"][:len(points0)]
+            if scale0 is not None:
+                cls_biases0 *= scale0[result["b_idxes"]]
+                cls_biases1 *= scale1[result["b_idxes"]]
+            points1 += cls_biases0
+            points1 += cls_biases1
+
+            reg_biases = result["fine_reg_biases"][:len(points0)].detach()
+            reg_biases = self.scales[1] * (reg_w // 2) * reg_biases
+            if scale0 is not None:
+                reg_biases *= scale1[result["b_idxes"]]
+            points1 += reg_biases
+        else:
+            assert False
         result["points0"], result["points1"] = points0, points1
 
     def forward(

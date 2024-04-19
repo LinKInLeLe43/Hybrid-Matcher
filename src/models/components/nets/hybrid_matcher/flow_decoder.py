@@ -67,11 +67,11 @@ class FlowDecoder(nn.Module):
         scale = torch.tensor([size1[1], size1[0]], device=device)
         flow0_to_1[:, :, :2] = scale * flow0_to_1[:, :, :2].sigmoid()
 
-        coor, log_stddev_mul_2 = flow0_to_1.detach()[:, :, None].chunk(2, dim=3)
+        coor, log_std_mul_2 = flow0_to_1.detach()[:, :, None].chunk(2, dim=3)
         grid = K.create_meshgrid(
             size1[0], size1[1], normalized_coordinates=False, device=device)
         grid = grid.reshape(1, 1, -1, 2)
-        span = self.radius * (0.5 * log_stddev_mul_2).exp()
+        span = self.radius * (0.5 * log_std_mul_2).exp()
         flow0_to_1_mask = ((grid[..., 0] > coor[..., 0] - span[..., 0]) &
                            (grid[..., 0] < coor[..., 0] + span[..., 0]) &
                            (grid[..., 1] > coor[..., 1] - span[..., 1]) &

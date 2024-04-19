@@ -37,9 +37,13 @@ net:
   fine_preprocess:
     _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
     type: "fuse_all_before_crop"
-    window_size: 5
+    window_size: 4
     stride: 4
-    padding: 2
+    padding: 0
+    right_extra: 1
+#    window_size: 5
+#    stride: 4
+#    padding: 2
     layer_depths: ${model.net.backbone.layer_depths}
   fine_module:
     _target_: src.models.components.nets.hybrid_matcher.LoFTR
@@ -50,13 +54,27 @@ net:
     types: ["self", "cross"]
   fine_matching:
     _target_: src.models.components.nets.hybrid_matcher.FineMatching
+#    type: "reg_only_with_std"
+#    reg_window_size: ${model.net.fine_preprocess.window_size}
+    type: "cls_and_reg"
+    cls_window_size: ${model.net.fine_preprocess.window_size}
+    cls_depth: 112
+    cls_top_k: 1
+    reg_window_size: 3
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss
   coarse_type: "${model.net.coarse_matching.type}"
-  coarse_sparse: ${model.net.coarse_matching.sparse}
+  fine_type: "${model.net.fine_matching.type}"
+  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
+  fine_cls_sparse: ${model.net.coarse_matching.sparse}
+  fine_cls_loss_pos_weight: 1.0
+  fine_cls_loss_neg_weight: 1.0
+  fine_reg_loss_weight: 1.0
   use_flow: ${model.net.coarse_module.use_flow}
-  flow_weight: 0.05
+  flow_loss_weight: 0.05
 
 optimizer: ???
 

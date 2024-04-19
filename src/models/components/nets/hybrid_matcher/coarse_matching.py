@@ -225,10 +225,10 @@ class CoarseMatching(nn.Module):
             gt_idxes=gt_idxes)
         if flow is not None and gt_idxes is not None:
             b_idxes, i_idxes, j_idxes = gt_idxes
-            coarse_matching["flow0_to_1"] = flow["flow0_to_1"][b_idxes, i_idxes]
-            coarse_matching["flow1_to_0"] = flow["flow1_to_0"][b_idxes, j_idxes]
+            coarse_matching["flow0"] = flow["flow0_to_1"][b_idxes, i_idxes]
+            coarse_matching["flow1"] = flow["flow1_to_0"][b_idxes, j_idxes]
         if self.type == "optimal_transport" and self.sparse:
-            coarse_matching["coarse_confidences"] = confidences_with_bin
+            coarse_matching["coarse_cls_heatmap"] = confidences_with_bin
         else:
-            coarse_matching["coarse_confidences"] = confidences
+            coarse_matching["coarse_cls_heatmap"] = confidences
         return coarse_matching
