@@ -1,8 +1,21 @@
 from typing import Any, Dict, Optional, Tuple
 
+import einops
 import kornia as K
 import torch
 from torch.nn import functional as F
+
+
+def _crop_windows(
+    x: torch.Tensor,
+    kernel_size: int,
+    stride: int,
+    padding: int
+) -> torch.Tensor:
+    output = F.unfold(x, kernel_size, padding=padding, stride=stride)
+    output = einops.rearrange(
+        output, "n (c ww) l -> n l ww c", ww=kernel_size ** 2)
+    return output
 
 
 def _warp_point(
@@ -34,6 +47,11 @@ def create_cls_supervision(  # TODO: add scale for keys
     batch: Dict[str, Any],
     scale: int,
     use_offset: bool = False,
+    crop_kernel_size: Optional[int] = None,
+    crop_stride: Optional[int] = None,
+    crop_padding: Optional[int] = None,
+    crop_idxes:
+        Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
     return_with_gt_mask: bool = True,
     use_flow: bool = False
 ) -> Dict[str, Any]:
@@ -51,6 +69,35 @@ def create_cls_supervision(  # TODO: add scale for keys
         h0, w0, normalized_coordinates=False, device=device)
     point1 = K.create_meshgrid(
         h1, w1, normalized_coordinates=False, device=device)
+
+    if crop_idxes is not None:
+        if (crop_kernel_size is None or crop_stride is None or
+            crop_padding is None):
+            raise ValueError("")
+        crop_b_idxes, crop_i_idxes, crop_j_idxes = crop_idxes
+        if len(crop_b_idxes) == 0:
+            ww = crop_kernel_size ** 2
+            point1 = point0.new_empty((0, ww, 2))
+            point0_to_1 = point1.new_empty((0, ww, 2))
+            supervision = {"point0_to_1": point0_to_1,
+                           "point1": point1,
+                           "gt_idxes": crop_idxes}
+            if return_with_gt_mask:
+                gt_mask = point0.new_empty((0, ww, ww), dtype=torch.bool)
+                supervision["gt_mask"] = gt_mask
+            if use_flow:
+                gt_coor0 = point0.new_empty((0, 2))
+                gt_coor1 = point0.new_empty((0, 2))
+                supervision["gt_coor0"] = gt_coor0
+                supervision["gt_coor1"] = gt_coor1
+
+        point0 = _crop_windows(
+            point0.permute(0, 3, 1, 2), crop_kernel_size, crop_stride,
+            crop_padding)[crop_b_idxes, crop_i_idxes]
+        point1 = _crop_windows(
+            point1.permute(0, 3, 1, 2), crop_kernel_size, crop_stride,
+            crop_padding)[crop_b_idxes, crop_j_idxes]
+
     if use_offset:
         point0 += 0.5
         point1 += 0.5
@@ -59,10 +106,14 @@ def create_cls_supervision(  # TODO: add scale for keys
     if mask0 is not None:
         point0[~mask0], point1[~mask1] = 0.0, 0.0
 
-    point0_to_1 = _warp_point(
-        point0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
-    point1_to_0 = _warp_point(
-        point1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
+    depth0, depth1, K0, K1, T0_to_1, T1_to_0, scale0, scale1 = map(
+        lambda x: (
+            x[crop_b_idxes]
+            if crop_idxes is not None and isinstance(x, torch.Tensor) else x),
+        (batch["depth0"], batch["depth1"], batch["K0"], batch["K1"],
+         batch["T0_to_1"], batch["T1_to_0"], scale0, scale1))
+    point0_to_1 = _warp_point(point0, depth0, K0, K1, T0_to_1)
+    point1_to_0 = _warp_point(point1, depth1, K1, K0, T1_to_0)
     coor0_to_1, coor1_to_0 = point0_to_1 / scale1, point1_to_0 / scale0
     if use_offset:
         coor0_to_1 -= 0.5
@@ -115,40 +166,36 @@ def create_fine_cls_supervision(
     coarse_mask0 = coarse_mask1 = None
     if "mask0" in batch:
         coarse_mask0, coarse_mask1 = batch.pop("mask0"), batch.pop("mask1")
-        mask0 = coarse_mask0.reshape(1, n, coarse_h0, coarse_w0).float()
-        batch["mask0"] = F.interpolate(
-            mask0, scale_factor=stride).reshape(n, -1).bool()
-        mask1 = coarse_mask1.reshape(1, n, coarse_h1, coarse_w1).float()
-        batch["mask1"] = F.interpolate(
-            mask1, scale_factor=stride).reshape(n, -1).bool()
     supervision = create_cls_supervision(
-        batch, scales[1], use_offset=True, return_with_gt_mask=False)
+        batch, scales[1], use_offset=True, crop_kernel_size=stride,
+        crop_stride=stride, crop_padding=stride // 2, crop_idxes=fine_idxes,
+        return_with_gt_mask=False)
     if "mask0" in batch:
         batch["mask0"], batch["mask1"] = coarse_mask0, coarse_mask1
 
-    b_idxes, i_idxes, j_idxes = supervision.pop("gt_idxes")
-    subi_idxes = (stride * (i_idxes // fine_w0 % stride) +
-                  i_idxes % fine_w0 % stride)
-    subj_idxes = (stride * (j_idxes // fine_w1 % stride) +
-                  j_idxes % fine_w1 % stride)
-    i_idxes = ((fine_w0 // stride) * (i_idxes // fine_w0 // stride) +
-               i_idxes % fine_w0 // stride)
-    j_idxes = ((fine_w1 // stride) * (j_idxes // fine_w1 // stride) +
-               j_idxes % fine_w1 // stride)
-
-    k0 = coarse_h0 * coarse_w0 * coarse_h1 * coarse_w1
-    k1 = coarse_h1 * coarse_w1
-    identifiers = k0 * fine_idxes[0] + k1 * fine_idxes[1] + fine_idxes[2]
-    identifiers = {v: i for i, v in enumerate(identifiers)}
-    m_idxes = k0 * b_idxes + k1 * i_idxes + j_idxes
-    m_idxes = torch.tensor(
-        [identifiers.get(v, -1) for v in m_idxes], device=device)
-    valid_mask = m_idxes != -1
-    gt_idxes = (m_idxes[valid_mask], subi_idxes[valid_mask],
-                subj_idxes[valid_mask])
-    gt_mask = torch.zeros((m, ww, ww), dtype=torch.bool, device=device)
-    gt_mask[gt_idxes] = True
-    supervision["fine_gt_mask"] = gt_mask
+    # b_idxes, i_idxes, j_idxes = supervision.pop("gt_idxes")
+    # subi_idxes = (stride * (i_idxes // fine_w0 % stride) +
+    #               i_idxes % fine_w0 % stride)
+    # subj_idxes = (stride * (j_idxes // fine_w1 % stride) +
+    #               j_idxes % fine_w1 % stride)
+    # i_idxes = ((fine_w0 // stride) * (i_idxes // fine_w0 // stride) +
+    #            i_idxes % fine_w0 // stride)
+    # j_idxes = ((fine_w1 // stride) * (j_idxes // fine_w1 // stride) +
+    #            j_idxes % fine_w1 // stride)
+    #
+    # k0 = coarse_h0 * coarse_w0 * coarse_h1 * coarse_w1
+    # k1 = coarse_h1 * coarse_w1
+    # identifiers = k0 * fine_idxes[0] + k1 * fine_idxes[1] + fine_idxes[2]
+    # identifiers = {v.item(): i for i, v in enumerate(identifiers)}
+    # m_idxes = k0 * b_idxes + k1 * i_idxes + j_idxes
+    # m_idxes = torch.tensor(
+    #     [identifiers.get(v.item, -1) for v in m_idxes], device=device)
+    # valid_mask = m_idxes != -1
+    # gt_idxes = (m_idxes[valid_mask], subi_idxes[valid_mask],
+    #             subj_idxes[valid_mask])
+    # gt_mask = torch.zeros((m, ww, ww), dtype=torch.bool, device=device)
+    # gt_mask[gt_idxes] = True
+    # supervision["fine_gt_mask"] = gt_mask
     return supervision
 
 
