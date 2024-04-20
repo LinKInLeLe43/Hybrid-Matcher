@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from src.models.components.nets.loftr import optimal_transport
 
 
-class CoarseMatching(nn.Module):
+class CoarseMatching(nn.Module):  # TODO: change name to first stage
     def __init__(
         self,
         type: str,
@@ -116,11 +116,11 @@ class CoarseMatching(nn.Module):
         size0: torch.Size,
         size1: torch.Size
     ) -> Dict[str, Any]:
-        flow0_to_1, flow0_to_1_mask = self.flow_decoder(flow0, size1)
-        flow1_to_0, flow1_to_0_mask = self.flow_decoder(flow1, size0)
-        flow_mask = flow0_to_1_mask | flow1_to_0_mask.transpose(1, 2)
-        flow = {"flow0_to_1": flow0_to_1,
-                "flow1_to_0": flow1_to_0,
+        flows_with_uncertainties0, flow_mask0 = self.flow_decoder(flow0, size1)
+        flows_with_uncertainties1, flow_mask1 = self.flow_decoder(flow1, size0)
+        flow_mask = flow_mask0 | flow_mask1.transpose(1, 2)
+        flow = {"flows_with_uncertainties0": flows_with_uncertainties0,
+                "flows_with_uncertainties1": flows_with_uncertainties1,
                 "flow_mask": flow_mask}
         return flow
 
@@ -170,10 +170,14 @@ class CoarseMatching(nn.Module):
                            "points0": points0,
                            "points1": points1,
                            "confidences": confidences,
-                           "fine_idxes": train_idxes}
+                           "first_stage_idxes": train_idxes}
         if flow is not None:
-            coarse_matching["flow1"] = flow["flow0_to_1"][b_idxes, i_idxes]
-            coarse_matching["flow0"] = flow["flow1_to_0"][b_idxes, j_idxes]
+            if gt_idxes is not None:
+                b_idxes, i_idxes, j_idxes = gt_idxes
+            coarse_matching["flows_with_uncertainties0"] = (
+                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
+            coarse_matching["flows_with_uncertainties1"] = (
+                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return coarse_matching
 
     def forward(
@@ -223,12 +227,8 @@ class CoarseMatching(nn.Module):
         coarse_matching = self._create_coarse_matching(
             confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
-        if flow is not None and gt_idxes is not None:
-            b_idxes, i_idxes, j_idxes = gt_idxes
-            coarse_matching["flow0_to_1"] = flow["flow0_to_1"][b_idxes, i_idxes]
-            coarse_matching["flow1_to_0"] = flow["flow1_to_0"][b_idxes, j_idxes]
         if self.type == "optimal_transport" and self.sparse:
-            coarse_matching["coarse_confidences"] = confidences_with_bin
+            coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
-            coarse_matching["coarse_confidences"] = confidences
+            coarse_matching["first_stage_cls_heatmap"] = confidences
         return coarse_matching

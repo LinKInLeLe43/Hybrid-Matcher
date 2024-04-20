@@ -77,21 +77,34 @@ class MatchingModule(pl.LightningModule):
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         supervision = {}
-        supervision.update(utils.create_coarse_supervision(
-            batch, self.net.scales[0], use_flow=self.net.use_flow))
-        result = self.net(batch, gt_idxes=supervision["gt_idxes"])
-        supervision.update(utils.create_fine_supervision(
-            supervision.pop("point0_to_1"), supervision.pop("point1"),
-            result["fine_idxes"], self.net.scales[1], self.net.window_size,
-            scale1=batch.get("scale1")))
+        if self.net.type == "one_stage":
+            supervision.update(utils.create_first_stage_supervision(
+                batch, self.net.scales[0], return_coor=True,
+                return_flow=self.net.use_flow))
+            result = self.net(
+                batch, gt_idxes=supervision["first_stage_gt_idxes"])
+            gt_biases = utils.compute_gt_biases(
+                supervision.pop("flows0"), supervision.pop("coors1"),
+                result["first_stage_idxes"], self.net.reg_window_size)
+            supervision["gt_biases"] = gt_biases
+        elif self.net.type == "two_stage":
+            supervision.update(utils.create_first_stage_supervision(
+                batch, self.net.scales[0], return_flow=self.net.use_flow))
+            result = self.net(
+                batch, gt_idxes=supervision["first_stage_gt_idxes"])
+            supervision.update(utils.create_second_stage_supervision(
+                batch, self.net.scales, result["first_stage_idxes"],
+                self.net.reg_window_size))
+            gt_biases = utils.compute_gt_biases(
+                supervision.pop("flows0"), supervision.pop("coors1"),
+                result["second_stage_idxes"], self.net.reg_window_size)
+            supervision["gt_biases"] = gt_biases
+        else:
+            assert False
+
         loss = self.loss(
-            result["coarse_confidences"], supervision["gt_mask"],
-            result["fine_biases"], supervision["gt_biases"],
-            result["fine_stddevs"], flow0_to_1=result.get("flow0_to_1"),
-            flow1_to_0=result.get("flow1_to_0"),
-            gt_coor0_to_1=supervision.get("gt_coor0_to_1"),
-            gt_coor1_to_0=supervision.get("gt_coor1_to_0"),
-            mask0=batch.get("mask0"), mask1=batch.get("mask1"))
+            **result, **supervision, mask0=batch.get("mask0"),
+            mask1=batch.get("mask1"))
         return result, loss
 
     def training_step(
@@ -103,7 +116,7 @@ class MatchingModule(pl.LightningModule):
 
         for k, v in loss.pop("scalar").items():
             self.log("train_scalar/" + k, v)
-        if self.net.coarse_matching_type == "optimal_transport":
+        if self.net.coarse_matching.type == "optimal_transport":
             ot_bin_score = self.net.coarse_matching.ot_bin_score.detach().cpu()
             self.log("train_scalar/ot_bin_score", ot_bin_score)
 
@@ -238,7 +251,7 @@ class MatchingModule(pl.LightningModule):
             np.save(
                 self.hparams.dump_dir + "/test_result", gathered_output["dump"])
 
-        if self.trainer.global_step == 0:
+        if self.trainer.global_rank == 0:
             print(self.test_time_profiler.summary())
 
     def configure_optimizers(self) -> Dict[str, Any]:

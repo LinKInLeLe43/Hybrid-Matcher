@@ -29,8 +29,13 @@ class HybridMatcherNet(nn.Module):
 
         self.scales = backbone.scales
         self.use_flow = getattr(coarse_module, "use_flow", False)
-        self.coarse_matching_type = coarse_matching.type
-        self.window_size = fine_preprocess.window_size
+        self.type = fine_matching.type
+        self.cls_window_size = fine_matching.cls_window_size
+        self.reg_window_size = fine_matching.reg_window_size
+
+        if (self.cls_window_size is not None and
+            self.cls_window_size != self.scales[0] // self.scales[1]):
+            raise ValueError("")
 
     def _scale_points(
         self,
@@ -39,17 +44,18 @@ class HybridMatcherNet(nn.Module):
         scale1: Optional[torch.Tensor] = None
     ) -> None:
         points0 = self.scales[0] * result["points0"]
+        if "biases0" in result:
+            points0 += self.scales[1] * result["biases0"][:len(points0)]
         if scale0 is not None:
             points0 *= scale0[result["b_idxes"]]
+        result["points0"] = points0
 
         points1 = self.scales[0] * result["points1"]
-        biases = result["fine_biases"][:len(points0)].detach()
-        biases = self.scales[1] * (self.window_size // 2) * biases
+        if "biases1" in result:
+            points1 += self.scales[1] * result["biases1"][:len(points0)]
         if scale1 is not None:
             points1 *= scale1[result["b_idxes"]]
-            biases *= scale1[result["b_idxes"]]
-        points1 += biases
-        result["points0"], result["points1"] = points0, points1
+        result["points1"] = points1
 
     def forward(
         self,
@@ -116,7 +122,7 @@ class HybridMatcherNet(nn.Module):
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0 + [coarse_feature0],
             fine_features1 + [coarse_feature1], size0, size1,
-            result["fine_idxes"])
+            result["first_stage_idxes"])
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)

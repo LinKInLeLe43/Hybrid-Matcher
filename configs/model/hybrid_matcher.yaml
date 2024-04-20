@@ -3,8 +3,8 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
   backbone:
-    _target_: src.models.components.nets.hybrid_matcher.backbone.RepVgg82
-    block_counts: [2, 4, 14]
+    _target_: src.models.components.nets.hybrid_matcher.backbone.ResNetFpn82
+    initial_depth: 128
     layer_depths: [128, 196, 256]
   positional_encoding:
     _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
@@ -37,9 +37,13 @@ net:
   fine_preprocess:
     _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
     type: "fuse_all_before_crop"
-    window_size: 5
+    window_size: 4
     stride: 4
-    padding: 2
+    padding: 0
+    right_extra: 1
+#    window_size: 5
+#    stride: 4
+#    padding: 2
     layer_depths: ${model.net.backbone.layer_depths}
   fine_module:
     _target_: src.models.components.nets.hybrid_matcher.LoFTR
@@ -50,13 +54,27 @@ net:
     types: ["self", "cross"]
   fine_matching:
     _target_: src.models.components.nets.hybrid_matcher.FineMatching
+#    type: "one_stage"
+#    reg_window_size: ${model.net.fine_preprocess.window_size}
+#    reg_with_std: true
+    type: "two_stage"
+    cls_window_size: ${model.net.fine_preprocess.window_size}
+    cls_depth: 112
+    reg_window_size: 3
+    reg_with_std: false
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss
-  coarse_type: "${model.net.coarse_matching.type}"
-  coarse_sparse: ${model.net.coarse_matching.sparse}
+  type: "${model.net.fine_matching.type}"
+  first_stage_cls_sparse: ${model.net.coarse_matching.sparse}
+  first_stage_cls_loss_pos_weight: 1.0
+  first_stage_cls_loss_neg_weight: 1.0
+  second_stage_cls_sparse: ${model.net.coarse_matching.sparse}
+  second_stage_cls_loss_pos_weight: 1.0
+  second_stage_cls_loss_neg_weight: 1.0
+  reg_loss_weight: 1.0
   use_flow: ${model.net.coarse_module.use_flow}
-  flow_weight: 0.05
+  flow_loss_weight: 0.05
 
 optimizer: ???
 
