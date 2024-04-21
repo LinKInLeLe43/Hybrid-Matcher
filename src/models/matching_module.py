@@ -93,8 +93,7 @@ class MatchingModule(pl.LightningModule):
             result = self.net(
                 batch, gt_idxes=supervision["first_stage_gt_idxes"])
             supervision.update(utils.create_second_stage_supervision(
-                batch, self.net.scales, result["first_stage_idxes"],
-                self.net.reg_window_size))
+                batch, self.net.scales, result["first_stage_idxes"]))
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("flows0"), supervision.pop("coors1"),
                 result["second_stage_idxes"], self.net.reg_window_size)

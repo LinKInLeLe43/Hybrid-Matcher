@@ -124,8 +124,7 @@ def create_first_stage_supervision(
 def create_second_stage_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    window_size: int
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 ) -> Dict[str, Any]:
     device = batch["image0"].device
     stride = scales[0] // scales[1]

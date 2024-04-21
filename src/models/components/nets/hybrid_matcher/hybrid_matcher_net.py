@@ -27,15 +27,12 @@ class HybridMatcherNet(nn.Module):
         self.fine_module = fine_module
         self.fine_matching = fine_matching
 
-        self.scales = backbone.scales
+        self.scales = (backbone.scales[0], backbone.scales[1] //
+                       fine_preprocess.scale_before_crop)
         self.use_flow = getattr(coarse_module, "use_flow", False)
         self.type = fine_matching.type
         self.cls_window_size = fine_matching.cls_window_size
         self.reg_window_size = fine_matching.reg_window_size
-
-        if (self.cls_window_size is not None and
-            self.cls_window_size != self.scales[0] // self.scales[1]):
-            raise ValueError("")
 
     def _scale_points(
         self,

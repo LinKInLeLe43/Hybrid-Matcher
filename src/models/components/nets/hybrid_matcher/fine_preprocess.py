@@ -37,6 +37,7 @@ class FinePreprocess(nn.Module):
         stride: int,
         padding: int,
         right_extra: int = 0,
+        scale_before_crop: int = 1,
         layer_depths: Optional[List[int]] = None
     ) -> None:
         super().__init__()
@@ -45,6 +46,7 @@ class FinePreprocess(nn.Module):
         self.stride = stride
         self.padding = padding
         self.right_extra = right_extra
+        self.scale_before_crop = scale_before_crop
 
         if type == "crop_fine_only":
             pass
@@ -82,6 +84,13 @@ class FinePreprocess(nn.Module):
         fine_feature1: torch.Tensor,
         idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        scale = self.scale_before_crop
+        if scale > 1:
+            fine_feature0 = F.interpolate(
+                fine_feature0, scale_factor=scale, mode="bilinear")
+            fine_feature1 = F.interpolate(
+                fine_feature1, scale_factor=scale, mode="bilinear")
+
         w, s, p = self.window_size, self.stride, self.padding
         e = self.right_extra
         fine_feature0 = _crop_windows(fine_feature0, w, s, p)

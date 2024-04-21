@@ -37,10 +37,11 @@ net:
   fine_preprocess:
     _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
     type: "fuse_all_before_crop"
-    window_size: 4
-    stride: 4
+    window_size: 8
+    stride: 8
     padding: 0
     right_extra: 1
+    scale_before_crop: 2
 #    window_size: 5
 #    stride: 4
 #    padding: 2
@@ -62,6 +63,7 @@ net:
     cls_depth: 112
     reg_window_size: 3
     reg_with_std: false
+    reg_temperature: 10.0
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss

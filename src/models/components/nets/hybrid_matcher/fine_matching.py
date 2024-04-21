@@ -141,7 +141,6 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         feature0: torch.Tensor,
         feature1: torch.Tensor
     ) -> Dict[str, Any]:
-        device = feature0.device
         m, w0w0, c = feature0.shape
         _, w1w1, _ = feature1.shape
 
