@@ -107,14 +107,17 @@ class HybridMatcherNet(nn.Module):
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
             (coarse_feature0, coarse_feature1, centers0, centers1))
 
-        coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
+        (coarse_feature0, coarse_feature1, matchability0, matchability1,
+         flow0, flow1) = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
             pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
             center0_mask=center0_mask, center1_mask=center1_mask)
 
         result = self.coarse_matching(
-            coarse_feature0, coarse_feature1, size0, size1, flow0=flow0,
-            flow1=flow1, mask0=mask0, mask1=mask1, gt_idxes=gt_idxes)
+            coarse_feature0, coarse_feature1, size0, size1,
+            matchability0=matchability0, matchability1=matchability1,
+            flow0=flow0, flow1=flow1, mask0=mask0, mask1=mask1,
+            gt_idxes=gt_idxes)
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0 + [coarse_feature0],

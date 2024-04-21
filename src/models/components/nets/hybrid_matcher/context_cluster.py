@@ -520,6 +520,7 @@ class GlobalCoC(nn.Module):
         heads_count: int,
         types: List[str],
         bias: bool = True,
+        use_matchability: bool = False,
         use_flow: bool = False,
         flow_depth: Optional[int] = None,
         use_layer_scale: bool = False,
@@ -528,6 +529,7 @@ class GlobalCoC(nn.Module):
     ) -> None:
         super().__init__()
         self.types = types
+        self.use_matchability = use_matchability
         self.use_flow = use_flow
 
         if use_flow:
@@ -553,6 +555,13 @@ class GlobalCoC(nn.Module):
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
 
+        matchability_decoder = None
+        if use_matchability:
+            matchability_decoder = Mlp(
+                in_depth, in_depth // 2, 1, bias=bias, dropout=dropout)
+        self.matchability_decoders = nn.ModuleList(
+            [copy.deepcopy(matchability_decoder) for _ in types])
+
         # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -575,8 +584,11 @@ class GlobalCoC(nn.Module):
         x1_mask: Optional[torch.Tensor] = None,
         center0_mask: Optional[torch.Tensor] = None,
         center1_mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
+        matchability0 = matchability1 = None
+        if self.use_matchability:
+            matchability0, matchability1 = [], []
         flow0 = flow1 = None
         if self.use_flow:
             if pos0 is None or pos1 is None:
@@ -590,8 +602,9 @@ class GlobalCoC(nn.Module):
         #     mask01 = x0_mask[:, :, None] & center1_mask[:, None, :]
         #     mask10 = x1_mask[:, :, None] & center0_mask[:, None, :]
 
-        for merge_block, global_block, type in zip(
-            self.merge_blocks, self.global_blocks, self.types):
+        for merge_block, global_block, matchability_decoder, type in zip(
+            self.merge_blocks, self.global_blocks, self.matchability_decoders,
+            self.types):
             x0, center0 = merge_block(x0, center0, size0)
             x1, center1 = merge_block(x1, center1, size1)
             if type == "self":
@@ -611,6 +624,13 @@ class GlobalCoC(nn.Module):
                 # x1 = local_block(x1, mask=x1_mask)
                 # x0 = x0.flatten(start_dim=2).transpose(1, 2)
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
+
+                if self.use_matchability:
+                    matchability0.append(matchability_decoder(x0).sigmoid())
+                    matchability1.append(matchability_decoder(x1).sigmoid())
             else:
                 raise ValueError("")
-        return x0, x1, flow0, flow1
+        if self.use_matchability:
+            matchability0 = torch.cat(matchability0, dim=2).mean(dim=2)
+            matchability1 = torch.cat(matchability1, dim=2).mean(dim=2)
+        return x0, x1, matchability0, matchability1, flow0, flow1

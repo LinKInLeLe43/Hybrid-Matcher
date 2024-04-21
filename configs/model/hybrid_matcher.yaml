@@ -23,12 +23,14 @@ net:
     hidden_depth: 256
     heads_count: 8
     types: ["cross", "cross", "cross", "cross"]
+    use_matchability: true
     use_flow: true
     flow_depth: 128
   coarse_matching:
     _target_: src.models.components.nets.hybrid_matcher.CoarseMatching
     type: ???
     sparse: ???
+    use_matchability: ${model.net.coarse_module.use_matchability}
     use_flow: ${model.net.coarse_module.use_flow}
     flow_decoder:
       _target_: src.models.components.nets.hybrid_matcher.FlowDecoder

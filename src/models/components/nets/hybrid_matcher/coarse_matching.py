@@ -12,6 +12,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         self,
         type: str,
         sparse: bool,
+        use_matchability: bool = False,
         use_flow: bool = False,
         flow_decoder: Optional[nn.Module] = None,
         threshold: float = 0.2,
@@ -26,6 +27,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         super().__init__()
         self.type = type
         self.sparse = sparse
+        self.use_matchability = use_matchability
         self.use_flow = use_flow
         self.threshold = threshold
         self.margin_remove = margin_remove
@@ -186,6 +188,8 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         feature1: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
+        matchability0: Optional[torch.Tensor] = None,
+        matchability1: Optional[torch.Tensor] = None,
         flow0: Optional[torch.Tensor] = None,
         flow1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
@@ -208,10 +212,19 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             mask = mask0[:, :, None] & mask1[:, None, :]
             similarities.masked_fill_(~mask, -1e9)
 
+        confidences_with_bin = None
         if self.type == "dual_softmax":
             idxes0_to_1_confidences = F.softmax(similarities, dim=2)
             idxes1_to_0_confidences = F.softmax(similarities, dim=1)
             confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
+            if self.training and self.use_matchability:
+                if matchability0 is None or matchability1 is None:
+                    raise ValueError("")
+                confidences = (matchability0[:, :, None] *
+                               matchability1[:, None, :] * confidences)
+                confidences_with_bin = F.pad(confidences, [0, 1, 0, 1])
+                confidences_with_bin[:, :-1, -1] = 1 - matchability0
+                confidences_with_bin[:, -1, :-1] = 1 - matchability1
         elif self.type == "optimal_transport":
             confidences_with_bin = optimal_transport.log_optimal_transport(
                 similarities, self.ot_bin_score, self.ot_its_count).exp()
@@ -227,7 +240,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         coarse_matching = self._create_coarse_matching(
             confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
-        if self.type == "optimal_transport" and self.sparse:
+        if confidences_with_bin is not None and self.sparse:
             coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
             coarse_matching["first_stage_cls_heatmap"] = confidences
