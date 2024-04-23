@@ -38,6 +38,7 @@ class FinePreprocess(nn.Module):
         padding: int,
         right_extra: int = 0,
         scale_before_crop: int = 1,
+        norm_before_fuse: bool = False,
         layer_depths: Optional[List[int]] = None
     ) -> None:
         super().__init__()
@@ -46,6 +47,7 @@ class FinePreprocess(nn.Module):
         self.stride = stride
         self.padding = padding
         self.right_extra = right_extra
+        self.norm_before_fuse = norm_before_fuse
         self.scale_before_crop = scale_before_crop
 
         if type == "crop_fine_only":
@@ -178,12 +180,17 @@ class FinePreprocess(nn.Module):
         device = features0[0].device
         b_idxes, i_idxes, j_idxes = idxes
         w, e = self.window_size, self.right_extra
-        _, c, _, _ = features0[0].shape
         m = len(b_idxes)
         if m == 0:
+            c = features0[0].shape[1]
             fine_feature0 = torch.empty((0, w ** 2, c), device=device)
             fine_feature1 = torch.empty((0, (w + 2 * e) ** 2, c), device=device)
             return fine_feature0, fine_feature1
+
+        if self.norm_before_fuse:
+            c = features0[-1].shape[2]
+            features0[-1] = features0[-1] / c ** 0.5
+            features1[-1] = features1[-1] / c ** 0.5
 
         if self.type == "crop_fine_only":
             fine_feature0, fine_feature1 = self._crop_fine_only(
