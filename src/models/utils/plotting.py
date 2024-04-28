@@ -34,8 +34,8 @@ def plot_matching_figure(
     plt.tight_layout(pad=1)
 
     if key_points0 is not None:
-        axes[0].scatter(key_points0[:, 0], key_points0[:, 1], s=2, c="w")
-        axes[1].scatter(key_points1[:, 0], key_points1[:, 1], s=2, c="w")
+        axes[0].scatter(key_points0[:, 0], key_points0[:, 1], s=0.5, c="w")
+        axes[1].scatter(key_points1[:, 0], key_points1[:, 1], s=0.5, c="w")
 
     n = len(matching_points0)
     if n != 0:
@@ -45,18 +45,18 @@ def plot_matching_figure(
         axes[1].scatter(
             matching_points1[:, 0], matching_points1[:, 1], s=4, c=colors)
 
-        inv_figure_trans = figure.transFigure.inverted()
-        figure_points0 = axes[0].transData.transform(matching_points0)
-        figure_points1 = axes[1].transData.transform(matching_points1)
-        figure_points0 = inv_figure_trans.transform(figure_points0)
-        figure_points1 = inv_figure_trans.transform(figure_points1)
-        for i in range(n):
-            x_coors = [figure_points0[i, 0], figure_points1[i, 0]]
-            y_coors = [figure_points0[i, 1], figure_points1[i, 1]]
-            line = lines.Line2D(
-                x_coors, y_coors, lw=1, c=colors[i],
-                transform=figure.transFigure)
-            figure.lines.append(line)
+        # inv_figure_trans = figure.transFigure.inverted()
+        # figure_points0 = axes[0].transData.transform(matching_points0)
+        # figure_points1 = axes[1].transData.transform(matching_points1)
+        # figure_points0 = inv_figure_trans.transform(figure_points0)
+        # figure_points1 = inv_figure_trans.transform(figure_points1)
+        # for i in range(n):
+        #     x_coors = [figure_points0[i, 0], figure_points1[i, 0]]
+        #     y_coors = [figure_points0[i, 1], figure_points1[i, 1]]
+        #     line = lines.Line2D(
+        #         x_coors, y_coors, lw=1, c=colors[i],
+        #         transform=figure.transFigure)
+        #     figure.lines.append(line)
 
     if text is not None:
         color = "k" if image0[:100, :200].mean() > 180 else "w"
@@ -100,9 +100,9 @@ def plot_evaluation_figures(
         mask = result["b_idxes"] == b
         points0 = result["points0"][mask].cpu().numpy()
         points1 = result["points1"][mask].cpu().numpy()
-        if batch.get("scale0") is not None:
-            points0 /= batch["scale0"][b].cpu().numpy()
-            points1 /= batch["scale1"][b].cpu().numpy()
+        # if batch.get("scale0") is not None:
+        #     points0 /= batch["scale0"][b].cpu().numpy()
+        #     points1 /= batch["scale1"][b].cpu().numpy()
 
         epipolar_errors = error["epipolar_errors_per_batch"][b]
         mask = epipolar_errors < epipolar_threshold

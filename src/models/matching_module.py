@@ -3,6 +3,7 @@ import pathlib
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import kornia as K
 import pytorch_lightning as pl
 from pytorch_lightning import profilers
 import torch
@@ -187,6 +188,7 @@ class MatchingModule(pl.LightningModule):
         for m in self.net.modules():
             if hasattr(m, "switch_to_deploy"):
                 m.switch_to_deploy()
+        self.detector = utils.SuperPoint()
 
     def test_step(
         self,
@@ -206,6 +208,30 @@ class MatchingModule(pl.LightningModule):
             error = utils.compute_error(
                 batch, result, advanced=self.hparams.test_advanced_metrics,
                 coarse_scale=self.net.scales[0])
+
+        self.detector.to(batch["image0"].device)
+        device = batch["image0"].device
+        grid = K.create_meshgrid(16, 16, normalized_coordinates=False)
+        biases = (grid - 16 // 2 + 0.5).reshape(-1, 2)
+        n, _, h0, w0 = batch["image0"].shape
+        _, _, h1, w1 = batch["image1"].shape
+        h0, w0, h1, w1 = map(lambda x: x // 16, (h0, w0, h1, w1))
+        coors0 = K.create_meshgrid(
+            h0, w0, normalized_coordinates=False, device=device)
+        idxes0 = self.detector(batch["image0"], 16).argmax(dim=2)
+        biases0 = biases.index_select(0, idxes0)
+        result["points0"] = coors0 + biases0
+        coors1 = K.create_meshgrid(
+            h1, w1, normalized_coordinates=False, device=device)
+        idxes1 = self.detector(batch["image1"], 16).argmax(dim=2)
+        biases1 = biases.index_select(0, idxes1)
+        result["points1"] = coors1 + biases1
+
+        if self.trainer.global_rank == 0:
+            figures = utils.plot_evaluation_figures(
+                batch, result, error, self.hparams.epipolar_thresholds[0])
+            self.logger.experiment.add_figure(
+                "train_plot", figures, global_step=self.global_step)
 
         dump = {}
         if self.hparams.dump_dir is not None:
