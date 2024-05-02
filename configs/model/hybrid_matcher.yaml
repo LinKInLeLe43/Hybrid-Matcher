@@ -3,9 +3,10 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
   backbone:
-    _target_: src.models.components.nets.hybrid_matcher.backbone.ResNetFpn82
-    initial_depth: 128
-    layer_depths: [128, 196, 256]
+    _target_: src.models.components.nets.hybrid_matcher.backbone.FastViT82
+    layers: [2, 2, 2]
+    layer_depths: [64, 128, 256]
+    mlp_ratios: [2, 2, 2]
   positional_encoding:
     _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
     depth: ${model.net.backbone.layer_depths.2}
@@ -62,7 +63,7 @@ net:
 #    reg_with_std: true
     type: "two_stage"
     cls_window_size: ${model.net.fine_preprocess.window_size}
-    cls_depth: 112
+    cls_depth: 56
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0
