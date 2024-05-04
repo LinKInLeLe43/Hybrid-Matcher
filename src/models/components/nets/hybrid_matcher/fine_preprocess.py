@@ -73,6 +73,24 @@ class FinePreprocess(nn.Module):
                         nn.LeakyReLU(inplace=True),
                         _conv_3x3(layer_depths[i + 1], layer_depths[i])))
             self.ups.append(_conv_1x1(layer_depths[-1], layer_depths[-1]))
+        elif type == "fuse_all_with_shuffle_before_crop":
+            self.ups = nn.ModuleList()
+            self.downs = nn.ModuleList()
+            for i in range(len(layer_depths[:-1])):
+                if layer_depths[i] != layer_depths[i + 1] // 2:
+                    raise ValueError("")
+
+                self.ups.append(
+                    _conv_1x1(layer_depths[i], layer_depths[i] // 2))
+                self.downs.append(
+                    nn.Sequential(
+                        _conv_3x3(
+                            2 * layer_depths[i + 1], 2 * layer_depths[i + 1]),
+                        nn.BatchNorm2d(2 * layer_depths[i + 1]),
+                        nn.LeakyReLU(inplace=True),
+                        _conv_3x3(
+                            2 * layer_depths[i + 1], 2 * layer_depths[i + 1])))
+            self.ups.append(_conv_1x1(layer_depths[-1], layer_depths[-1]))
         else:
             raise ValueError("")
 
@@ -143,9 +161,17 @@ class FinePreprocess(nn.Module):
         features[-1] = self.ups[-1](features[-1].contiguous())
         for i in reversed(range(len(features[:-1]))):
             features[i] = self.ups[i](features[i])
-            features[i] += F.interpolate(
-                features[i + 1], scale_factor=2.0, mode="bilinear")
+            if self.type == "fuse_all_before_crop":
+                features[i] += F.interpolate(
+                    features[i + 1], scale_factor=2.0, mode="bilinear")
+            elif self.type == "fuse_all_with_shuffle_before_crop":
+                features[i] = F.pixel_unshuffle(features[i], 2)
+                features[i] = torch.cat([features[i], features[i + 1]], dim=1)
+            else:
+                assert False
             features[i] = self.downs[i](features[i])
+            if self.type == "fuse_all_with_shuffle_before_crop":
+                features[i] = F.pixel_shuffle(features[i], 2)
         return features[0]
 
     def _fuse_all_before_crop(
@@ -199,6 +225,9 @@ class FinePreprocess(nn.Module):
             fine_feature0, fine_feature1 = self._fuse_coarse_after_crop_fine(
                 features0[0], features1[0], features0[-1], features1[-1], idxes)
         elif self.type == "fuse_all_before_crop":
+            fine_feature0, fine_feature1 = self._fuse_all_before_crop(
+                features0, features1, size0, size1, idxes)
+        elif self.type == "fuse_all_with_shuffle_before_crop":
             fine_feature0, fine_feature1 = self._fuse_all_before_crop(
                 features0, features1, size0, size1, idxes)
         else:
