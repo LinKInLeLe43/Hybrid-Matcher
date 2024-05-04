@@ -4,12 +4,12 @@ net:
   _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
   backbone:
     _target_: src.models.components.nets.hybrid_matcher.backbone.FastViT82
-    layers: [2, 2, 2]
-    layer_depths: [64, 128, 256]
-    mlp_ratios: [2, 2, 2]
+    layers: [2, 2, 2, 0]
+    layer_depths: [64, 64, 128, 256]
+    mlp_ratios: [2, 2, 2, 2]
   positional_encoding:
     _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
+    depth: ${model.net.backbone.layer_depths.3}
   local_coc:
     _target_: src.models.components.nets.hybrid_matcher.LocalCoC
     blocks_counts: [2, 2, 2]
@@ -44,7 +44,6 @@ net:
     stride: 8
     padding: 0
     right_extra: 1
-    scale_before_crop: 2
 #    window_size: 5
 #    stride: 4
 #    padding: 2

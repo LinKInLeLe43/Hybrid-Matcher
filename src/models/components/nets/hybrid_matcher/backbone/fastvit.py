@@ -25,7 +25,7 @@ def convolutional_stem(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=3,
-            stride=2,
+            stride=1,
             padding=1,
             groups=1,
             inference_mode=inference_mode,
@@ -382,7 +382,7 @@ class FastViT82(nn.Module):
         inference_mode=False,
     ) -> None:
         super().__init__()
-        self.scales = (8, 2)
+        self.scales = (8, 1)
 
         if pos_embs is None:
             pos_embs = [None] * len(layers)
@@ -417,21 +417,21 @@ class FastViT82(nn.Module):
                 break
 
             # Patch merging/downsampling between stages.
-            if layer_depths[i] != layer_depths[i + 1]:
-                network.append(
-                    PatchEmbed(
-                        patch_size=down_patch_size,
-                        stride=down_stride,
-                        in_channels=layer_depths[i],
-                        embed_dim=layer_depths[i + 1],
-                        inference_mode=inference_mode,
-                    )
+            # if layer_depths[i] != layer_depths[i + 1]:
+            network.append(
+                PatchEmbed(
+                    patch_size=down_patch_size,
+                    stride=down_stride,
+                    in_channels=layer_depths[i],
+                    embed_dim=layer_depths[i + 1],
+                    inference_mode=inference_mode,
                 )
+            )
 
         self.network = nn.ModuleList(network)
 
         # add a norm layer for each output
-        self.out_indices = [0, 2, 4]
+        self.out_indices = [0, 2, 4, 6]
         for i_emb, i_layer in enumerate(self.out_indices):
             if i_emb == 0:
                 """For RetinaNet, `start_level=1`. The first norm layer will not used."""
@@ -468,4 +468,4 @@ class FastViT82(nn.Module):
         x = self.forward_embeddings(x)
         # through backbone
         x = self.forward_tokens(x)
-        return [x[0], x[1]], x[2]
+        return x[:3], x[3]
