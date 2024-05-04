@@ -187,6 +187,7 @@ class GlobalCluster(nn.Module):
     def __init__(
         self,
         in_depth: int,
+        center_depth: int,
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
@@ -197,7 +198,7 @@ class GlobalCluster(nn.Module):
         self.use_efficient = use_efficient
 
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.proj1 = nn.Linear(center_depth, 2 * hidden_depth, bias=bias)
         self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
@@ -304,6 +305,7 @@ class GlobalClusterBlock(nn.Module):
     def __init__(
         self,
         in_depth: int,
+        center_depth: int,
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
@@ -329,7 +331,7 @@ class GlobalClusterBlock(nn.Module):
                 layer_scale_value * torch.ones((out_depth,)))
 
         self.cluster = GlobalCluster(
-            in_depth, hidden_depth, heads_count, bias=bias)
+            in_depth, center_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
         self.mlp3x3 = Mlp3x3(
@@ -542,8 +544,9 @@ class GlobalCoC(nn.Module):
             [copy.deepcopy(merge_block) for _ in types])
 
         global_block = GlobalClusterBlock(
-            in_depth, hidden_depth, heads_count, bias=bias, use_flow=use_flow,
-            flow_depth=flow_depth, use_layer_scale=use_layer_scale,
+            in_depth, in_depth, hidden_depth, heads_count, bias=bias,
+            use_flow=use_flow, flow_depth=flow_depth,
+            use_layer_scale=use_layer_scale,
             layer_scale_value=layer_scale_value, dropout=dropout)
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in types])

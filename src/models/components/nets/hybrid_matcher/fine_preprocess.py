@@ -1,9 +1,12 @@
+import copy
 from typing import List, Optional, Tuple
 
 import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+from src.models.components.nets.hybrid_matcher.context_cluster import GlobalClusterBlock
 
 
 def _conv_1x1(in_depth: int, out_depth: int, stride: int = 1) -> nn.Module:
@@ -73,6 +76,25 @@ class FinePreprocess(nn.Module):
                         nn.LeakyReLU(inplace=True),
                         _conv_3x3(layer_depths[i + 1], layer_depths[i])))
             self.ups.append(_conv_1x1(layer_depths[-1], layer_depths[-1]))
+        elif type == "fuse_by_coc":
+            self.ups = nn.ModuleList()
+            self.downs = nn.ModuleList()
+            self.ups.append(_conv_1x1(layer_depths[0], layer_depths[0]))
+            self.downs.append(nn.Identity())
+            for i in range(1, len(layer_depths[:-1])):
+                self.ups.append(_conv_1x1(layer_depths[i], layer_depths[i + 1]))
+                self.downs.append(
+                    nn.Sequential(
+                        _conv_3x3(layer_depths[i + 1], layer_depths[i + 1]),
+                        nn.BatchNorm2d(layer_depths[i + 1]),
+                        nn.LeakyReLU(inplace=True),
+                        _conv_3x3(layer_depths[i + 1], layer_depths[i + 1])))
+            self.ups.append(_conv_1x1(layer_depths[-1], layer_depths[-1]))
+
+            global_block = GlobalClusterBlock(
+                layer_depths[0], layer_depths[-1], layer_depths[-1], 8)
+            self.coc_blocks = nn.ModuleList(
+                [copy.deepcopy(global_block) for _ in range(2)])
         else:
             raise ValueError("")
 
@@ -169,6 +191,58 @@ class FinePreprocess(nn.Module):
             fine_feature0, fine_feature1, idxes)
         return fine_feature0, fine_feature1
 
+    def _fuse_by_coc_impl(
+        self,
+        features: List[torch.Tensor],
+        size: torch.Size
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        features[-1] = features[-1].transpose(1, 2).unflatten(2, size)
+        features[-1] = self.ups[-1](features[-1].contiguous())
+        for i in reversed(range(1, len(features[:-1]))):
+            features[i] = self.ups[i](features[i])
+            features[i] += F.interpolate(
+                features[i + 1], scale_factor=2.0, mode="bilinear")
+            features[i] = self.downs[i](features[i])
+        features[0] = self.ups[0](features[0])
+        return features[0], features[1]
+
+    def _fuse_by_coc(
+        self,
+        features0: List[torch.Tensor],
+        features1: List[torch.Tensor],
+        size0: torch.Size,
+        size1: torch.Size,
+        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        b_idxes, i_idxes, j_idxes = idxes
+
+        if size0 == size1:
+            features = []
+            for feature0, feature1 in zip(features0, features1):
+                features.append(torch.cat([feature0, feature1]))
+            fine_feature, fine_center = self._fuse_by_coc_impl(features, size0)
+            fine_feature0, fine_feature1 = fine_feature.chunk(2)
+            fine_center = _crop_windows(fine_center, 2, 2, 0)
+            fine_center0, fine_center1 = fine_center.chunk(2)
+        else:
+            fine_feature0, fine_center0 = self._fuse_by_coc_impl(
+                features0, size0)
+            fine_feature1, fine_center1 = self._fuse_by_coc_impl(
+                features1, size1)
+            fine_center0 = _crop_windows(fine_center0, 2, 2, 0)
+            fine_center1 = _crop_windows(fine_center1, 2, 2, 0)
+        fine_feature0, fine_feature1 = self._crop_fine_only(
+            fine_feature0, fine_feature1, idxes)
+        for block in self.coc_blocks:
+            fine_feature0, _ = block(
+                fine_feature0, fine_center0[b_idxes, i_idxes],
+                (self.window_size, self.window_size))
+            fine_feature1, _ = block(
+                fine_feature1, fine_center1[b_idxes, j_idxes],
+                (self.window_size + 2 * self.right_extra,
+                 self.window_size + 2 * self.right_extra))
+        return fine_feature0, fine_feature1
+
     def forward(
         self,
         features0: List[torch.Tensor],
@@ -200,6 +274,9 @@ class FinePreprocess(nn.Module):
                 features0[0], features1[0], features0[-1], features1[-1], idxes)
         elif self.type == "fuse_all_before_crop":
             fine_feature0, fine_feature1 = self._fuse_all_before_crop(
+                features0, features1, size0, size1, idxes)
+        elif self.type == "fuse_by_coc":
+            fine_feature0, fine_feature1 = self._fuse_by_coc(
                 features0, features1, size0, size1, idxes)
         else:
             assert False
