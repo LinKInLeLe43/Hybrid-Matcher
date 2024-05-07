@@ -39,6 +39,7 @@ class FinePreprocess(nn.Module):
         right_extra: int = 0,
         scale_before_crop: int = 1,
         norm_before_fuse: bool = False,
+        positional_encoding: Optional[None] = None,
         layer_depths: Optional[List[int]] = None
     ) -> None:
         super().__init__()
@@ -49,6 +50,7 @@ class FinePreprocess(nn.Module):
         self.right_extra = right_extra
         self.norm_before_fuse = norm_before_fuse
         self.scale_before_crop = scale_before_crop
+        self.positional_encoding = positional_encoding
 
         if type == "crop_fine_only":
             pass
@@ -203,4 +205,13 @@ class FinePreprocess(nn.Module):
                 features0, features1, size0, size1, idxes)
         else:
             assert False
+
+        if self.positional_encoding is not None:
+            fine_feature0 = fine_feature0.transpose(1, 2).unflatten(2, (w, w))
+            fine_feature1 = fine_feature1.transpose(1, 2).unflatten(
+                2, (w + 2 * e, w + 2 * e))
+            fine_feature0 = self.positional_encoding(fine_feature0)
+            fine_feature1 = self.positional_encoding(fine_feature1)
+            fine_feature0 = fine_feature0.flatten(start_dim=2).transpose(1, 2)
+            fine_feature1 = fine_feature1.flatten(start_dim=2).transpose(1, 2)
         return fine_feature0, fine_feature1

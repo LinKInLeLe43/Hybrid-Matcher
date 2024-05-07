@@ -101,3 +101,50 @@ class LearnableFourierPositionalEncoding(nn.Module):
         positional_encoding = self.get(x)
         out = x + positional_encoding
         return out, positional_encoding
+
+
+class RepConditionalPositionalEncoding(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        kernel_size: int = 3,
+        inference_mode: bool = False,
+    ) -> None:
+        super().__init__()
+
+        if inference_mode:
+            self.reparam_conv = nn.Conv2d(
+                depth, depth, kernel_size, padding=kernel_size // 2,
+                groups=depth)
+        else:
+            self.pe = nn.Conv2d(
+                depth, depth, kernel_size, padding=kernel_size // 2,
+                groups=depth)
+
+    def reparameterize(self) -> None:
+        if hasattr(self, "reparam_conv"):
+            return
+
+        pe = self.pe
+        depth_per_group = pe.in_channels // pe.groups
+        id_tensor = torch.zeros(
+            (pe.in_channels, depth_per_group, pe.kernel_size[0],
+             pe.kernel_size[1]), dtype=pe.weight.dtype, device=pe.weight.device)
+        id_tensor[torch.arange(pe.in_channels),
+                  torch.arange(pe.in_channels) % depth_per_group,
+                  pe.kernel_size[0] // 2, pe.kernel_size[1] // 2] = 1.0
+
+        self.reparam_conv = nn.Conv2d(
+            pe.in_channels, pe.out_channels, pe.kernel_size, padding=pe.padding,
+            groups=pe.groups)
+        self.reparam_conv.weight.data = pe.weight + id_tensor
+        self.reparam_conv.bias.data = pe.bias
+
+        del self.pe
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if hasattr(self, "reparam_conv"):
+            x = self.reparam_conv(x)
+        else:
+            x = x + self.pe(x)
+        return x

@@ -8,4 +8,5 @@ from .flow_decoder import FlowDecoder
 from .hybrid_matcher_net import HybridMatcherNet
 from .positional_encoding import SinePositionalEncoding
 from .positional_encoding import LearnableFourierPositionalEncoding
+from .positional_encoding import RepConditionalPositionalEncoding
 from .transformer import LoFTR

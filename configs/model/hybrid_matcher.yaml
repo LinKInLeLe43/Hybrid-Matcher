@@ -44,6 +44,9 @@ net:
     padding: 0
     right_extra: 1
     scale_before_crop: 2
+    positional_encoding:
+      _target_: src.models.components.nets.hybrid_matcher.RepConditionalPositionalEncoding
+      depth: ${model.net.backbone.layer_depths.0}
 #    window_size: 5
 #    stride: 4
 #    padding: 2
