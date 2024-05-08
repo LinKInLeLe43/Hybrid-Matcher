@@ -24,6 +24,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     def __init__(
         self,
         type: str,
+        use_detector: bool = False,
         cls_depth: Optional[int] = None,
         cls_window_size: Optional[int] = None,
         cls_temperature: int = 1.0,
@@ -33,6 +34,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     ) -> None:
         super().__init__()
         self.type = type
+        self.use_detector = use_detector
         self.cls_depth = None
         self.cls_window_size = None
         self.cls_temperature = cls_temperature
@@ -72,7 +74,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     def _compute_cls_biases(
         self,
         feature0: torch.Tensor,
-        feature1: torch.Tensor
+        feature1: torch.Tensor,
+        self_heatmap0: Optional[torch.Tensor] = None,
+        self_heatmap1: Optional[torch.Tensor] = None
     ) -> Dict[str, Any]:
         device = feature0.device
         m, ww, c = feature0.shape
@@ -90,6 +94,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
 
         similarities = torch.einsum("mlc,msc->mls", feature0, feature1) / c
         similarities /= self.cls_temperature
+        if self.use_detector:
+            similarities = (self_heatmap0[:, :, None] *
+                            self_heatmap1[:, None, :] * similarities)
         heatmap = (F.softmax(similarities, dim=1) *
                    F.softmax(similarities, dim=2))
 
@@ -139,7 +146,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     def forward(
         self,
         feature0: torch.Tensor,
-        feature1: torch.Tensor
+        feature1: torch.Tensor,
+        self_heatmap0: Optional[torch.Tensor] = None,
+        self_heatmap1: Optional[torch.Tensor] = None
     ) -> Dict[str, Any]:
         m, w0w0, c = feature0.shape
         _, w1w1, _ = feature1.shape
@@ -155,6 +164,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             biases1 = reg_w // 2 * result["reg_biases"].detach()
             result["biases1"] = biases1
         elif self.type == "two_stage":
+            if self.use_detector:
+                if self_heatmap0 is None or self_heatmap1 is None:
+                    raise ValueError("")
             cls_w, reg_w = self.cls_window_size, self.reg_window_size
             w1 = cls_w + 2 * (reg_w // 2)
             if w0w0 != cls_w ** 2 or w1w1 != w1 ** 2:
@@ -166,7 +178,8 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
 
             result = {}
             result.update(self._compute_cls_biases(
-                cls_feature0, cls_feature1[:, self.cls_mask1, :]))
+                cls_feature0, cls_feature1[:, self.cls_mask1, :],
+                self_heatmap0=self_heatmap0, self_heatmap1=self_heatmap1))
 
             m_idxes, i_idxes, j_idxes = result["second_stage_idxes"]
             reg_feature0 = reg_feature0[m_idxes, i_idxes]

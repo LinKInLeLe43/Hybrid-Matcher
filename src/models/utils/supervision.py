@@ -1,8 +1,9 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import einops
 import kornia as K
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 
@@ -13,7 +14,7 @@ def _warp_point(
     K1: torch.Tensor,
     T0_to_1: torch.Tensor
 ) -> torch.Tensor:
-    image_grid0 = image_point0.round().long()
+    image_grid0 = (image_point0 - 0.5).round().long()
     image_depth0 = torch.stack(
         [depth0[b, grid0[:, 1], grid0[:, 0]]
          for b, grid0 in enumerate(image_grid0)])[:, :, None]
@@ -56,10 +57,9 @@ def compute_gt_biases(
 
 
 @torch.no_grad()
-def create_first_stage_supervision(
+def create_first_stage_supervision(  # TODO: Note that only left top points selectd, so no offset is needed
     batch: Dict[str, Any],
     scale: int,
-    use_offset: bool = False,  # TODO: whether need actually
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -79,17 +79,16 @@ def create_first_stage_supervision(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.reshape(1, -1, 2).repeat(n, 1, 1)
     coors1 = coors1.reshape(1, -1, 2).repeat(n, 1, 1)
-    offset = 0.5 if use_offset else 0.0
-    points0 = scale0 * (coors0 + offset)
-    points1 = scale1 * (coors1 + offset)
+    points0 = scale0 * coors0
+    points1 = scale1 * coors1
     if mask0 is not None:
         points0[~mask0], points1[~mask1] = 0.0, 0.0
     points0_to_1 = _warp_point(
         points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(
         points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
-    flows0 = coors0_to_1 = (points0_to_1 / scale1) - offset
-    flows1 = coors1_to_0 = (points1_to_0 / scale0) - offset
+    flows0 = coors0_to_1 = points0_to_1 / scale1
+    flows1 = coors1_to_0 = points1_to_0 / scale0
 
     coors0_to_1 = coors0_to_1.round().long()
     coors1_to_0 = coors1_to_0.round().long()
@@ -124,7 +123,8 @@ def create_first_stage_supervision(
 def create_second_stage_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    detector: Optional[nn.Module] = None
 ) -> Dict[str, Any]:
     device = batch["image0"].device
     stride = scales[0] // scales[1]
@@ -159,14 +159,19 @@ def create_second_stage_supervision(
     coors1 = _crop_windows(coors1, stride, stride, 0)[b_idxes, j_idxes]
     idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
     idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
-    points0 = scale0 * (coors0 + 0.5)
-    points1 = scale1 * (coors1 + 0.5)
+    coors0 = coors0 + 0.5
+    coors1 = coors1 + 0.5
+    points0 = scale0 * coors0
+    points1 = scale1 * coors1
+    # TODO: currently only support one batch
     points0_to_1 = _warp_point(
         points0.reshape(1, -1, 2), batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"]).reshape(-1, ww, 2)
     points1_to_0 = _warp_point(
         points1.reshape(1, -1, 2), batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]).reshape(-1, ww, 2)
-    flows0 = coors0_to_1 = points0_to_1 / scale1 - 0.5
-    flows1 = coors1_to_0 = points1_to_0 / scale0 - 0.5
+    flows0 = coors0_to_1 = points0_to_1 / scale1
+    flows1 = coors1_to_0 = points1_to_0 / scale0
+    coors0_to_1 = coors0_to_1 - 0.5
+    coors1_to_0 = coors1_to_0 - 0.5
 
     coors0_to_1 = coors0_to_1.round().long()
     coors1_to_0 = coors1_to_0.round().long()
@@ -174,8 +179,17 @@ def create_second_stage_supervision(
     _mask_out_of_bound(coors1_to_0, h0, w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
     idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
-    gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
-               (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
+    if detector is not None:
+        heatmap = (
+            detector(batch["image0"], stride)[b_idxes, i_idxes, :, None] *
+            detector(batch["image1"], stride)[b_idxes, j_idxes, None, :] *
+            (idxes0_to_1[:, :, None] == idxes1[:, None, :]) *
+            (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
+        gt_mask = (heatmap ==
+                   heatmap.amax(dim=(1, 2), keepdim=True).clamp(min=1e-10))
+    else:
+        gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
+                   (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
     supervision = {"flows0": flows0,
                    "coors1": coors1,
                    "second_stage_gt_mask": gt_mask}

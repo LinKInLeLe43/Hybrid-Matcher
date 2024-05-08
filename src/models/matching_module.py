@@ -46,6 +46,7 @@ class MatchingModule(pl.LightningModule):
         end_point_thresholds: List[float],
         epipolar_thresholds: List[float],
         pose_thresholds: List[float],
+        train_detector: Optional[nn.Module] = None,
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
         test_preparation_enabled: bool = True,
@@ -55,9 +56,16 @@ class MatchingModule(pl.LightningModule):
         super().__init__()
         self.net = net
         self.loss = loss
-        self.save_hyperparameters(ignore=["net", "loss"], logger=False)
+        self.train_detector = None
+        self.save_hyperparameters(
+            ignore=["net", "loss", "train_detector"], logger=False)
 
         self.test_time_profiler = profilers.SimpleProfiler()
+
+        if self.net.use_detector:
+            if train_detector is None:
+                raise ValueError("")
+            self.train_detector = train_detector
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         result = self.net(batch)
@@ -93,7 +101,8 @@ class MatchingModule(pl.LightningModule):
             result = self.net(
                 batch, gt_idxes=supervision["first_stage_gt_idxes"])
             supervision.update(utils.create_second_stage_supervision(
-                batch, self.net.scales, result["first_stage_idxes"]))
+                batch, self.net.scales, result["first_stage_idxes"],
+                detector=self.train_detector))
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("flows0"), supervision.pop("coors1"),
                 result["second_stage_idxes"], self.net.reg_window_size)

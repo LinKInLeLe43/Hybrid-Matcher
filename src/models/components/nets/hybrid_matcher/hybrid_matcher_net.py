@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional, Tuple
 
-import kornia as K
 import torch
 from torch import nn
 
@@ -15,7 +14,8 @@ class HybridMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_matching: nn.Module
+        fine_matching: nn.Module,
+        detector: Optional[nn.Module] = None
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -26,13 +26,26 @@ class HybridMatcherNet(nn.Module):
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
         self.fine_matching = fine_matching
+        self.detector = None
 
         self.scales = (backbone.scales[0], backbone.scales[1] //
                        fine_preprocess.scale_before_crop)
-        self.use_flow = getattr(coarse_module, "use_flow", False)
+        self.use_flow = coarse_module.use_flow
         self.type = fine_matching.type
         self.cls_window_size = fine_matching.cls_window_size
         self.reg_window_size = fine_matching.reg_window_size
+        self.use_detector = fine_matching.use_detector
+        if self.use_detector:
+            if self.type == "one_stage":
+                raise ValueError("")
+            elif self.type == "two_stage":
+                if ((self.fine_preprocess.stride != self.scales[0]) or
+                    (self.fine_preprocess.window_size != self.scales[0]) or
+                    (self.scales[1] != 1)):
+                    raise ValueError("")
+            if detector is None:
+                raise ValueError("")
+            self.detector = detector
 
     def _scale_points(
         self,
@@ -67,6 +80,7 @@ class HybridMatcherNet(nn.Module):
         if (mask0 is None) == (mask1 is not None):
             raise ValueError("")
 
+        result = {}
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
             data = torch.cat([batch["image0"], batch["image1"]])
@@ -86,9 +100,8 @@ class HybridMatcherNet(nn.Module):
                 pos_feature0, pos_feature1 = pos_feature.chunk(2)
         else:
             fine_features0, coarse_feature0 = self.backbone(batch["image0"])
-            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
-
             fine_features1, coarse_feature1 = self.backbone(batch["image1"])
+            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
 
             if self.use_flow:
@@ -113,11 +126,11 @@ class HybridMatcherNet(nn.Module):
             pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
             center0_mask=center0_mask, center1_mask=center1_mask)
 
-        result = self.coarse_matching(
+        result.update(self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1,
             matchability0=matchability0, matchability1=matchability1,
             flow0=flow0, flow1=flow1, mask0=mask0, mask1=mask1,
-            gt_idxes=gt_idxes)
+            gt_idxes=gt_idxes))
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0 + [coarse_feature0],
@@ -126,7 +139,17 @@ class HybridMatcherNet(nn.Module):
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)
-        result.update(self.fine_matching(fine_feature0, fine_feature1))
+
+        self_heatmap0 = self_heatmap1 = None
+        if self.use_detector:
+            self_heatmap0 = self.detector(fine_feature0)
+            self_heatmap1 = self.detector(fine_feature1)
+            if hasattr(self.fine_matching, "cls_mask1"):
+                self_heatmap1 = self_heatmap1[:, self.fine_matching.cls_mask1]
+
+        result.update(self.fine_matching(
+            fine_feature0, fine_feature1, self_heatmap0=self_heatmap0,
+            self_heatmap1=self_heatmap1))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

@@ -66,6 +66,10 @@ net:
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0
+    use_detector: true
+  detector:
+    _target_: src.models.components.nets.hybrid_matcher.Detector
+    depth: ${model.net.backbone.layer_depths.0}
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss
@@ -99,3 +103,6 @@ end_point_thresholds: ???
 epipolar_thresholds: ???
 
 pose_thresholds: ???
+
+train_detector:
+  _target_: src.models.utils.SuperPoint
