@@ -8,7 +8,7 @@ net:
     layer_depths: [128, 196, 256]
   local_coc:
     _target_: src.models.components.nets.hybrid_matcher.LocalCoC
-    blocks_counts: [2, 2, 2]
+    blocks_counts: [2, 0, 0]
     layer_depths: [256, 256, 256]
     hidden_depths: [256, 256, 256]
     heads_counts: [8, 8, 8]
