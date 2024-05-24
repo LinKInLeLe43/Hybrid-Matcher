@@ -135,7 +135,7 @@ class CoarseMatching(nn.Module):
         points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
         points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
         confidences = confidences[matching_idxes]
-        coarse_matching = {"b_idxes": b_idxes,
+        coarse_matching = {"idxes": matching_idxes,
                            "points0": points0,
                            "points1": points1,
                            "confidences": confidences,

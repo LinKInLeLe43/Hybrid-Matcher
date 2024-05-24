@@ -48,15 +48,12 @@ def compute_gt_biases(
     points1: torch.Tensor,
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     fine_scale: int,
-    window_size: int,
-    scale1: Optional[torch.Tensor] = None
+    window_size: int
 ) -> torch.Tensor:
     b_idxes, i_idxes, j_idxes = idxes
 
     gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
     gt_biases /= fine_scale * (window_size // 2)
-    if scale1 is not None:
-        gt_biases /= scale1[b_idxes]
     return gt_biases
 
 
@@ -116,6 +113,9 @@ def create_first_stage_supervision(
                    "first_stage_gt_mask": gt_mask}
 
     if return_coor:
+        if "scale1" in batch:
+            points0_to_1 = points0_to_1 / batch["scale1"][:, None]
+            points1 = points1 / batch["scale1"][:, None]
         supervision["points0_to_1"] = points0_to_1
         supervision["points1"] = points1
 
@@ -183,6 +183,9 @@ def create_second_stage_supervision(
     idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
+    if "scale1" in batch:
+        points0_to_1 = points0_to_1 / batch["scale1"][:, None]
+        points1 = points1 / batch["scale1"][:, None]
     supervision = {"points0_to_1": points0_to_1,
                    "points1": points1,
                    "second_stage_gt_mask": gt_mask}

@@ -40,19 +40,25 @@ class HybridMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
-        points0 = self.scales[0] * result["points0"]
-        if "biases0" in result:
-            points0 += self.scales[1] * result["biases0"][:len(points0)]
-        if scale0 is not None:
-            points0 *= scale0[result["b_idxes"]]
-        result["points0"] = points0
+        n = len(result["points0"])
 
-        points1 = self.scales[0] * result["points1"]
+        coarse_points0 = self.scales[0] * result["points0"]
+        fine_points0 = coarse_points0.clone()
+        if "biases0" in result:
+            fine_points0 += self.scales[1] * result["biases0"][:n]
+        if scale0 is not None:
+            coarse_points0 *= scale0[result["idxes"][0]]
+            fine_points0 *= scale0[result["idxes"][0]]
+        result["coarse_points0"] = coarse_points0  # for evaluate coarse precision
+        result["points0"] = fine_points0
+
+        coarse_points1 = self.scales[0] * result["points1"]
+        fine_points1 = coarse_points1.clone()
         if "biases1" in result:
-            points1 += self.scales[1] * result["biases1"][:len(points0)]
+            fine_points1 += self.scales[1] * result["biases1"][:n]
         if scale1 is not None:
-            points1 *= scale1[result["b_idxes"]]
-        result["points1"] = points1
+            fine_points1 *= scale1[result["idxes"][0]]
+        result["points1"] = fine_points1
 
     def forward(
         self,
