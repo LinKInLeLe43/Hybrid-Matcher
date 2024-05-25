@@ -43,7 +43,7 @@ test_dataset:
   _partial_: true
   data_root: "${paths.data_dir}/scannet/test"
   intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
-  load_depth: false
+  load_depth: true
 
 test_sampler:
   _target_: torch.utils.data.DistributedSampler

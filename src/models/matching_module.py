@@ -103,7 +103,7 @@ class MatchingModule(pl.LightningModule):
 
         if (self.hparams.plot_for_train and self.trainer.global_rank == 0 and
             self.trainer._logger_connector.should_update_logs):
-            error = utils.compute_error(batch, result)
+            error = utils.compute_error(batch, result, self.net.scales[0])
             figures = utils.plot_evaluation_figures(
                 batch, result, error, self.hparams.epipolar_threshold)
             self.logger.experiment.add_figure(
@@ -125,7 +125,7 @@ class MatchingModule(pl.LightningModule):
         batch_idx: int
     ) -> Dict[str, Any]:
         result, loss = self._model_step(batch)
-        error = utils.compute_error(batch, result)
+        error = utils.compute_error(batch, result, self.net.scales[0])
 
         figures = []
         if batch_idx % self.hparams.val_figures_interval == 0:
@@ -175,7 +175,7 @@ class MatchingModule(pl.LightningModule):
     ) -> Dict[str, Any]:
         with self.trainer.profiler.profile("net"):
             result = self.net(batch)
-        error = utils.compute_error(batch, result)
+        error = utils.compute_error(batch, result, self.net.scales[0])
         out = {"error": error}
         return out
 
@@ -192,10 +192,28 @@ class MatchingModule(pl.LightningModule):
             self.hparams.pose_thresholds)
         self.log(
             f"val_metrics/precision@{self.hparams.epipolar_threshold}",
-            metric["epipolar_precision"])
+            metric["epipolar_precision"][0])
         for threshold, auc in zip(self.hparams.pose_thresholds,
                                   metric["pose_aucs"]):
             self.log(f"val_metrics/auc@{threshold}", auc)
+
+        if True:
+            self.log(
+                "test_metric/coarse_precision", metric.pop("coarse_precision"))
+            self.log(
+                "test_metric/coarse_3x3_precision",
+                metric.pop("coarse_3x3_precision"))
+            self.log(
+                "test_metric/inlier_coarse_precision",
+                metric.pop("inlier_coarse_precision"))
+            self.log(
+                "test_metric/inlier_coarse_3x3_precision",
+                metric.pop("inlier_coarse_3x3_precision"))
+            for t, m0, m1 in zip([1.0, 3.0, 5.0],
+                                 metric.pop("end_point_precisions"),
+                                 metric.pop("inlier_end_point_precisions")):
+                self.log(f"test_metric/end_point_precision@{t}", m0)
+                self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
 
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = self.hparams.optimizer(self.parameters())
