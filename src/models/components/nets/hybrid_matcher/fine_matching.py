@@ -57,15 +57,18 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             self.reg_with_std = reg_with_std
 
             cls_w, e = cls_window_size, self.reg_window_size // 2
-            w1 = cls_w + 2 * e
+            w1 = cls_w + 2 * e + cls_w
             mask1 = torch.zeros((w1, w1), dtype=torch.bool)
             mask1[e:-e, e:-e] = True
             mask1 = mask1.flatten()
             self.register_buffer("cls_mask1", mask1, persistent=False)
 
-            grid = K.create_meshgrid(cls_w, cls_w, normalized_coordinates=False)
-            biases = (grid - cls_w // 2 + 0.5).reshape(-1, 2)
-            self.register_buffer("cls_biases", biases, persistent=False)
+            grid0 = K.create_meshgrid(cls_w, cls_w, normalized_coordinates=False)
+            biases0 = (grid0 - cls_w // 2 + 0.5).reshape(-1, 2)
+            self.register_buffer("cls_biases0", biases0, persistent=False)
+            grid1 = K.create_meshgrid(cls_w + cls_w, cls_w + cls_w, normalized_coordinates=False)
+            biases1 = (grid1 - cls_w + 0.5).reshape(-1, 2)
+            self.register_buffer("cls_biases1", biases1, persistent=False)
         else:
             raise ValueError("")
 
@@ -76,8 +79,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     ) -> Dict[str, Any]:
         device = feature0.device
         m, ww, c = feature0.shape
+        _, ww1, _ = feature1.shape
         if m == 0:
-            heatmap = torch.empty((0, ww, ww), device=device)
+            heatmap = torch.empty((0, ww, ww1), device=device)
             _idxes = torch.empty((0,), dtype=torch.long, device=device)
             idxes = 3 * (_idxes,)
             biases0 = torch.empty((0, 2), device=device)
@@ -96,9 +100,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         with torch.no_grad():
             m_idxes = torch.arange(m, device=device)
             idxes = heatmap.flatten(start_dim=1).argmax(dim=1)
-            idxes = m_idxes, idxes // ww, idxes % ww
-            biases0 = self.cls_biases.index_select(0, idxes[1])
-            biases1 = self.cls_biases.index_select(0, idxes[2])
+            idxes = m_idxes, idxes // ww1, idxes % ww1
+            biases0 = self.cls_biases0.index_select(0, idxes[1])
+            biases1 = self.cls_biases1.index_select(0, idxes[2])
         result = {"second_stage_cls_heatmap": heatmap,
                   "second_stage_idxes": idxes,
                   "cls_biases0": biases0,
@@ -156,7 +160,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             result["biases1"] = biases1
         elif self.type == "two_stage":
             cls_w, reg_w = self.cls_window_size, self.reg_window_size
-            w1 = cls_w + 2 * (reg_w // 2)
+            w1 = cls_w + 2 * (reg_w // 2) + cls_w
             if w0w0 != cls_w ** 2 or w1w1 != w1 ** 2:
                 raise ValueError("")
 

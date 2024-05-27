@@ -96,7 +96,7 @@ class FinePreprocess(nn.Module):
         w, s, p = self.window_size, self.stride, self.padding
         e = self.right_extra
         fine_feature0 = _crop_windows(fine_feature0, w, s, p)
-        fine_feature1 = _crop_windows(fine_feature1, w + 2 * e, s, p + e)
+        fine_feature1 = _crop_windows(fine_feature1, w + 2 * e + w, s, p + e + w // 2)
         b_idxes, i_idxes, j_idxes = idxes
         fine_feature0 = fine_feature0[b_idxes, i_idxes]
         fine_feature1 = fine_feature1[b_idxes, j_idxes]
@@ -127,7 +127,7 @@ class FinePreprocess(nn.Module):
         else:
             coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
             coarse_feature0 = coarse_feature0.expand(-1, w ** 2, -1)
-            coarse_feature1 = coarse_feature1.expand(-1, (w + 2 * e) ** 2, -1)
+            coarse_feature1 = coarse_feature1.expand(-1, (w + 2 * e + w) ** 2, -1)
             fine_feature0 = torch.cat([fine_feature0, coarse_feature0], dim=2)
             fine_feature1 = torch.cat([fine_feature1, coarse_feature1], dim=2)
             fine_feature0 = self.merge(fine_feature0)
@@ -184,7 +184,7 @@ class FinePreprocess(nn.Module):
         if m == 0:
             c = features0[0].shape[1]
             fine_feature0 = torch.empty((0, w ** 2, c), device=device)
-            fine_feature1 = torch.empty((0, (w + 2 * e) ** 2, c), device=device)
+            fine_feature1 = torch.empty((0, (w + 2 * e + w) ** 2, c), device=device)
             return fine_feature0, fine_feature1
 
         if self.norm_before_fuse:
