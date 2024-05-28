@@ -1,6 +1,7 @@
 import functools
 import math
-from typing import Any, Dict, List, Tuple
+import pathlib
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pytorch_lightning as pl
@@ -9,6 +10,25 @@ from torch import distributed as dist
 from torch import nn
 
 from src.models import utils
+
+
+def all_flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    def _append(in_dict: Dict[str, Any], out_dict: Dict[str, Any]) -> None:
+        for k, v in in_dict.items():
+            if isinstance(v, dict):
+                if k not in out_dict:
+                    out_dict[k] = {}
+                _append(v, out_dict[k])
+            else:
+                if k not in out_dict:
+                    out_dict[k] = []
+                out_dict[k].append(v)
+
+    gathered_output = {}
+    for outputs in outputs_by_ranks:
+        for o in outputs:
+            _append(o, gathered_output)
+    return gathered_output
 
 
 def _flatten(
@@ -39,7 +59,8 @@ class MatchingModule(pl.LightningModule):
         epipolar_threshold: float,
         pose_thresholds: List[int],
         plot_for_train: bool = True,
-        val_figures_count: int = 32
+        val_figures_count: int = 32,
+        dump_dir: Optional[str] = None
     ) -> None:
         super().__init__()
         self.save_hyperparameters(ignore=["net", "loss"], logger=False)
@@ -176,7 +197,13 @@ class MatchingModule(pl.LightningModule):
         with self.trainer.profiler.profile("net"):
             result = self.net(batch)
         error = utils.compute_error(batch, result, self.net.scales[0])
-        out = {"error": error}
+
+        dump = {}
+        if self.hparams.dump_dir is not None:
+            dump = error
+            for k in ("points0", "points1", "confidences"):
+                dump[k] = result[k].cpu().numpy()
+        out = {"error": error, "dump": dump}
         return out
 
     def test_epoch_end(self, outputs: List[Dict[str, Any]]) -> None:
@@ -214,6 +241,13 @@ class MatchingModule(pl.LightningModule):
                                  metric.pop("inlier_end_point_precisions")):
                 self.log(f"test_metric/end_point_precision@{t}", m0)
                 self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
+
+        gathered_output = all_flatten(outputs_per_rank)
+        if self.hparams.dump_dir is not None:
+            pathlib.Path(
+                self.hparams.dump_dir).mkdir(parents=True, exist_ok=True)
+            np.save(
+                self.hparams.dump_dir + "/test_result", gathered_output["dump"])
 
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = self.hparams.optimizer(self.parameters())
