@@ -56,7 +56,7 @@ class ResNetFpn82(nn.Module):
         self.scales = 8, 2
 
         self.conv = nn.Conv2d(
-            1, initial_depth, 7, stride=2, padding=3, bias=False)
+            3, initial_depth, 7, stride=2, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
 
@@ -85,6 +85,9 @@ class ResNetFpn82(nn.Module):
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
+
+        for p in self.parameters():
+            p.requires_grad = False
 
     def _make_layer(self, depth: int, stride: int = 1) -> nn.Module:
         layer = nn.Sequential(

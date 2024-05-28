@@ -449,6 +449,9 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
+        for p in self.parameters():
+            p.requires_grad = False
+
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x0 = self.layer0(x)
         x1 = self.point_reducer0(x0)
@@ -560,6 +563,9 @@ class GlobalCoC(nn.Module):
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm, nn.LayerNorm)):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
+
+        for p in self.parameters():
+            p.requires_grad = False
 
     def forward(
         self,

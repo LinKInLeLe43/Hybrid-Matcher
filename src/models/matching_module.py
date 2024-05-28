@@ -46,6 +46,7 @@ class MatchingModule(pl.LightningModule):
         end_point_thresholds: List[float],
         epipolar_thresholds: List[float],
         pose_thresholds: List[float],
+        ckpt_path: str,
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
         test_preparation_enabled: bool = True,
@@ -58,6 +59,8 @@ class MatchingModule(pl.LightningModule):
         self.save_hyperparameters(ignore=["net", "loss"], logger=False)
 
         self.test_time_profiler = profilers.SimpleProfiler()
+
+        self.load_state_dict(torch.load(ckpt_path)["state_dict"], strict=False)
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         result = self.net(batch)

@@ -130,8 +130,6 @@ class RepVgg82(nn.Module):
             layer_depths[0], block_counts[0])
         self.layer2 = self._make_layer(  # 1/4
             layer_depths[1], block_counts[1], stride=2)
-        self.layer3 = self._make_layer(  # 1/8
-            layer_depths[2], block_counts[2], stride=2)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -162,5 +160,4 @@ class RepVgg82(nn.Module):
         x0 = self.layer0(x)
         x1 = self.layer1(x0)
         x2 = self.layer2(x1)
-        x3 = self.layer3(x2)
-        return [x1, x2], x3
+        return [x1, x2]

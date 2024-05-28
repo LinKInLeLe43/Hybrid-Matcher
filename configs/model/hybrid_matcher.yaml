@@ -64,6 +64,10 @@ net:
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0
+  new_backbone:
+    _target_: src.models.components.nets.hybrid_matcher.backbone.RepVgg82
+    block_counts: [2, 4]
+    layer_depths: [128, 196]
 
 loss:
   _target_: src.models.components.losses.LoFTRLoss
@@ -97,3 +101,5 @@ end_point_thresholds: ???
 epipolar_thresholds: ???
 
 pose_thresholds: ???
+
+ckpt_path: ???

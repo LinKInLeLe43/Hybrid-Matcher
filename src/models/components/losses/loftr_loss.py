@@ -214,15 +214,15 @@ class LoFTRLoss(nn.Module):  # TODO: change name
                 gt_biases is None):
                 raise ValueError("")
 
-            first_stage_cls_loss = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap,
-                first_stage_gt_mask,
-                loss_pos_weight=self.first_stage_cls_loss_pos_weight,
-                loss_neg_weight=self.first_stage_cls_loss_neg_weight,
-                mask0=mask0, mask1=mask1)
-            total_loss += first_stage_cls_loss
-            loss["scalar"]["first_stage_cls_loss"] = (
-                first_stage_cls_loss.detach().cpu())
+            # first_stage_cls_loss = _compute_cls_loss(
+            #     self.first_stage_cls_sparse, first_stage_cls_heatmap,
+            #     first_stage_gt_mask,
+            #     loss_pos_weight=self.first_stage_cls_loss_pos_weight,
+            #     loss_neg_weight=self.first_stage_cls_loss_neg_weight,
+            #     mask0=mask0, mask1=mask1)
+            # total_loss += first_stage_cls_loss
+            # loss["scalar"]["first_stage_cls_loss"] = (
+            #     first_stage_cls_loss.detach().cpu())
 
             reg_loss = _compute_reg_loss(
                 reg_biases, gt_biases, reg_stds=reg_stds,
@@ -237,15 +237,15 @@ class LoFTRLoss(nn.Module):  # TODO: change name
                 gt_biases is None):
                 raise ValueError("")
 
-            first_stage_cls_loss = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap,
-                first_stage_gt_mask,
-                loss_pos_weight=self.first_stage_cls_loss_pos_weight,
-                loss_neg_weight=self.first_stage_cls_loss_neg_weight,
-                mask0=mask0, mask1=mask1)
-            total_loss += first_stage_cls_loss
-            loss["scalar"]["first_stage_cls_loss"] = (
-                first_stage_cls_loss.detach().cpu())
+            # first_stage_cls_loss = _compute_cls_loss(
+            #     self.first_stage_cls_sparse, first_stage_cls_heatmap,
+            #     first_stage_gt_mask,
+            #     loss_pos_weight=self.first_stage_cls_loss_pos_weight,
+            #     loss_neg_weight=self.first_stage_cls_loss_neg_weight,
+            #     mask0=mask0, mask1=mask1)
+            # total_loss += first_stage_cls_loss
+            # loss["scalar"]["first_stage_cls_loss"] = (
+            #     first_stage_cls_loss.detach().cpu())
 
             second_stage_cls_loss = _compute_cls_loss(
                 self.second_stage_cls_sparse, second_stage_cls_heatmap,

@@ -15,7 +15,8 @@ class HybridMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_matching: nn.Module
+        fine_matching: nn.Module,
+        new_backbone: nn.Module
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -33,6 +34,8 @@ class HybridMatcherNet(nn.Module):
         self.type = fine_matching.type
         self.cls_window_size = fine_matching.cls_window_size
         self.reg_window_size = fine_matching.reg_window_size
+
+        self.new_backbone = new_backbone
 
     def _scale_points(
         self,
@@ -60,6 +63,7 @@ class HybridMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
+        device = batch["image0"].device
         n = batch["image0"].shape[0]
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
         center0_mask = batch.get("center0_mask")
@@ -69,7 +73,11 @@ class HybridMatcherNet(nn.Module):
 
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
+            n, _, h, w = batch["image0"].shape
+            coors = K.create_meshgrid(h, w, device=device)
+            coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
+            data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
             fine_features, coarse_feature = self.backbone(data)
             center, coarse_feature = self.local_coc(coarse_feature)
             centers0, centers1 = center.chunk(2)
@@ -85,10 +93,20 @@ class HybridMatcherNet(nn.Module):
                 pos_feature = pos_feature.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_feature.chunk(2)
         else:
-            fine_features0, coarse_feature0 = self.backbone(batch["image0"])
+            n, _, h, w = batch["image0"].shape
+            coors = K.create_meshgrid(h, w, device=device)
+            coors = (coors / 2).permute(0, 3, 1, 2)
+            data = torch.cat([batch["image0"],
+                              coors.expand(n, -1, -1, -1)], dim=1)
+            fine_features0, coarse_feature0 = self.backbone(data)
             centers0, coarse_feature0 = self.local_coc(coarse_feature0)
 
-            fine_features1, coarse_feature1 = self.backbone(batch["image1"])
+            n, _, h, w = batch["image1"].shape
+            coors = K.create_meshgrid(h, w, device=device)
+            coors = (coors / 2).permute(0, 3, 1, 2)
+            data = torch.cat([batch["image1"],
+                              coors.expand(n, -1, -1, -1)], dim=1)
+            fine_features1, coarse_feature1 = self.backbone(data)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
 
             if self.use_flow:
@@ -100,8 +118,8 @@ class HybridMatcherNet(nn.Module):
                 pos_feature1 = pos_feature1.flatten(start_dim=2).transpose(1, 2)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
-        coarse_feature0, _ = self.positional_encoding(coarse_feature0)
-        coarse_feature1, _ = self.positional_encoding(coarse_feature1)
+        # coarse_feature0, _ = self.positional_encoding(coarse_feature0)
+        # coarse_feature1, _ = self.positional_encoding(coarse_feature1)
 
         coarse_feature0, coarse_feature1, centers0, centers1 = map(
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
@@ -115,6 +133,17 @@ class HybridMatcherNet(nn.Module):
         result = self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow0=flow0,
             flow1=flow1, mask0=mask0, mask1=mask1, gt_idxes=gt_idxes)
+
+        if batch["image0"].shape == batch["image1"].shape:
+            data = torch.cat([batch["image0"], batch["image1"]])
+            fine_features = self.new_backbone(data)
+            fine_features0, fine_features1 = [], []
+            for fine_feature in fine_features:
+                fine_feature0, fine_feature1 = fine_feature.chunk(2)
+                fine_features0.append(fine_feature0)
+                fine_features1.append(fine_feature1)
+        else:
+            raise NotImplementedError("")
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0 + [coarse_feature0],
