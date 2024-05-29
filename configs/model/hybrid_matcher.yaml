@@ -48,13 +48,13 @@ net:
 #    stride: 4
 #    padding: 2
     layer_depths: ${model.net.backbone.layer_depths}
-  fine_module:
-    _target_: src.models.components.nets.hybrid_matcher.LoFTR
-    depth: ${model.net.backbone.layer_depths.0}
-    heads_count: 8
-    attention:
-      _target_: src.models.components.nets.hybrid_matcher.FullAttention
-    types: ["self", "cross"]
+#  fine_module:
+#    _target_: src.models.components.nets.hybrid_matcher.LoFTR
+#    depth: ${model.net.backbone.layer_depths.0}
+#    heads_count: 8
+#    attention:
+#      _target_: src.models.components.nets.hybrid_matcher.FullAttention
+#    types: ["self", "cross"]
   fine_matching:
     _target_: src.models.components.nets.hybrid_matcher.FineMatching
 #    type: "one_stage"

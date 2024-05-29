@@ -129,12 +129,13 @@ def create_second_stage_supervision(
     device = batch["image0"].device
     stride = scales[0] // scales[1]
     ww = stride ** 2
+    ww1 = (stride + 2 * stride) ** 2
     b_idxes, i_idxes, j_idxes = idxes
     m = len(b_idxes)
     if m == 0:
         flows0 = torch.empty((0, ww, 2), device=device)
-        coors1 = torch.empty((0, ww, 2), device=device)
-        gt_mask = torch.empty((0, ww, ww), dtype=torch.bool, device=device)
+        coors1 = torch.empty((0, ww1, 2), device=device)
+        gt_mask = torch.empty((0, ww, ww1), dtype=torch.bool, device=device)
         supervision = {"flows0": flows0,
                        "coors1": coors1,
                        "second_stage_gt_mask": gt_mask}
@@ -154,22 +155,24 @@ def create_second_stage_supervision(
     coors0 = coors0.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
     coors1 = coors1.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
     coors0 = F.pad(coors0, [stride // 2, 0, stride // 2, 0])
-    coors1 = F.pad(coors1, [stride // 2, 0, stride // 2, 0])
+    coors1 = F.pad(coors1, [stride // 2 + stride, 0, stride // 2 + stride, 0])
     coors0 = _crop_windows(coors0, stride, stride, 0)[b_idxes, i_idxes]
-    coors1 = _crop_windows(coors1, stride, stride, 0)[b_idxes, j_idxes]
+    coors1 = _crop_windows(coors1, stride + 2 * stride, stride, 0)[b_idxes, j_idxes]
     idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
     idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
-    points0 = scale0 * (coors0 + 0.5)
-    points1 = scale1 * (coors1 + 0.5)
+    coors0 = coors0 + 0.5
+    coors1 = coors1 + 0.5
+    points0 = scale0 * coors0
+    points1 = scale1 * coors1
     points0_to_1 = _warp_point(
         points0.reshape(1, -1, 2), batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"]).reshape(-1, ww, 2)
     points1_to_0 = _warp_point(
-        points1.reshape(1, -1, 2), batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]).reshape(-1, ww, 2)
-    flows0 = coors0_to_1 = points0_to_1 / scale1 - 0.5
-    flows1 = coors1_to_0 = points1_to_0 / scale0 - 0.5
+        points1.reshape(1, -1, 2), batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]).reshape(-1, ww1, 2)
+    flows0 = coors0_to_1 = points0_to_1 / scale1
+    flows1 = coors1_to_0 = points1_to_0 / scale0
 
-    coors0_to_1 = coors0_to_1.round().long()
-    coors1_to_0 = coors1_to_0.round().long()
+    coors0_to_1 = (coors0_to_1 - 0.5).round().long()
+    coors1_to_0 = (coors1_to_0 - 0.5).round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]

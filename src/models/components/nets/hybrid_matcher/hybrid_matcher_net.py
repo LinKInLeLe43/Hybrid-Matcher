@@ -14,7 +14,7 @@ class HybridMatcherNet(nn.Module):
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
-        fine_module: nn.Module,
+        # fine_module: nn.Module,
         fine_matching: nn.Module
     ) -> None:
         super().__init__()
@@ -24,7 +24,7 @@ class HybridMatcherNet(nn.Module):
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
-        self.fine_module = fine_module
+        # self.fine_module = fine_module
         self.fine_matching = fine_matching
 
         self.scales = (backbone.scales[0], backbone.scales[1] //
@@ -123,9 +123,9 @@ class HybridMatcherNet(nn.Module):
             fine_features0 + [coarse_feature0],
             fine_features1 + [coarse_feature1], size0, size1,
             result["first_stage_idxes"])
-        if len(fine_feature0) != 0:
-            fine_feature0, fine_feature1 = self.fine_module(
-                fine_feature0, fine_feature1)
+        # if len(fine_feature0) != 0:
+        #     fine_feature0, fine_feature1 = self.fine_module(
+        #         fine_feature0, fine_feature1)
         result.update(self.fine_matching(fine_feature0, fine_feature1))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
