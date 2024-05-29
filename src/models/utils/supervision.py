@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import einops
 import kornia as K
@@ -44,14 +44,19 @@ def _crop_windows(
 
 @torch.no_grad()
 def compute_gt_biases(
-    flows0: torch.Tensor,
-    coors1: torch.Tensor,
+    points0_to_1: torch.Tensor,
+    points1: torch.Tensor,
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    window_size: int
+    fine_scale: int,
+    window_size: int,
+    scale1: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     b_idxes, i_idxes, j_idxes = idxes
-    gt_biases = (flows0[b_idxes, i_idxes] -
-                 coors1[b_idxes, j_idxes]) / (window_size // 2)
+
+    gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
+    gt_biases /= fine_scale * (window_size // 2)
+    if scale1 is not None:
+        gt_biases /= scale1[b_idxes]
     return gt_biases
 
 
@@ -111,8 +116,8 @@ def create_first_stage_supervision(
                    "first_stage_gt_mask": gt_mask}
 
     if return_coor:
-        supervision["flows0"] = flows0
-        supervision["coors1"] = coors1
+        supervision["points0_to_1"] = points0_to_1
+        supervision["points1"] = points1
 
     if return_flow:
         supervision["gt_flows0"] = flows0[b_idxes, i_idxes]
@@ -132,11 +137,11 @@ def create_second_stage_supervision(
     b_idxes, i_idxes, j_idxes = idxes
     m = len(b_idxes)
     if m == 0:
-        flows0 = torch.empty((0, ww, 2), device=device)
-        coors1 = torch.empty((0, ww, 2), device=device)
+        points0_to_1 = torch.empty((0, ww, 2), device=device)
+        points1 = torch.empty((0, ww, 2), device=device)
         gt_mask = torch.empty((0, ww, ww), dtype=torch.bool, device=device)
-        supervision = {"flows0": flows0,
-                       "coors1": coors1,
+        supervision = {"points0_to_1": points0_to_1,
+                       "points1": points1,
                        "second_stage_gt_mask": gt_mask}
         return supervision
 
@@ -159,24 +164,26 @@ def create_second_stage_supervision(
     coors1 = _crop_windows(coors1, stride, stride, 0)[b_idxes, j_idxes]
     idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
     idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
-    points0 = scale0 * (coors0 + 0.5)
-    points1 = scale1 * (coors1 + 0.5)
+    coors0 = coors0 + 0.5
+    coors1 = coors1 + 0.5
+    points0 = scale0 * coors0
+    points1 = scale1 * coors1
     points0_to_1 = _warp_point(
         points0.reshape(1, -1, 2), batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"]).reshape(-1, ww, 2)
     points1_to_0 = _warp_point(
         points1.reshape(1, -1, 2), batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]).reshape(-1, ww, 2)
-    flows0 = coors0_to_1 = points0_to_1 / scale1 - 0.5
-    flows1 = coors1_to_0 = points1_to_0 / scale0 - 0.5
+    flows0 = coors0_to_1 = points0_to_1 / scale1
+    flows1 = coors1_to_0 = points1_to_0 / scale0
 
-    coors0_to_1 = coors0_to_1.round().long()
-    coors1_to_0 = coors1_to_0.round().long()
+    coors0_to_1 = (coors0_to_1 - 0.5).round().long()
+    coors1_to_0 = (coors1_to_0 - 0.5).round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
     idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
-    supervision = {"flows0": flows0,
-                   "coors1": coors1,
+    supervision = {"points0_to_1": points0_to_1,
+                   "points1": points1,
                    "second_stage_gt_mask": gt_mask}
     return supervision
