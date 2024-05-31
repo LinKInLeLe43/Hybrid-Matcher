@@ -85,21 +85,23 @@ def _compute_end_point_errors(
     j_idxes: torch.Tensor,
     inliers_per_batch: np.array,
     consistent_depth_ratio: float = 0.2
-) -> Tuple[np.ndarray, np.ndarray,
-           np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, ...]:
     n, h, w = depth0.shape
     device = points0.device
 
     end_point_errors_per_batch = np.empty(n, dtype=object)
-    coarse_precisions = []
-    coarse_3x3_precisions = []
+    false_end_point_errors_per_batch = np.empty(n, dtype=object)
     inlier_end_point_errors_per_batch = np.empty(n, dtype=object)
+    true_coarse_counts = []
+    inlier_true_coarse_counts = []
+    coarse_precisions = []
     inlier_coarse_precisions = []
+    coarse_3x3_precisions = []
     inlier_coarse_3x3_precisions = []
     for b in range(n):
         b_mask = b_idxes == b
         b_scale1 = scale1 if isinstance(scale1, int) else scale1[b]
-        b_coarse_scale1 = coarse_scale * b_scale1
+
         gt_points1, mask = _warp_point(
             points0[b_mask][None], depth0[[b]], depth1[[b]], K0[[b]], K1[[b]],
             T0_to_1[[b]], return_mask=True,
@@ -110,44 +112,60 @@ def _compute_end_point_errors(
                             b_scale1).norm(dim=1)
         end_point_errors_per_batch[b] = end_point_errors.cpu().numpy()
 
+        gt_coarse_grid1 = gt_points1[mask] / coarse_scale / b_scale1
         gt_coarse_3x3_grid1 = (
-            (gt_points1[mask] / b_coarse_scale1)[:, None].round().long() +
+            gt_coarse_grid1[:, None].round().long() +
             K.create_meshgrid(3, 3, device=device).reshape(-1, 2))
         gt_j_3x3_idxes = (coarse_w1 * gt_coarse_3x3_grid1[:, :, 1] +
                           gt_coarse_3x3_grid1[:, :, 0])
         coarse_3x3_results = (j_idxes[b_mask][mask, None] ==
                               gt_j_3x3_idxes).float()
+        true_coarse_count = 0.0
         coarse_precision = 0.0
         coarse_3x3_precision = 0.0
+        false_end_point_errors = end_point_errors.new_tensor([])
         if len(coarse_3x3_results) != 0:
+            false_end_point_errors = end_point_errors[
+                ~coarse_3x3_results[:, 3 * 3 // 2].bool()]
+            true_coarse_count = coarse_3x3_results[:, 3 * 3 // 2].sum().item()
             coarse_precision = coarse_3x3_results[:, 3 * 3 // 2].mean().item()
             coarse_3x3_precision = coarse_3x3_results.sum(dim=1).mean().item()
+        true_coarse_counts.append(true_coarse_count)
         coarse_precisions.append(coarse_precision)
         coarse_3x3_precisions.append(coarse_3x3_precision)
+        false_end_point_errors_per_batch[b] = (
+            false_end_point_errors.cpu().numpy())
 
         inlier_end_point_errors = end_point_errors.new_tensor([])
+        inlier_true_coarse_count = 0.0
         inlier_coarse_precision = 0.0
         inlier_coarse_3x3_precision = 0.0
         if len(inliers_per_batch[b]) != 0:
             inlier = torch.from_numpy(inliers_per_batch[b]).to(device)[mask]
             if inlier.any():
                 inlier_end_point_errors = end_point_errors[inlier]
+                inlier_true_coarse_count = (
+                    coarse_3x3_results[inlier, 3 * 3 // 2].sum().item())
                 inlier_coarse_precision = (
                     coarse_3x3_results[inlier, 3 * 3 // 2].mean().item())
                 inlier_coarse_3x3_precision = (
                     coarse_3x3_results[inlier].sum(dim=1).mean().item())
         inlier_end_point_errors_per_batch[b] = (
             inlier_end_point_errors.cpu().numpy())
+        inlier_true_coarse_counts.append(inlier_true_coarse_count)
         inlier_coarse_precisions.append(inlier_coarse_precision)
         inlier_coarse_3x3_precisions.append(inlier_coarse_3x3_precision)
+    true_coarse_counts = np.array(true_coarse_counts)
+    inlier_true_coarse_counts = np.array(inlier_true_coarse_counts)
     coarse_precisions = np.array(coarse_precisions)
     inlier_coarse_precisions = np.array(inlier_coarse_precisions)
     coarse_3x3_precisions = np.array(coarse_3x3_precisions)
     inlier_coarse_3x3_precisions = np.array(inlier_coarse_3x3_precisions)
-    return (end_point_errors_per_batch, coarse_precisions,
-            coarse_3x3_precisions, inlier_end_point_errors_per_batch,
-            inlier_coarse_precisions, inlier_coarse_3x3_precisions)
-
+    return (end_point_errors_per_batch, false_end_point_errors_per_batch,
+            inlier_end_point_errors_per_batch,
+            true_coarse_counts, inlier_true_coarse_counts,
+            coarse_precisions, inlier_coarse_precisions,
+            coarse_3x3_precisions, inlier_coarse_3x3_precisions)
 
 
 def _compute_epipolar_errors(
@@ -282,10 +300,13 @@ def compute_error(
         scale1 = batch["scale1"][:, None] if "scale1" in batch else 1
         coarse_w1 = batch["image1"].shape[3] // coarse_scale
         (error["end_point_errors_per_batch"],
-         error["coarse_precisions"],
-         error["coarse_3x3_precisions"],
+         error["false_end_point_errors_per_batch"],
          error["inlier_end_point_errors_per_batch"],
+         error["true_coarse_counts"],
+         error["inlier_true_coarse_counts"],
+         error["coarse_precisions"],
          error["inlier_coarse_precisions"],
+         error["coarse_3x3_precisions"],
          error["inlier_coarse_3x3_precisions"]
          ) = _compute_end_point_errors(
             result["idxes"][0], result["points0"], result["points1"],
@@ -338,15 +359,21 @@ def compute_metric(
               "pose_aucs": pose_aucs}
     if True:
         metric["end_point_precisions"] = _compute_precision(
-            error["end_point_errors_per_batch"][idxes], [1.0, 3.0, 5.0])
+            error["end_point_errors_per_batch"][idxes], [0.5, 1.0, 3.0, 5.0])
+        metric["false_end_point_precisions"] = _compute_precision(
+            error["false_end_point_errors_per_batch"][idxes],
+            [0.5, 1.0, 3.0, 5.0])
         metric["inlier_end_point_precisions"] = _compute_precision(
             error["inlier_end_point_errors_per_batch"][idxes],
-            [1.0, 3.0, 5.0])
+            [0.5, 1.0, 3.0, 5.0])
+        metric["true_coarse_count"] = error["true_coarse_counts"][idxes].mean()
+        metric["inlier_true_coarse_count"] = (
+            error["inlier_true_coarse_counts"][idxes].mean())
         metric["coarse_precision"] = error["coarse_precisions"][idxes].mean()
-        metric["coarse_3x3_precision"] = (
-            error["coarse_3x3_precisions"][idxes].mean())
         metric["inlier_coarse_precision"] = (
             error["inlier_coarse_precisions"][idxes].mean())
+        metric["coarse_3x3_precision"] = (
+            error["coarse_3x3_precisions"][idxes].mean())
         metric["inlier_coarse_3x3_precision"] = (
             error["inlier_coarse_3x3_precisions"][idxes].mean())
     return metric

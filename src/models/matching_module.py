@@ -228,19 +228,27 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/coarse_precision", metric.pop("coarse_precision"))
             self.log(
-                "test_metric/coarse_3x3_precision",
-                metric.pop("coarse_3x3_precision"))
-            self.log(
                 "test_metric/inlier_coarse_precision",
                 metric.pop("inlier_coarse_precision"))
             self.log(
+                "test_metric/true_coarse_count",
+                metric.pop("true_coarse_count"))
+            self.log(
+                "test_metric/inlier_true_coarse_count",
+                metric.pop("inlier_true_coarse_count"))
+            self.log(
+                "test_metric/coarse_3x3_precision",
+                metric.pop("coarse_3x3_precision"))
+            self.log(
                 "test_metric/inlier_coarse_3x3_precision",
                 metric.pop("inlier_coarse_3x3_precision"))
-            for t, m0, m1 in zip([1.0, 3.0, 5.0],
+            for t, m0, m1, m2 in zip([0.5, 1.0, 3.0, 5.0],
                                  metric.pop("end_point_precisions"),
+                                 metric.pop("false_end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):
                 self.log(f"test_metric/end_point_precision@{t}", m0)
-                self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
+                self.log(f"test_metric/false_end_point_precision@{t}", m1)
+                self.log(f"test_metric/inlier_end_point_precision@{t}", m2)
 
         gathered_output = all_flatten(outputs_per_rank)
         if self.hparams.dump_dir is not None:
