@@ -13,7 +13,8 @@ class HybridMatcherNet(nn.Module):
         local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
-        fine_preprocess: nn.Module,
+        fine_preprocess0: nn.Module,
+        fine_preprocess1: nn.Module,
         fine_module: nn.Module,
         fine_matching: nn.Module
     ) -> None:
@@ -23,12 +24,12 @@ class HybridMatcherNet(nn.Module):
         self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
-        self.fine_preprocess = fine_preprocess
+        self.fine_preprocess0 = fine_preprocess0
+        self.fine_preprocess1 = fine_preprocess1
         self.fine_module = fine_module
         self.fine_matching = fine_matching
 
-        self.scales = (backbone.scales[0], backbone.scales[1] //
-                       fine_preprocess.scale_before_crop)
+        self.scales = (8, 1)
         self.use_flow = getattr(coarse_module, "use_flow", False)
         self.type = fine_matching.type
         self.cls_window_size = fine_matching.cls_window_size
@@ -68,16 +69,15 @@ class HybridMatcherNet(nn.Module):
     ) -> Dict[str, Any]:
         n = batch["image0"].shape[0]
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
-        center0_mask = batch.get("center0_mask")
-        center1_mask = batch.get("center1_mask")
         if (mask0 is None) == (mask1 is not None):
             raise ValueError("")
 
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
             data = torch.cat([batch["image0"], batch["image1"]])
-            fine_features, coarse_feature = self.backbone(data)
-            center, coarse_feature = self.local_coc(coarse_feature)
+            fine_features = self.backbone(data)
+            fine_features[-1], _ = self.positional_encoding(fine_features[-1])
+            center, coarse_feature = self.local_coc(fine_features[-1])
             centers0, centers1 = center.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
             fine_features0, fine_features1 = [], []
@@ -91,11 +91,13 @@ class HybridMatcherNet(nn.Module):
                 pos_feature = pos_feature.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_feature.chunk(2)
         else:
-            fine_features0, coarse_feature0 = self.backbone(batch["image0"])
-            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
+            fine_features0 = self.backbone(batch["image0"])
+            fine_features0[-1], _ = self.positional_encoding(fine_features0[-1])
+            centers0, coarse_feature0 = self.local_coc(fine_features0[-1])
 
-            fine_features1, coarse_feature1 = self.backbone(batch["image1"])
-            centers1, coarse_feature1 = self.local_coc(coarse_feature1)
+            fine_features1 = self.backbone(batch["image1"])
+            fine_features1[-1], _ = self.positional_encoding(fine_features1[-1])
+            centers1, coarse_feature1 = self.local_coc(fine_features1[-1])
 
             if self.use_flow:
                 pos_feature0 = self.positional_encoding.get(
@@ -106,9 +108,6 @@ class HybridMatcherNet(nn.Module):
                 pos_feature1 = pos_feature1.flatten(start_dim=2).transpose(1, 2)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
-        coarse_feature0, _ = self.positional_encoding(coarse_feature0)
-        coarse_feature1, _ = self.positional_encoding(coarse_feature1)
-
         coarse_feature0, coarse_feature1, centers0, centers1 = map(
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
             (coarse_feature0, coarse_feature1, centers0, centers1))
@@ -116,18 +115,22 @@ class HybridMatcherNet(nn.Module):
         (coarse_feature0, coarse_feature1, matchability0, matchability1,
          flow0, flow1) = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
-            center0_mask=center0_mask, center1_mask=center1_mask)
+            pos0=pos_feature0, pos1=pos_feature1, mask0=mask0, mask1=mask1)
 
+        fine_features0, fine_features1 = self.fine_preprocess0(
+            fine_features0 + [coarse_feature0],
+            fine_features1 + [coarse_feature1], size0, size1, None)
+
+        size0, size1 = fine_features0[-2].shape[2:], fine_features1[-2].shape[2:]
         result = self.coarse_matching(
-            coarse_feature0, coarse_feature1, size0, size1,
+            fine_features0[-2].flatten(start_dim=2).transpose(1, 2),
+            fine_features1[-2].flatten(start_dim=2).transpose(1, 2), size0, size1,
             matchability0=matchability0, matchability1=matchability1,
             flow0=flow0, flow1=flow1, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
 
-        fine_feature0, fine_feature1 = self.fine_preprocess(
-            fine_features0 + [coarse_feature0],
-            fine_features1 + [coarse_feature1], size0, size1,
+        fine_feature0, fine_feature1 = self.fine_preprocess1(
+            fine_features0, fine_features1, size0, size1,
             result["first_stage_idxes"])
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(

@@ -85,7 +85,8 @@ def create_first_stage_supervision(
     points0 = scale0 * (coors0 + offset)
     points1 = scale1 * (coors1 + offset)
     if mask0 is not None:
-        points0[~mask0], points1[~mask1] = 0.0, 0.0
+        points0[~mask0.flatten(start_dim=1)] = 0.0
+        points1[~mask1.flatten(start_dim=1)] = 0.0
     points0_to_1 = _warp_point(
         points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(

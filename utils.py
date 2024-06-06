@@ -21,8 +21,8 @@ if __name__ == "__main__":
     data = {
         "image0": torch.rand((1, 1, 640, 480)).cuda(),
         "image1": torch.rand((1, 1, 640, 480)).cuda(),
-        "mask0": torch.rand((1, 4800)).bool().cuda(),
-        "mask1": torch.rand((1, 4800)).bool().cuda(),
+        "mask0": torch.rand((1, 80, 60)).bool().cuda(),
+        "mask1": torch.rand((1, 80, 60)).bool().cuda(),
         "center0_mask": torch.rand((1, 300)).bool().cuda(),
         "center1_mask": torch.rand((1, 300)).bool().cuda()}
     with torch.no_grad():

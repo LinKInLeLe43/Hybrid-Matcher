@@ -4,7 +4,7 @@ net:
   _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
   backbone:
     _target_: src.models.components.nets.hybrid_matcher.backbone.ResNetFpn82
-    initial_depth: 128
+    initial_depth: 64
     layer_depths: [128, 196, 256]
   positional_encoding:
     _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
@@ -36,21 +36,29 @@ net:
       _target_: src.models.components.nets.hybrid_matcher.FlowDecoder
       depth: 128
       radius: 8
-  fine_preprocess:
+  fine_preprocess0:
     _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
-    type: "fuse_all_before_crop"
+    type: "fuse_all"
     window_size: 8
     stride: 8
     padding: 0
     right_extra: 1
-    scale_before_crop: 2
+    layer_depths: [64, 128, 196, 256, 256]
+  fine_preprocess1:
+    _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
+    type: "crop_fine_only"
+    window_size: 8
+    stride: 8
+    padding: 0
+    right_extra: 1
+#    scale_before_crop: 2
 #    window_size: 5
 #    stride: 4
 #    padding: 2
-    layer_depths: ${model.net.backbone.layer_depths}
+    layer_depths: [64, 128, 196, 256]
   fine_module:
     _target_: src.models.components.nets.hybrid_matcher.LoFTR
-    depth: ${model.net.backbone.layer_depths.0}
+    depth: 64
     heads_count: 8
     attention:
       _target_: src.models.components.nets.hybrid_matcher.FullAttention
@@ -61,8 +69,8 @@ net:
 #    reg_window_size: ${model.net.fine_preprocess.window_size}
 #    reg_with_std: true
     type: "two_stage"
-    cls_window_size: ${model.net.fine_preprocess.window_size}
-    cls_depth: 112
+    cls_window_size: ${model.net.fine_preprocess1.window_size}
+    cls_depth: 56
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0

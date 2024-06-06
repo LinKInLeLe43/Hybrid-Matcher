@@ -58,7 +58,7 @@ class FinePreprocess(nn.Module):
 
             self.proj = nn.Linear(layer_depths[-1], layer_depths[0])
             self.merge = nn.Linear(2 * layer_depths[0], layer_depths[0])
-        elif type == "fuse_all_before_crop":
+        elif type == "fuse_all_before_crop" or type == "fuse_all":
             if layer_depths is None:
                 raise ValueError("")
 
@@ -146,7 +146,7 @@ class FinePreprocess(nn.Module):
             features[i] += F.interpolate(
                 features[i + 1], scale_factor=2.0, mode="bilinear")
             features[i] = self.downs[i](features[i])
-        return features[0]
+        return features
 
     def _fuse_all_before_crop(
         self,
@@ -160,14 +160,21 @@ class FinePreprocess(nn.Module):
             features = []
             for feature0, feature1 in zip(features0, features1):
                 features.append(torch.cat([feature0, feature1]))
-            fine_feature = self._fuse_all_impl(features, size0)
-            fine_feature0, fine_feature1 = fine_feature.chunk(2)
+            fine_features = self._fuse_all_impl(features, size0)
+            fine_features0, fine_features1 = [], []
+            for fine_feature in fine_features:
+                fine_feature0, fine_feature1 = fine_feature.chunk(2)
+                fine_features0.append(fine_feature0)
+                fine_features1.append(fine_feature1)
         else:
-            fine_feature0 = self._fuse_all_impl(features0, size0)
-            fine_feature1 = self._fuse_all_impl(features1, size1)
-        fine_feature0, fine_feature1 = self._crop_fine_only(
-            fine_feature0, fine_feature1, idxes)
-        return fine_feature0, fine_feature1
+            fine_features0 = self._fuse_all_impl(features0, size0)
+            fine_features1 = self._fuse_all_impl(features1, size1)
+        if idxes is not None:
+            fine_feature0, fine_feature1 = self._crop_fine_only(
+                fine_features0[0], fine_features1[0], idxes)
+            return fine_feature0, fine_feature1
+        else:
+            return fine_features0, fine_features1
 
     def forward(
         self,
@@ -177,15 +184,16 @@ class FinePreprocess(nn.Module):
         size1: torch.Size,
         idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        device = features0[0].device
-        b_idxes, i_idxes, j_idxes = idxes
-        w, e = self.window_size, self.right_extra
-        m = len(b_idxes)
-        if m == 0:
-            c = features0[0].shape[1]
-            fine_feature0 = torch.empty((0, w ** 2, c), device=device)
-            fine_feature1 = torch.empty((0, (w + 2 * e) ** 2, c), device=device)
-            return fine_feature0, fine_feature1
+        if self.type != "fuse_all":
+            device = features0[0].device
+            b_idxes, i_idxes, j_idxes = idxes
+            w, e = self.window_size, self.right_extra
+            m = len(b_idxes)
+            if m == 0:
+                c = features0[0].shape[1]
+                fine_feature0 = torch.empty((0, w ** 2, c), device=device)
+                fine_feature1 = torch.empty((0, (w + 2 * e) ** 2, c), device=device)
+                return fine_feature0, fine_feature1
 
         if self.norm_before_fuse:
             c = features0[-1].shape[2]
@@ -198,7 +206,7 @@ class FinePreprocess(nn.Module):
         elif self.type == "fuse_coarse_after_crop_fine":
             fine_feature0, fine_feature1 = self._fuse_coarse_after_crop_fine(
                 features0[0], features1[0], features0[-1], features1[-1], idxes)
-        elif self.type == "fuse_all_before_crop":
+        elif self.type == "fuse_all_before_crop" or self.type == "fuse_all":
             fine_feature0, fine_feature1 = self._fuse_all_before_crop(
                 features0, features1, size0, size1, idxes)
         else:

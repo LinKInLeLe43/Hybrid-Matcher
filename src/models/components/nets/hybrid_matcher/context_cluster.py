@@ -207,8 +207,7 @@ class GlobalCluster(nn.Module):
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         fc = self.heads_count
         n, l, c = x0.shape
@@ -227,8 +226,7 @@ class GlobalCluster(nn.Module):
         similarities = torch.einsum(
             "mlc,msc->mls", norm_x0_point, norm_center1_point)
         similarities = self.alpha * similarities + self.beta
-        if x0_mask is not None:
-            mask = x0_mask[:, :, None] & center1_mask[:, None, :]
+        if mask is not None:
             mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
@@ -343,8 +341,7 @@ class GlobalClusterBlock(nn.Module):
         center1: torch.Tensor,
         size0: torch.Size,
         flow0: Optional[torch.Tensor] = None,
-        x0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         new_flow0 = None
         if self.use_flow:
@@ -352,8 +349,7 @@ class GlobalClusterBlock(nn.Module):
                 raise ValueError("")
             c0, c1 = x0.shape[2], flow0.shape[2]
 
-        new_x0 = self.cluster(
-            x0, center1, x0_mask=x0_mask, center1_mask=center1_mask)
+        new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
 
         if self.use_flow:
@@ -455,7 +451,7 @@ class LocalCoC(nn.Module):
         x1 = self.layer1(x1)
         x2 = self.point_reducer1(x1)
         x2 = self.layer2(x2)
-        return x2, x0
+        return x2, x1
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
@@ -496,15 +492,15 @@ class MergeBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         new_x = x.transpose(1, 2).unflatten(2, (size[0], size[1]))
         new_center = center.transpose(1, 2).unflatten(
-            2, (size[0] // 4, size[1] // 4))
+            2, (size[0] // 2, size[1] // 2))
         up_center = F.interpolate(
-            new_center, scale_factor=4.0, mode="bilinear", align_corners=True)
+            new_center, scale_factor=2.0, mode="bilinear", align_corners=True)
         new_x = torch.cat([new_x, up_center], dim=1)
 
         new_x = self.mlp(new_x)
         new_x = self.norm(new_x)
         new_center = F.interpolate(
-            new_x, scale_factor=0.25, mode="bilinear", align_corners=True)
+            new_x, scale_factor=0.5, mode="bilinear", align_corners=True)
         new_x = new_x.flatten(start_dim=2).transpose(1, 2)
         new_center = new_center.flatten(start_dim=2).transpose(1, 2)
         new_x += x
@@ -580,10 +576,8 @@ class GlobalCoC(nn.Module):
         size1: torch.Size,
         pos0: Optional[torch.Tensor] = None,
         pos1: Optional[torch.Tensor] = None,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        center0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
         matchability0 = matchability1 = None
@@ -595,12 +589,18 @@ class GlobalCoC(nn.Module):
                 raise ValueError("")
             flow0, flow1 = self.flow_proj(pos0), self.flow_proj(pos1)
 
-        # mask00 = mask11 = mask01 = mask10 = None
-        # if x0_mask is not None:
-        #     mask00 = x0_mask[:, :, None] & center0_mask[:, None, :]
-        #     mask11 = x1_mask[:, :, None] & center1_mask[:, None, :]
-        #     mask01 = x0_mask[:, :, None] & center1_mask[:, None, :]
-        #     mask10 = x1_mask[:, :, None] & center0_mask[:, None, :]
+        mask00 = mask11 = mask01 = mask10 = None
+        if mask0 is not None:
+            # mask00 = x0_mask[:, :, None] & center0_mask[:, None, :]
+            # mask11 = x1_mask[:, :, None] & center1_mask[:, None, :]
+            _mask0, _mask1 = F.max_pool2d(
+                torch.stack([mask0, mask1]).float(), 2, stride=2).bool()
+            center_mask0, center_mask1 = F.max_pool2d(
+                torch.stack([mask0, mask1]).float(), 4, stride=4).bool()
+            mask01 = (_mask0.flatten(start_dim=1)[:, :, None] &
+                      center_mask1.flatten(start_dim=1)[:, None, :])
+            mask10 = (_mask1.flatten(start_dim=1)[:, :, None] &
+                      center_mask0.flatten(start_dim=1)[:, None, :])
 
         for merge_block, global_block, matchability_decoder, type in zip(
             self.merge_blocks, self.global_blocks, self.matchability_decoders,
@@ -613,11 +613,9 @@ class GlobalCoC(nn.Module):
                 pass
             elif type == "cross":
                 x0, flow0 = global_block(
-                    x0, center1, size0, flow0=flow0, x0_mask=x0_mask,
-                    center1_mask=center1_mask)
+                    x0, center1, size0, flow0=flow0, mask=mask01)
                 x1, flow1 = global_block(
-                    x1, center0, size1, flow0=flow1, x0_mask=x1_mask,
-                    center1_mask=center0_mask)
+                    x1, center0, size1, flow0=flow1, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
                 # x0 = local_block(x0, mask=x0_mask)

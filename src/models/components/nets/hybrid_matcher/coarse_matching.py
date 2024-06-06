@@ -207,7 +207,8 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             "nlc,nsc->nls", feature0 / c ** 0.5, feature1 / c ** 0.5)
         similarities /= self.temp
         if mask0 is not None:
-            mask = mask0[:, :, None] & mask1[:, None, :]
+            mask = (mask0.flatten(start_dim=1)[:, :, None] &
+                    mask1.flatten(start_dim=1)[:, None, :])
             similarities.masked_fill_(~mask, -1e9)
 
         confidences_with_bin = None

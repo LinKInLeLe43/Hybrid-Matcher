@@ -4,7 +4,7 @@ defaults:
   - hybrid_matcher_scannet/default
   - _self_
 
-tags: ["eval-hybrid_matcher-scannet-ds", "bs=8"]
+tags: ["eval-hybrid_matcher-scannet-ds"]
 
 model:
   net:
@@ -12,6 +12,3 @@ model:
       type: "dual_softmax"
       sparse: true  # no effect for evaluation
       margin_remove: 0
-
-trainer:
-  devices: 8

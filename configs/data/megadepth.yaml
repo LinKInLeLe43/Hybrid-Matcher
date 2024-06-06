@@ -55,5 +55,3 @@ test_sampler:
   shuffle: false
 
 workers_count: 4
-
-seed: ${seed}

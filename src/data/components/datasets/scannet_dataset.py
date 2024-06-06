@@ -82,9 +82,9 @@ class ScanNetDataset(data.Dataset):
             data["depth0"] = self._read_depth(depth_path0)
             data["depth1"] = self._read_depth(depth_path1)
 
-        for key, value in data.items():
-            if isinstance(value, np.ndarray):
-                data[key] = torch.from_numpy(value).float()
+        for k, v in data.items():
+            if isinstance(v, np.ndarray):
+                data[k] = torch.from_numpy(v).float()
         return data
 
     def __len__(self) -> int:

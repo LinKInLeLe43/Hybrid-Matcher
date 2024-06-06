@@ -10,9 +10,6 @@ data:
   train_batch_size_per_gpu: 2
 
 model:
-  net:
-    coarse_matching:
-      threshold: 0.1
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true

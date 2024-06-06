@@ -53,14 +53,14 @@ class ResNetFpn82(nn.Module):
     ) -> None:
         super().__init__()
         self.in_depth = initial_depth
-        self.scales = 8, 2
+        self.scales = 8, 1
 
         self.conv = nn.Conv2d(
-            1, initial_depth, 7, stride=2, padding=3, bias=False)
+            1, initial_depth, 7, stride=1, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
 
-        self.layer0 = self._make_layer(layer_depths[0])
+        self.layer0 = self._make_layer(layer_depths[0], stride=2)
         self.layer1 = self._make_layer(layer_depths[1], stride=2)
         self.layer2 = self._make_layer(layer_depths[2], stride=2)
 
@@ -115,4 +115,4 @@ class ResNetFpn82(nn.Module):
         #     x1_out, scale_factor=2.0, mode="bilinear", align_corners=True)
         # x0_out = self.layer0_out(x0_out)
         # return x2_out, x0_out
-        return [x0, x1], x2
+        return [x, x0, x1, x2]

@@ -4,13 +4,10 @@ defaults:
   - hybrid_matcher_megadepth/default
   - _self_
 
-tags: ["train-hybrid_matcher-megadepth-ds-dense", "bs=8-image_size=832"]
+tags: ["train-hybrid_matcher-megadepth-ds-dense", "image_size=832"]
 
 model:
   net:
     coarse_matching:
       type: "dual_softmax"
       sparse: false
-
-trainer:
-  devices: 8

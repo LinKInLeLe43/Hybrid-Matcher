@@ -4,7 +4,7 @@ defaults:
   - hybrid_matcher_megadepth/default
   - _self_
 
-tags: ["eval-hybrid_matcher-megadepth-ds", "bs=8-image_size=1216"]
+tags: ["eval-hybrid_matcher-megadepth-ds", "image_size=1216"]
 
 data:
   test_dataset:
@@ -15,6 +15,3 @@ model:
     coarse_matching:
       type: "dual_softmax"
       sparse: true  # no effect for evaluation
-
-trainer:
-  devices: 8

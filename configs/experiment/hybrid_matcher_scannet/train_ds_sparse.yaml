@@ -4,13 +4,10 @@ defaults:
   - hybrid_matcher_scannet/default
   - _self_
 
-tags: ["train-hybrid_matcher-scannet-ds-sparse", "bs=24"]
+tags: ["train-hybrid_matcher-scannet-ds-sparse"]
 
 model:
   net:
     coarse_matching:
       type: "dual_softmax"
       sparse: true
-
-trainer:
-  devices: 8

@@ -30,7 +30,8 @@ def _compute_cls_loss(
 
     weight = None
     if mask0 is not None:
-        weight = (mask0[:, :, None] & mask1[:, None, :]).float()
+        weight = (mask0.flatten(start_dim=1)[:, :, None] &
+                  mask1.flatten(start_dim=1)[:, None, :]).float()
     pos_mask, neg_mask = gt_mask, ~gt_mask
     if not pos_mask.any():
         pos_mask[0, 0, 0] = True
@@ -51,8 +52,8 @@ def _compute_cls_loss(
             bin0_mask = gt_mask.sum(dim=2) == 0
             bin1_mask = gt_mask.sum(dim=1) == 0
             if mask0 is not None:
-                bin0_mask &= mask0
-                bin1_mask &= mask1
+                bin0_mask &= mask0.flatten(start_dim=1)
+                bin1_mask &= mask1.flatten(start_dim=1)
             bins = torch.cat([heatmap[:, :-1, -1][bin0_mask],
                               heatmap[:, -1, :-1][bin1_mask]])
             use_bin = True
