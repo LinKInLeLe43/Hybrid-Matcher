@@ -48,6 +48,7 @@ class MatchingModule(pl.LightningModule):
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
         test_preparation_enabled: bool = False,
+        test_enable_loransac: bool = False,
         advanced_metrics: bool = True,
         dump_dir: Optional[str] = None
     ) -> None:
@@ -230,7 +231,9 @@ class MatchingModule(pl.LightningModule):
             result = self.net(batch)
         with self.test_time_profiler.profile("error"):
             error = utils.compute_error(
-                batch, result, advanced=self.hparams.advanced_metrics,
+                batch, result,
+                enable_loransac=self.hparams.test_enable_loransac,
+                advanced=self.hparams.advanced_metrics,
                 coarse_scale=self.net.scales[0])
 
         dump = {}

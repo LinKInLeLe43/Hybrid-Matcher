@@ -5,6 +5,7 @@ import kornia as K
 from kornia import geometry
 import numpy as np
 from numpy import linalg
+import poselib
 import torch
 from torch.nn import functional as F
 
@@ -196,7 +197,7 @@ def _compute_epipolar_errors(
     return errors_per_batch
 
 
-def _estimate_pose(
+def _estimate_pose_with_opencv_ransac(
     points0: torch.Tensor,
     points1: torch.Tensor,
     K0: torch.Tensor,
@@ -230,6 +231,30 @@ def _estimate_pose(
     return out
 
 
+def _estimate_pose_with_lo_ransac(
+    points0: torch.Tensor,
+    points1: torch.Tensor,
+    K0: torch.Tensor,
+    K1: torch.Tensor,
+    threshold: float = 2.0
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    camera0 = {"model": "PINHOLE",
+               "width": int(2 * K0[0, 2]),
+               "height": int(2 * K0[1, 2]),
+               "params": [K0[0, 0], K0[1, 1], K0[0, 2], K0[1, 2]]}
+    camera1 = {"model": "PINHOLE",
+               "width": int(2 * K1[0, 2]),
+               "height": int(2 * K1[1, 2]),
+               "params": [K1[0, 0], K1[1, 1], K1[0, 2], K1[1, 2]]}
+    pose, info = poselib.estimate_relative_pose(
+        points0.cpu().numpy(), points1.cpu().numpy(), camera0, camera1,
+        {"max_epipolar_error": threshold})
+    out = None
+    if pose is not None:
+        out = pose.R, pose.t, np.array(info["inliers"])
+    return out
+
+
 def _compute_relative_pose_error(
     est_R: np.ndarray,
     gt_R: np.ndarray,
@@ -254,17 +279,19 @@ def _compute_pose_errors(
     K1: torch.Tensor,
     R: torch.Tensor,
     t: torch.Tensor,
-    prob: float = 0.99999,
-    threshold: float = 0.5
+    enable_loransac: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     n = len(K0)
     R_errors, t_errors, inliers_per_batch = [], [], np.empty(n, dtype=object)
     for b in range(n):
         mask = b_idxes == b
         R_error, t_error, inliers = np.inf, np.inf, np.array([], dtype=np.bool_)
-        out = _estimate_pose(
-            points0[mask], points1[mask], K0[b], K1[b], prob=prob,
-            threshold=threshold)
+        if enable_loransac:
+            out = _estimate_pose_with_lo_ransac(
+                points0[mask], points1[mask], K0[b], K1[b])
+        else:
+            out = _estimate_pose_with_opencv_ransac(
+                points0[mask], points1[mask], K0[b], K1[b])
         if out is not None:
             est_R, est_t, inliers = out
             gt_R, gt_t = R[b].cpu().numpy(), t[b].cpu().numpy()
@@ -280,6 +307,7 @@ def _compute_pose_errors(
 def compute_error(
     batch: Dict[str, Any],
     result: Dict[str, Any],
+    enable_loransac: bool = False,
     advanced: bool = False,
     coarse_scale: Optional[int] = None
 ) -> Dict[str, Any]:
@@ -293,7 +321,7 @@ def compute_error(
     R_errors, t_errors, inliers_per_batch = _compute_pose_errors(
         result["idxes"][0], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
-        batch["T0_to_1"][:, :3, 3])
+        batch["T0_to_1"][:, :3, 3], enable_loransac=enable_loransac)
     error = {"identifiers": identifiers,
              "epipolar_errors_per_batch": epipolar_errors_per_batch,
              "R_errors": R_errors,
