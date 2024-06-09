@@ -1,26 +1,16 @@
 _target_: src.models.MatchingModule
 
 net:
-  _target_: src.models.components.nets.hybrid_matcher.HybridMatcherNet
+  _target_: src.models.components.nets.new_matcher.NewMatcherNet
   backbone:
-    _target_: src.models.components.nets.hybrid_matcher.backbone.ResNetFpn82
-    initial_depth: 128
-    layer_depths: [128, 196, 256]
+    _target_: src.models.components.nets.new_matcher.backbones.create_resnet_selfcoc_fpn_1x
   positional_encoding:
-    _target_: src.models.components.nets.hybrid_matcher.SinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
-  local_coc:
-    _target_: src.models.components.nets.hybrid_matcher.LocalCoC
-    blocks_counts: [2, 2, 2]
-    layer_depths: [256, 256, 256]
-    hidden_depths: [256, 256, 256]
-    heads_counts: [8, 8, 8]
-    center_sizes: [8, 4, 2]
-    fold_sizes: [1, 1, 1]
+    _target_: src.models.components.nets.new_matcher.SinePositionalEncoding
+    depth: 256
   coarse_module:
-    _target_: src.models.components.nets.hybrid_matcher.GlobalCoC
-    scale: 4
-    in_depth: ${model.net.local_coc.layer_depths.0}
+    _target_: src.models.components.nets.new_matcher.GlobalCoC
+    scale: 2
+    in_depth: 256
     hidden_depth: 256
     heads_count: 8
     types: ["cross", "cross", "cross", "cross"]
@@ -28,48 +18,48 @@ net:
     use_flow: true
     flow_depth: 128
   coarse_matching:
-    _target_: src.models.components.nets.hybrid_matcher.CoarseMatching
+    _target_: src.models.components.nets.new_matcher.CoarseMatching
     type: ???
     sparse: ???
     use_matchability: ${model.net.coarse_module.use_matchability}
     use_flow: ${model.net.coarse_module.use_flow}
     flow_decoder:
-      _target_: src.models.components.nets.hybrid_matcher.FlowDecoder
+      _target_: src.models.components.nets.new_matcher.FlowDecoder
       depth: 128
       radius: 8
   fine_preprocess:
-    _target_: src.models.components.nets.hybrid_matcher.FinePreprocess
-    type: "fuse_all_before_crop"
-    window_size: 8
-    stride: 8
+    _target_: src.models.components.nets.new_matcher.FinePreprocess
+    type: "crop_fine_only"
+    window_size: 16
+    stride: 16
     padding: 0
     right_extra: 1
-    scale_before_crop: 2
+#    scale_before_crop: 2
 #    window_size: 5
 #    stride: 4
 #    padding: 2
-    layer_depths: ${model.net.backbone.layer_depths}
+#    layer_depths: ${model.net.backbone.layer_depths}
   fine_module:
-    _target_: src.models.components.nets.hybrid_matcher.LoFTR
-    depth: ${model.net.backbone.layer_depths.0}
+    _target_: src.models.components.nets.new_matcher.LoFTR
+    depth: 64
     heads_count: 8
     attention:
-      _target_: src.models.components.nets.hybrid_matcher.FullAttention
+      _target_: src.models.components.nets.new_matcher.FullAttention
     types: ["self", "cross"]
   fine_matching:
-    _target_: src.models.components.nets.hybrid_matcher.FineMatching
+    _target_: src.models.components.nets.new_matcher.FineMatching
 #    type: "one_stage"
 #    reg_window_size: ${model.net.fine_preprocess.window_size}
 #    reg_with_std: true
     type: "two_stage"
     cls_window_size: ${model.net.fine_preprocess.window_size}
-    cls_depth: 112
+    cls_depth: 56
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0
 
 loss:
-  _target_: src.models.components.losses.LoFTRLoss
+  _target_: src.models.components.losses.NewMatcherLoss
   type: "${model.net.fine_matching.type}"
   first_stage_cls_sparse: ${model.net.coarse_matching.sparse}
   first_stage_cls_loss_pos_weight: 1.0

@@ -2,7 +2,7 @@
 
 defaults:
   - override /data: megadepth
-  - override /model: hybrid_matcher
+  - override /model: new_matcher
   - override /trainer: ddp
   - _self_
 

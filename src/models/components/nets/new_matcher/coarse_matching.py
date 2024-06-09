@@ -186,6 +186,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         feature1: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
+        disable_matchability: bool = False,
         matchability0: Optional[torch.Tensor] = None,
         matchability1: Optional[torch.Tensor] = None,
         flow0: Optional[torch.Tensor] = None,
@@ -216,7 +217,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             idxes0_to_1_confidences = F.softmax(similarities, dim=2)
             idxes1_to_0_confidences = F.softmax(similarities, dim=1)
             confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
-            if self.training and self.use_matchability:
+            if self.training and self.use_matchability and not disable_matchability:
                 if matchability0 is None or matchability1 is None:
                     raise ValueError("")
                 confidences = (matchability0[:, :, None] *
@@ -236,9 +237,11 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         else:
             raise ValueError("")
 
-        coarse_matching = self._create_coarse_matching(
-            confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
-            gt_idxes=gt_idxes)
+        coarse_matching = {}
+        if not self.training or gt_idxes is not None:
+            coarse_matching = self._create_coarse_matching(
+                confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
+                gt_idxes=gt_idxes)
         if confidences_with_bin is not None and self.sparse:
             coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
