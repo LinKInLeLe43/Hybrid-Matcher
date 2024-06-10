@@ -147,6 +147,14 @@ class NewMatcherNet(nn.Module):
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0, fine_features1, size0, size1,
             result["first_stage_idxes"])
+        result["idxes"] = (
+            result["idxes"][0].repeat_interleave(self.fine_matching.cls_top_k),
+            result["idxes"][1].repeat_interleave(self.fine_matching.cls_top_k),
+            result["idxes"][2].repeat_interleave(self.fine_matching.cls_top_k))
+        result["points0"] = result["points0"].repeat_interleave(
+            self.fine_matching.cls_top_k, dim=0)
+        result["points1"] = result["points1"].repeat_interleave(
+            self.fine_matching.cls_top_k, dim=0)
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)

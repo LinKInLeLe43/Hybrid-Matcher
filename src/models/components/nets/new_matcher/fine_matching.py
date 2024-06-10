@@ -26,16 +26,18 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         type: str,
         cls_depth: Optional[int] = None,
         cls_window_size: Optional[int] = None,
-        cls_temperature: int = 1.0,
+        cls_temperature: float = 1.0,
+        cls_top_k: int = 1,
         reg_window_size: Optional[int] = None,
         reg_with_std: Optional[bool] = None,
-        reg_temperature: int = 1.0
+        reg_temperature: float = 1.0
     ) -> None:
         super().__init__()
         self.type = type
         self.cls_depth = None
         self.cls_window_size = None
         self.cls_temperature = cls_temperature
+        self.cls_top_k = cls_top_k
         self.reg_window_size = None
         self.reg_with_std = None
         self.reg_temperature = reg_temperature
@@ -94,8 +96,10 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                    F.softmax(similarities, dim=2))
 
         with torch.no_grad():
-            m_idxes = torch.arange(m, device=device)
-            idxes = heatmap.flatten(start_dim=1).argmax(dim=1)
+            m_idxes = torch.arange(
+                m, device=device).repeat_interleave(self.cls_top_k)
+            _, idxes = heatmap.flatten(start_dim=1).topk(self.cls_top_k, dim=1)
+            idxes = idxes.flatten()
             idxes = m_idxes, idxes // ww, idxes % ww
             biases0 = self.cls_biases.index_select(0, idxes[1])
             biases1 = self.cls_biases.index_select(0, idxes[2])

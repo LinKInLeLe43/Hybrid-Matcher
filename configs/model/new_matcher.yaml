@@ -54,6 +54,7 @@ net:
     type: "two_stage"
     cls_window_size: ${model.net.fine_preprocess.window_size}
     cls_depth: 56
+    cls_top_k: 1
     reg_window_size: 3
     reg_with_std: false
     reg_temperature: 10.0
