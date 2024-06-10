@@ -15,7 +15,7 @@ def _focal_loss(  # TODO: support NLL
 
 
 def _compute_cls_loss(
-    sparse: bool,
+    type: str,
     heatmap: torch.Tensor,
     gt_mask: torch.Tensor,
     loss_pos_weight: float = 1.0,
@@ -33,6 +33,10 @@ def _compute_cls_loss(
         weight = (mask0.flatten(start_dim=1)[:, :, None] &
                   mask1.flatten(start_dim=1)[:, None, :]).float()
     pos_mask, neg_mask = gt_mask, ~gt_mask
+    bin0_mask = gt_mask.sum(dim=2) == 0
+    bin1_mask = gt_mask.sum(dim=1) == 0
+    if type == "semi_dense":
+        neg_mask[bin0_mask[:, :, None] & bin1_mask[:, None, :]] = False
     if not pos_mask.any():
         pos_mask[0, 0, 0] = True
         loss_pos_weight = 0.0
@@ -48,9 +52,7 @@ def _compute_cls_loss(
     use_bin = False
     cls_w, gt_w = heatmap.shape[2], gt_mask.shape[2]
     if cls_w == gt_w + 1:
-        if sparse:
-            bin0_mask = gt_mask.sum(dim=2) == 0
-            bin1_mask = gt_mask.sum(dim=1) == 0
+        if type == "sparse":
             if mask0 is not None:
                 bin0_mask &= mask0.flatten(start_dim=1)
                 bin1_mask &= mask1.flatten(start_dim=1)
@@ -62,7 +64,7 @@ def _compute_cls_loss(
     pos_losses = _focal_loss(heatmap[pos_mask])
     if weight is not None:
         pos_losses *= weight[pos_mask]
-    if sparse and not use_bin:
+    if type == "sparse" and not use_bin:
         loss = loss_pos_weight * pos_losses.mean()
         return loss
 
@@ -125,10 +127,10 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
     def __init__(
         self,
         type: str,
-        first_stage_cls_sparse: Optional[bool] = None,
+        first_stage_cls_type: Optional[str] = None,
         first_stage_cls_loss_pos_weight: Optional[float] = None,
         first_stage_cls_loss_neg_weight: Optional[float] = None,
-        second_stage_cls_sparse: Optional[bool] = None,
+        second_stage_cls_type: Optional[str] = None,
         second_stage_cls_loss_pos_weight: Optional[float] = None,
         second_stage_cls_loss_neg_weight: Optional[float] = None,
         reg_loss_weight: Optional[float] = None,
@@ -137,10 +139,10 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
     ) -> None:
         super().__init__()
         self.type = type
-        self.first_stage_cls_sparse = None
+        self.first_stage_cls_type = None
         self.first_stage_cls_loss_pos_weight = None
         self.first_stage_cls_loss_neg_weight = None
-        self.second_stage_cls_sparse = None
+        self.second_stage_cls_type = None
         self.second_stage_cls_loss_pos_weight = None
         self.second_stage_cls_loss_neg_weight = None
         self.reg_loss_weight = None
@@ -148,34 +150,34 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self.flow_loss_weight = None
 
         if type == "one_stage":
-            if (first_stage_cls_sparse is None or
+            if (first_stage_cls_type is None or
                 first_stage_cls_loss_pos_weight is None or
                 first_stage_cls_loss_neg_weight is None or
                 reg_loss_weight is None):
                 raise ValueError("")
 
-            self.first_stage_cls_sparse = first_stage_cls_sparse
+            self.first_stage_cls_type = first_stage_cls_type
             self.first_stage_cls_loss_pos_weight = (
                 first_stage_cls_loss_pos_weight)
             self.first_stage_cls_loss_neg_weight = (
                 first_stage_cls_loss_neg_weight)
             self.reg_loss_weight = reg_loss_weight
         elif type == "two_stage":
-            if (first_stage_cls_sparse is None or
+            if (first_stage_cls_type is None or
                 first_stage_cls_loss_pos_weight is None or
                 first_stage_cls_loss_neg_weight is None or
-                second_stage_cls_sparse is None or
+                second_stage_cls_type is None or
                 second_stage_cls_loss_pos_weight is None or
                 second_stage_cls_loss_neg_weight is None or
                 reg_loss_weight is None):
                 raise ValueError("")
 
-            self.first_stage_cls_sparse = first_stage_cls_sparse
+            self.first_stage_cls_type = first_stage_cls_type
             self.first_stage_cls_loss_pos_weight = (
                 first_stage_cls_loss_pos_weight)
             self.first_stage_cls_loss_neg_weight = (
                 first_stage_cls_loss_neg_weight)
-            self.second_stage_cls_sparse = second_stage_cls_sparse
+            self.second_stage_cls_type = second_stage_cls_type
             self.second_stage_cls_loss_pos_weight = (
                 second_stage_cls_loss_pos_weight)
             self.second_stage_cls_loss_neg_weight = (
@@ -223,7 +225,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 raise ValueError("")
 
             first_stage_cls_loss_8x = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap_8x,
+                self.first_stage_cls_type, first_stage_cls_heatmap_8x,
                 first_stage_gt_mask_8x,
                 loss_pos_weight=self.first_stage_cls_loss_pos_weight,
                 loss_neg_weight=self.first_stage_cls_loss_neg_weight,
@@ -249,7 +251,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 raise ValueError("")
 
             first_stage_cls_loss_8x = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap_8x,
+                self.first_stage_cls_type, first_stage_cls_heatmap_8x,
                 first_stage_gt_mask_8x,
                 loss_pos_weight=self.first_stage_cls_loss_pos_weight,
                 loss_neg_weight=self.first_stage_cls_loss_neg_weight,
@@ -259,7 +261,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 first_stage_cls_loss_8x.detach().cpu())
 
             first_stage_cls_loss_16x = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap_16x,
+                self.first_stage_cls_type, first_stage_cls_heatmap_16x,
                 first_stage_gt_mask_16x,
                 loss_pos_weight=self.first_stage_cls_loss_pos_weight,
                 loss_neg_weight=self.first_stage_cls_loss_neg_weight,
@@ -269,7 +271,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 first_stage_cls_loss_16x.detach().cpu())
 
             second_stage_cls_loss = _compute_cls_loss(
-                self.second_stage_cls_sparse, second_stage_cls_heatmap,
+                self.second_stage_cls_type, second_stage_cls_heatmap,
                 second_stage_gt_mask,
                 loss_pos_weight=self.second_stage_cls_loss_pos_weight,
                 loss_neg_weight=self.second_stage_cls_loss_neg_weight)

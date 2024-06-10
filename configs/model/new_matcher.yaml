@@ -61,10 +61,10 @@ net:
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
   type: "${model.net.fine_matching.type}"
-  first_stage_cls_sparse: ${model.net.coarse_matching.sparse}
+  first_stage_cls_type: "sparse"
   first_stage_cls_loss_pos_weight: 1.0
   first_stage_cls_loss_neg_weight: 1.0
-  second_stage_cls_sparse: ${model.net.coarse_matching.sparse}
+  second_stage_cls_type: "sparse"
   second_stage_cls_loss_pos_weight: 1.0
   second_stage_cls_loss_neg_weight: 1.0
   reg_loss_weight: 1.0
