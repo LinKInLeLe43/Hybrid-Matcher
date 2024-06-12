@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - new_matcher_megadepth/default
+  - _self_
+
+tags: ["train-new_matcher-megadepth-flow-sparse", "bs=8-image_size=832"]
+
+model:
+  net:
+    coarse_matching:
+      type: "flow"
+      sparse: true
+
+trainer:
+  devices: 8

@@ -79,8 +79,23 @@ class MatchingModule(pl.LightningModule):
         supervision = {}
         if self.net.type == "one_stage":
             supervision.update(utils.create_first_stage_supervision(
-                batch, self.net.scales[0], return_coor=True,
-                return_flow=self.net.use_flow))
+                batch, self.net.scales[0],
+                mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
+                mask1=batch.get(f"mask1_{self.net.scales[0]}x"),
+                return_coor=True, return_flow=self.net.use_flow))
+
+            if hasattr(self.net, "extra_scale"):
+                supervision[f"first_stage_gt_mask_{self.net.scales[0]}x"] = (
+                    supervision.pop("first_stage_gt_mask"))
+                _supervision = utils.create_first_stage_supervision(
+                    batch, self.net.extra_scale,
+                    mask0=batch.get(f"mask0_{self.net.extra_scale}x"),
+                    mask1=batch.get(f"mask1_{self.net.extra_scale}x"),
+                    return_flow=True)
+                supervision[f"first_stage_gt_mask_{self.net.extra_scale}x"] = _supervision["first_stage_gt_mask"]
+                supervision["gt_flows0"] = _supervision["gt_flows0"]
+                supervision["gt_flows1"] = _supervision["gt_flows1"]
+
             result = self.net(
                 batch, gt_idxes=supervision["first_stage_gt_idxes"])
             gt_biases = utils.compute_gt_biases(
@@ -90,7 +105,20 @@ class MatchingModule(pl.LightningModule):
             supervision["gt_biases"] = gt_biases
         elif self.net.type == "two_stage":
             supervision.update(utils.create_first_stage_supervision(
-                batch, self.net.scales[0], return_flow=self.net.use_flow))
+                batch, self.net.scales[0],
+                mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
+                mask1=batch.get(f"mask1_{self.net.scales[0]}x"),
+                return_flow=True))
+
+            if hasattr(self.net, "extra_scale"):
+                supervision[f"first_stage_gt_mask_{self.net.scales[0]}x"] = (
+                    supervision.pop("first_stage_gt_mask"))
+                _supervision = utils.create_first_stage_supervision(
+                    batch, self.net.extra_scale,
+                    mask0=batch.get(f"mask0_{self.net.extra_scale}x"),
+                    mask1=batch.get(f"mask1_{self.net.extra_scale}x"))
+                supervision[f"first_stage_gt_mask_{self.net.extra_scale}x"] = _supervision["first_stage_gt_mask"]
+
             result = self.net(
                 batch, gt_idxes=supervision["first_stage_gt_idxes"])
             supervision.update(utils.create_second_stage_supervision(
@@ -104,8 +132,8 @@ class MatchingModule(pl.LightningModule):
             assert False
 
         loss = self.loss(
-            **result, **supervision, mask0=batch.get("mask0"),
-            mask1=batch.get("mask1"))
+            **result, **supervision, mask0=batch.get("mask0_8x"),
+            mask1=batch.get("mask1_8x"))
         return result, loss
 
     def training_step(

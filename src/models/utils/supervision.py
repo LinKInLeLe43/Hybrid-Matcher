@@ -61,6 +61,8 @@ def compute_gt_biases(
 def create_first_stage_supervision(
     batch: Dict[str, Any],
     scale: int,
+    mask0: Optional[torch.Tensor] = None,
+    mask1: Optional[torch.Tensor] = None,
     use_offset: bool = False,  # TODO: whether need actually
     return_coor: bool = False,
     return_flow: bool = False
@@ -73,7 +75,6 @@ def create_first_stage_supervision(
     scale0, scale1 = batch.get("scale0"), batch.get("scale1")
     scale0 = scale * scale0[:, None] if scale0 is not None else scale
     scale1 = scale * scale1[:, None] if scale1 is not None else scale
-    mask0, mask1 = batch.get("mask0"), batch.get("mask1")
 
     coors0 = K.create_meshgrid(
         h0, w0, normalized_coordinates=False, device=device)
@@ -85,7 +86,8 @@ def create_first_stage_supervision(
     points0 = scale0 * (coors0 + offset)
     points1 = scale1 * (coors1 + offset)
     if mask0 is not None:
-        points0[~mask0], points1[~mask1] = 0.0, 0.0
+        points0[~mask0.flatten(start_dim=1)] = 0.0
+        points1[~mask1.flatten(start_dim=1)] = 0.0
     points0_to_1 = _warp_point(
         points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(
@@ -120,8 +122,8 @@ def create_first_stage_supervision(
         supervision["points1"] = points1
 
     if return_flow:
-        supervision["gt_flows0"] = flows0[b_idxes, i_idxes]
-        supervision["gt_flows1"] = flows1[b_idxes, j_idxes]
+        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
     return supervision
 
 

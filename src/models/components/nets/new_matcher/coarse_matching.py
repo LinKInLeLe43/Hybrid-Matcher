@@ -1,9 +1,11 @@
 from typing import Any, Dict, Optional, Tuple
 
+import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .modules.mlp import Mlp
 from src.models.components.nets.loftr import optimal_transport
 
 
@@ -13,8 +15,6 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         type: str,
         sparse: bool,
         use_matchability: bool = False,
-        use_flow: bool = False,
-        flow_decoder: Optional[nn.Module] = None,
         threshold: float = 0.2,
         margin_remove: int = 2,
         train_percent: float = 0.2,
@@ -22,23 +22,19 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         ds_temperature: float = 0.1,
         ot_filter_bin: bool = True,
         ot_bin_score: float = 1.0,
-        ot_its_count: int = 3
+        ot_its_count: int = 3,
+        flow_depth: int = 256,
+        flow_upsample_scale: int = 2,
+        bias: bool = True
     ) -> None:
         super().__init__()
         self.type = type
         self.sparse = sparse
         self.use_matchability = use_matchability
-        self.use_flow = use_flow
         self.threshold = threshold
         self.margin_remove = margin_remove
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
-
-        self.flow_decoder = None
-        if use_flow:
-            if flow_decoder is None:
-                raise ValueError("")
-            self.flow_decoder = flow_decoder
 
         if type == "dual_softmax":
             self.temp = ds_temperature
@@ -47,6 +43,12 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             self.ot_filter_bin = ot_filter_bin
             self.ot_bin_score = nn.Parameter(torch.tensor(ot_bin_score))
             self.ot_its_count = ot_its_count
+        elif type == "flow":
+            self.temp = ds_temperature
+            self.flow_upsample_scale = flow_upsample_scale
+            self.flow_decoder = Mlp(
+                flow_depth, 2 * flow_depth, 4, bias=bias, kernel_size0=3,
+                kernel_size1=3)
         else:
             raise ValueError("")
 
@@ -113,34 +115,46 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
 
     def _decode_flow(
         self,
-        flow0: torch.Tensor,
-        flow1: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size
-    ) -> Dict[str, Any]:
-        flows_with_uncertainties0, flow_mask0 = self.flow_decoder(flow0, size1)
-        flows_with_uncertainties1, flow_mask1 = self.flow_decoder(flow1, size0)
-        flow_mask = flow_mask0 | flow_mask1.transpose(1, 2)
-        flow = {"flows_with_uncertainties0": flows_with_uncertainties0,
-                "flows_with_uncertainties1": flows_with_uncertainties1,
-                "flow_mask": flow_mask}
-        return flow
+        score0: torch.Tensor,
+        positional_encoding1: torch.Tensor,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        s = self.flow_upsample_scale
+        device = score0.device
+
+        flow0_to_1 = torch.einsum(
+            "nls,ncs->ncl", score0, positional_encoding1).unflatten(2, size0)
+        flow0_to_1 = self.flow_decoder(flow0_to_1)
+
+        if s != 1:
+            sh0, sw0 = s * size0[0], s * size0[1]
+            scale0 = torch.tensor([sw0 - s, sh0 - s], device=device)
+            grid = K.create_meshgrid(
+                sh0, sw0, normalized_coordinates=False, device=device)
+            grid = 2 * grid / scale0 - 1
+            flow0_to_1 = F.grid_sample(flow0_to_1, grid, align_corners=True)
+
+        sh1, sw1 = s * size1[0], s * size1[1]
+        scale1 = score0.new_tensor([sw1, sh1])
+        flow0_to_1 = flow0_to_1.flatten(start_dim=2).transpose(1, 2)
+        flow0_to_1[:, :, :2] = scale1 * flow0_to_1[:, :, :2].sigmoid()
+        idxes0_to_1 = (
+            sw1 * flow0_to_1[:, :, 1].round().long().clamp(max=sh1 - 1) +
+            flow0_to_1[:, :, 0].round().long().clamp(max=sw1 - 1))
+        return flow0_to_1, idxes0_to_1
 
     @torch.no_grad()
     def _create_coarse_matching(
         self,
         confidences: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size,
-        flow: Optional[Dict[str, Any]] = None,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int],
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        if flow is not None:
-            if not self.training:
-                confidences.masked_fill_(~flow["flow_mask"], 0.0)
         (h0, w0), (h1, w1) = size0, size1
 
         mask = (confidences > self.threshold).reshape(-1, h0, w0, h1, w1)
@@ -171,42 +185,31 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                            "points1": points1,
                            "confidences": confidences,
                            "first_stage_idxes": train_idxes}
-        if flow is not None:
-            if gt_idxes is not None:
-                b_idxes, i_idxes, j_idxes = gt_idxes
-            coarse_matching["flows_with_uncertainties0"] = (
-                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
-            coarse_matching["flows_with_uncertainties1"] = (
-                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return coarse_matching
 
     def forward(
         self,
-        feature0: torch.Tensor,
-        feature1: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int],
         matchability0: Optional[torch.Tensor] = None,
         matchability1: Optional[torch.Tensor] = None,
-        flow0: Optional[torch.Tensor] = None,
-        flow1: Optional[torch.Tensor] = None,
+        positional_encoding0: Optional[torch.Tensor] = None,
+        positional_encoding1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        upsampled_mask0: Optional[torch.Tensor] = None,
+        upsampled_mask1: Optional[torch.Tensor] = None,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        l, (s, c) = feature0.shape[1], feature1.shape[1:]
+        n, l, c = x0.shape
+        _, s, _ = x1.shape
 
-        flow = None
-        if self.use_flow:
-            if flow0 is None or flow1 is None:
-                raise ValueError("")
-            flow = self._decode_flow(flow0, flow1, size0, size1)
-
-        similarities = torch.einsum(
-            "nlc,nsc->nls", feature0 / c ** 0.5, feature1 / c ** 0.5)
-        similarities /= self.temp
-        if mask0 is not None:
+        x0, x1 = c ** -0.5 * x0, c ** -0.5 * x1
+        similarities = torch.einsum("nlc,nsc->nls", x0, x1) / self.temp
+        if mask0 is not None and mask1 is not None:
             mask = (mask0.flatten(start_dim=1)[:, :, None] &
                     mask1.flatten(start_dim=1)[:, None, :])
             similarities.masked_fill_(~mask, -1e9)
@@ -219,6 +222,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             if self.training and self.use_matchability:
                 if matchability0 is None or matchability1 is None:
                     raise ValueError("")
+
                 confidences = (matchability0[:, :, None] *
                                matchability1[:, None, :] * confidences)
                 confidences_with_bin = F.pad(confidences, [0, 1, 0, 1])
@@ -233,12 +237,56 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                 confidences.masked_fill_(bin0_mask[:, :l, None], 0.0)
                 bin1_mask = confidences_with_bin.argmax(dim=1) == l
                 confidences.masked_fill_(bin1_mask[:, None, :s], 0.0)
-        else:
-            raise ValueError("")
+        elif self.type == "flow":
+            if positional_encoding0 is None or positional_encoding1 is None:
+                raise ValueError("")
 
-        coarse_matching = self._create_coarse_matching(
-            confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
-            gt_idxes=gt_idxes)
+            idxes0_to_1_confidences = F.softmax(similarities, dim=2)
+            idxes1_to_0_confidences = F.softmax(similarities, dim=1)
+            confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
+            if self.training and self.use_matchability:
+                if matchability0 is None or matchability1 is None:
+                    raise ValueError("")
+                confidences = (matchability0[:, :, None] *
+                               matchability1[:, None, :] * confidences)
+                confidences_with_bin = F.pad(confidences, [0, 1, 0, 1])
+                confidences_with_bin[:, :-1, -1] = 1 - matchability0
+                confidences_with_bin[:, -1, :-1] = 1 - matchability1
+
+            flow0_to_1, idxes0_to_1 = self._decode_flow(
+                confidences, positional_encoding1, size0, size1)
+            flow1_to_0, idxes1_to_0 = self._decode_flow(
+                confidences.transpose(1, 2), positional_encoding0, size1,
+                size0)
+
+            size0 = self.flow_upsample_scale * size0[0], self.flow_upsample_scale * size0[1]
+            size1 = self.flow_upsample_scale * size1[0], self.flow_upsample_scale * size1[1]
+            biprojection = torch.stack([idxes1_to_0[b, idx1]
+                                        for b, idx1 in enumerate(idxes0_to_1)])
+            biprojection_mask = (
+                biprojection ==
+                torch.arange(size0[0] * size0[1], device=x0.device).float())
+            b_idxes, i_idxes = biprojection_mask.nonzero(as_tuple=True)
+            j_idxes = idxes0_to_1[b_idxes, i_idxes]
+            _confidences = x0.new_zeros(
+                (n, size0[0] * size0[1], size1[0] * size1[1]))
+            _confidences[b_idxes, i_idxes, j_idxes] = 1.0
+        else:
+            assert False
+
+        coarse_matching = {}
+        if not self.training or gt_idxes is not None:
+            coarse_matching = self._create_coarse_matching(
+                _confidences if self.type == "flow" else confidences, size0, size1,
+                mask0=upsampled_mask0 if self.type == "flow" else mask0,
+                mask1=upsampled_mask1 if self.type == "flow" else mask1,
+                gt_idxes=gt_idxes)
+        if self.type == "flow" and gt_idxes is not None:
+            b_idxes, i_idxes, j_idxes = gt_idxes
+            coarse_matching["flows_with_uncertainties0"] = (
+                flow0_to_1[b_idxes, i_idxes])
+            coarse_matching["flows_with_uncertainties1"] = (
+                flow1_to_0[b_idxes, j_idxes])
         if confidences_with_bin is not None and self.sparse:
             coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
