@@ -2,7 +2,7 @@
 
 defaults:
   - override /data: megadepth
-  - override /model: hybrid_matcher
+  - override /model: new_matcher
   - override /trainer: ddp
   - _self_
 
@@ -10,7 +10,7 @@ data:
   train_dataset:
     image_size: 832
     image_factor: 32
-    mask_factors: [8, 32]
+    mask_factors: [8, 16, 32]
   train_batch_size_per_gpu: 1
   test_dataset:
     image_size: 832

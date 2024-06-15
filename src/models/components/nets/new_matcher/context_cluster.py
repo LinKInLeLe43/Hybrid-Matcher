@@ -304,66 +304,33 @@ class GlobalClusterBlock(nn.Module):
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
-        bias: bool = True,
-        use_flow: bool = False,
-        flow_depth: Optional[int] = None,
-        use_layer_scale: bool = False,
-        layer_scale_value: Optional[float] = None,
-        dropout: float = 0.0
+        bias: bool = True
     ) -> None:
         super().__init__()
-        self.use_flow = use_flow
-        self.use_layer_scale = use_layer_scale
-
-        out_depth = in_depth
-        if use_flow:
-            if flow_depth is None:
-                raise ValueError("")
-            out_depth += flow_depth
-        if use_layer_scale:
-            if layer_scale_value is None:
-                raise ValueError("")
-            self.layer_scale = nn.Parameter(
-                layer_scale_value * torch.ones((out_depth,)))
-
         self.cluster = GlobalCluster(
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
         self.mlp3x3 = Mlp3x3(
-            in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias,
-            dropout=dropout)
-        self.norm1 = nn.LayerNorm(out_depth)
+            2 * in_depth, 2 * in_depth, in_depth, bias=bias)
+        self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
         size0: torch.Size,
-        flow0: Optional[torch.Tensor] = None,
         mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        new_flow0 = None
-        if self.use_flow:
-            if flow0 is None:
-                raise ValueError("")
-            c0, c1 = x0.shape[2], flow0.shape[2]
-
+    ) -> torch.Tensor:
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
 
-        if self.use_flow:
-            x0 = torch.cat([x0, flow0], dim=2)
         new_x0 = torch.cat([x0, new_x0], dim=2)
         new_x0 = self.mlp3x3(new_x0, size=size0)
         new_x0 = self.norm1(new_x0)
 
-        if self.use_layer_scale:
-            new_x0 *= self.layer_scale
         new_x0 += x0
-        if self.use_flow:
-            new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
-        return new_x0, new_flow0
+        return new_x0
 
 
 class LocalCoC(nn.Module):
@@ -521,32 +488,18 @@ class GlobalCoC(nn.Module):
         heads_count: int,
         types: List[str],
         bias: bool = True,
-        use_matchability: bool = False,
-        use_flow: bool = False,
-        flow_depth: Optional[int] = None,
-        use_layer_scale: bool = False,
-        layer_scale_value: Optional[float] = None,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
         self.scale = scale
         self.types = types
-        self.use_matchability = use_matchability
-        self.use_flow = use_flow
-
-        if use_flow:
-            if flow_depth is None:
-                raise ValueError("")
-            self.flow_proj = nn.Linear(in_depth, flow_depth)
 
         merge_block = MergeBlock(scale, in_depth, bias=bias, dropout=dropout)
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in types])
 
         global_block = GlobalClusterBlock(
-            in_depth, hidden_depth, heads_count, bias=bias, use_flow=use_flow,
-            flow_depth=flow_depth, use_layer_scale=use_layer_scale,
-            layer_scale_value=layer_scale_value, dropout=dropout)
+            in_depth, hidden_depth, heads_count, bias=bias)
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in types])
 
@@ -556,13 +509,6 @@ class GlobalCoC(nn.Module):
         #     layer_scale_value=layer_scale_value, dropout=dropout)
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
-
-        matchability_decoder = None
-        if use_matchability:
-            matchability_decoder = Mlp(
-                in_depth, in_depth // 2, 1, bias=bias, dropout=dropout)
-        self.matchability_decoders = nn.ModuleList(
-            [copy.deepcopy(matchability_decoder) for _ in types])
 
         # TODO: check weight init
         for m in self.modules():
@@ -580,36 +526,21 @@ class GlobalCoC(nn.Module):
         center1: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
-        pos0: Optional[torch.Tensor] = None,
-        pos1: Optional[torch.Tensor] = None,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-               Optional[torch.Tensor], Optional[torch.Tensor]]:
-        matchability0 = matchability1 = None
-        if self.use_matchability:
-            matchability0, matchability1 = [], []
-        flow0 = flow1 = None
-        if self.use_flow:
-            if pos0 is None or pos1 is None:
-                raise ValueError("")
-            flow0, flow1 = self.flow_proj(pos0), self.flow_proj(pos1)
+        x0_mask: Optional[torch.Tensor] = None,
+        x1_mask: Optional[torch.Tensor] = None,
+        center0_mask: Optional[torch.Tensor] = None,
+        center1_mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        mask01 = mask10 = None
+        if (x0_mask is not None and x1_mask is not None and
+            center0_mask is not None and center1_mask is not None):
+            mask01 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+                      center1_mask.flatten(start_dim=1)[:, None, :])
+            mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+                      center0_mask.flatten(start_dim=1)[:, None, :])
 
-        mask00 = mask11 = mask01 = mask10 = None
-        if mask0 is not None:
-            # mask00 = x0_mask[:, :, None] & center0_mask[:, None, :]
-            # mask11 = x1_mask[:, :, None] & center1_mask[:, None, :]
-            center_mask0, center_mask1 = F.max_pool2d(
-                torch.stack([mask0, mask1]).float(), self.scale,
-                stride=self.scale).bool()
-            mask01 = (mask0.flatten(start_dim=1)[:, :, None] &
-                      center_mask1.flatten(start_dim=1)[:, None, :])
-            mask10 = (mask1.flatten(start_dim=1)[:, :, None] &
-                      center_mask0.flatten(start_dim=1)[:, None, :])
-
-        for merge_block, global_block, matchability_decoder, type in zip(
-            self.merge_blocks, self.global_blocks, self.matchability_decoders,
-            self.types):
+        for merge_block, global_block, type in zip(
+            self.merge_blocks, self.global_blocks, self.types):
             x0, center0 = merge_block(x0, center0, size0)
             x1, center1 = merge_block(x1, center1, size1)
             if type == "self":
@@ -617,23 +548,14 @@ class GlobalCoC(nn.Module):
                 # x1 = global_block(x1, center1, mask=mask11)
                 pass
             elif type == "cross":
-                x0, flow0 = global_block(
-                    x0, center1, size0, flow0=flow0, mask=mask01)
-                x1, flow1 = global_block(
-                    x1, center0, size1, flow0=flow1, mask=mask10)
+                x0 = global_block(x0, center1, size0, mask=mask01)
+                x1 = global_block(x1, center0, size1, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
                 # x0 = local_block(x0, mask=x0_mask)
                 # x1 = local_block(x1, mask=x1_mask)
                 # x0 = x0.flatten(start_dim=2).transpose(1, 2)
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
-
-                if self.use_matchability:
-                    matchability0.append(matchability_decoder(x0).sigmoid())
-                    matchability1.append(matchability_decoder(x1).sigmoid())
             else:
                 raise ValueError("")
-        if self.use_matchability:
-            matchability0 = torch.cat(matchability0, dim=2).mean(dim=2)
-            matchability1 = torch.cat(matchability1, dim=2).mean(dim=2)
-        return x0, x1, matchability0, matchability1, flow0, flow1
+        return x0, x1

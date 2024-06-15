@@ -10,7 +10,7 @@ train_dataset:
   data_root: "${paths.data_dir}/megadepth/train"
   image_size: ???
   image_factor: ???
-  mask_factor: ???
+  mask_factors: ???
 
 train_sampler:
   _target_: src.data.components.samplers.RandomConcatSampler
@@ -30,7 +30,7 @@ val_dataset:
   data_root: "${paths.data_dir}/megadepth/test"
   image_size: ${data.train_dataset.image_size}
   image_factor: ${data.train_dataset.image_factor}
-  mask_factor: ${data.train_dataset.mask_factor}
+  mask_factors: ${data.train_dataset.mask_factors}
 
 val_sampler:
   _target_: torch.utils.data.DistributedSampler
@@ -47,7 +47,7 @@ test_dataset:
   data_root: "${paths.data_dir}/megadepth/test"
   image_size: ???
   image_factor: ${data.train_dataset.image_factor}
-  mask_factor: ${data.train_dataset.mask_factor}
+  mask_factors: ${data.train_dataset.mask_factors}
 
 test_sampler:
   _target_: torch.utils.data.DistributedSampler

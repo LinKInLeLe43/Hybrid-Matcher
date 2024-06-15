@@ -1,24 +1,18 @@
 # @package _global_
 
 defaults:
-  - override /data: megadepth
-  - override /model: loftr
+  - override /data: scannet
+  - override /model: new_matcher
   - override /trainer: ddp
   - _self_
 
 data:
-  train_dataset:
-    image_size: 840
-    image_factor: 8
-    mask_factors: [8]
-  train_batch_size_per_gpu: 1
-  test_dataset:
-    image_size: 840
+  train_batch_size_per_gpu: 2
 
 model:
   net:
     coarse_matching:
-      train_percent: 0.3
+      threshold: 0.1
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
@@ -26,12 +20,12 @@ model:
   scheduler:
     _target_: torch.optim.lr_scheduler.MultiStepLR
     _partial_: true
-    milestones: [8, 12, 16, 20, 24]
+    milestones: [3, 6, 9, 12, 17, 20, 23, 26, 29]
     gamma: 0.5
   canonical_batch_size: 64
-  canonical_learning_rate: 8e-3
-  canonical_warmup_step_count: 1875
-  warmup_ratio: 0.1
+  canonical_learning_rate: 6e-3
+  canonical_warmup_step_count: 4800
+  warmup_ratio: 0.0
   end_point_thresholds: [1, 3, 5]
-  epipolar_thresholds: [1e-4, 5e-4]
+  epipolar_thresholds: [5e-4, 1e-4]
   pose_thresholds: [5, 10, 20]

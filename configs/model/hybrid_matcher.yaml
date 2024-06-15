@@ -19,6 +19,7 @@ net:
     fold_sizes: [1, 1, 1]
   coarse_module:
     _target_: src.models.components.nets.hybrid_matcher.GlobalCoC
+    scale: 4
     in_depth: ${model.net.local_coc.layer_depths.0}
     hidden_depth: 256
     heads_count: 8

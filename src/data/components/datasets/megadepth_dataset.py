@@ -1,5 +1,5 @@
 from os import path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import cv2
 import h5py
@@ -16,18 +16,16 @@ class MegaDepthDataset(data.Dataset):
         data_root: str,
         image_size: int,
         image_factor: int,
-        mask_factor: int,
+        mask_factors: List[int],
         load_depth: bool = True,
-        min_overlap_score: float = 0.0,
-        center_factor: Optional[int] = None
+        min_overlap_score: float = 0.0
     ) -> None:
         super().__init__()
         self.data_root = data_root
         self.image_size = image_size
         self.image_factor = image_factor
-        self.mask_factor = mask_factor
+        self.mask_factors = mask_factors
         self.load_depth = load_depth
-        self.center_factor = center_factor
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
         self.pair_idxes = self.scene_info.pop("pair_infos")
@@ -106,14 +104,10 @@ class MegaDepthDataset(data.Dataset):
             if isinstance(value, np.ndarray):
                 data[key] = torch.from_numpy(value).float()
 
-        masks = torch.stack([data["mask0"], data["mask1"]])
-        masks = F.max_pool2d(masks, self.mask_factor, stride=self.mask_factor)
-        data["mask0"], data["mask1"] = masks.flatten(start_dim=1).bool()
-        if self.center_factor is not None:
-            center_masks = F.max_pool2d(
-                masks, self.center_factor, stride=self.center_factor)
-            data["center0_mask"], data["center1_mask"] = center_masks.flatten(
-                start_dim=1).bool()
+        mask = torch.stack([data.pop("mask0"), data.pop("mask1")])
+        for factor in self.mask_factors:
+            data[f"mask0_{factor}x"], data[f"mask1_{factor}x"] = F.max_pool2d(
+                mask, factor, stride=factor).bool()
         return data
 
     def __len__(self) -> int:
