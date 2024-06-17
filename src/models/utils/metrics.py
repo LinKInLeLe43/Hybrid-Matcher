@@ -87,12 +87,12 @@ def _compute_end_point_errors(
     inliers_per_batch: np.array,
     consistent_depth_ratio: float = 0.2,
     coarse_points0: Optional[torch.Tensor] = None,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray,
-           np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, ...]:
     n, h, w = depth0.shape
     device = fine_points0.device
 
     end_point_errors_per_batch = np.empty(n, dtype=object)
+    false_end_point_errors_per_batch = np.empty(n, dtype=object)
     inlier_end_point_errors_per_batch = np.empty(n, dtype=object)
     true_coarse_counts = []
     inlier_true_coarse_counts = []
@@ -134,13 +134,18 @@ def _compute_end_point_errors(
         true_coarse_count = 0.0
         coarse_precision = 0.0
         coarse_3x3_precision = 0.0
+        false_end_point_errors = end_point_errors.new_tensor([])
         if len(coarse_3x3_results) != 0:
+            false_end_point_errors = end_point_errors[
+                ~coarse_3x3_results[:, 3 * 3 // 2].bool()]
             true_coarse_count = coarse_3x3_results[:, 3 * 3 // 2].sum().item()
             coarse_precision = coarse_3x3_results[:, 3 * 3 // 2].mean().item()
             coarse_3x3_precision = coarse_3x3_results.sum(dim=1).mean().item()
         true_coarse_counts.append(true_coarse_count)
         coarse_precisions.append(coarse_precision)
         coarse_3x3_precisions.append(coarse_3x3_precision)
+        false_end_point_errors_per_batch[b] = (
+            false_end_point_errors.cpu().numpy())
 
         inlier_end_point_errors = end_point_errors.new_tensor([])
         inlier_true_coarse_count = 0.0
@@ -167,7 +172,8 @@ def _compute_end_point_errors(
     inlier_coarse_precisions = np.array(inlier_coarse_precisions)
     coarse_3x3_precisions = np.array(coarse_3x3_precisions)
     inlier_coarse_3x3_precisions = np.array(inlier_coarse_3x3_precisions)
-    return (end_point_errors_per_batch, inlier_end_point_errors_per_batch,
+    return (end_point_errors_per_batch, false_end_point_errors_per_batch,
+            inlier_end_point_errors_per_batch,
             true_coarse_counts, inlier_true_coarse_counts,
             coarse_precisions, inlier_coarse_precisions,
             coarse_3x3_precisions, inlier_coarse_3x3_precisions)
@@ -333,6 +339,7 @@ def compute_error(
         scale1 = batch["scale1"][:, None] if "scale1" in batch else 1
         coarse_w1 = batch["image1"].shape[3] // coarse_scale
         (error["end_point_errors_per_batch"],
+         error["false_end_point_errors_per_batch"],
          error["inlier_end_point_errors_per_batch"],
          error["true_coarse_counts"],
          error["inlier_true_coarse_counts"],
@@ -395,6 +402,9 @@ def compute_metric(
     if advanced:
         metric["end_point_precisions"] = _compute_precision(
             error["end_point_errors_per_batch"][idxes], end_point_thresholds)
+        metric["false_end_point_precisions"] = _compute_precision(
+            error["false_end_point_errors_per_batch"][idxes],
+            end_point_thresholds)
         metric["inlier_end_point_precisions"] = _compute_precision(
             error["inlier_end_point_errors_per_batch"][idxes],
             end_point_thresholds)

@@ -197,11 +197,13 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "val_metric/inlier_coarse_3x3_precision",
                 metric.pop("inlier_coarse_3x3_precision"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
+            for t, m0, m1, m2 in zip(self.hparams.end_point_thresholds,
+                                     metric.pop("end_point_precisions"),
+                                     metric.pop("false_end_point_precisions"),
+                                     metric.pop("inlier_end_point_precisions")):
                 self.log(f"val_metric/end_point_precision@{t}", m0)
-                self.log(f"val_metric/inlier_end_point_precision@{t}", m1)
+                self.log(f"val_metric/false_end_point_precision@{t}", m1)
+                self.log(f"val_metric/inlier_end_point_precision@{t}", m2)
 
         if not self.trainer.sanity_checking:
             figures = np.concatenate(gathered_output.pop("figures"))
@@ -279,11 +281,13 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/inlier_coarse_3x3_precision",
                 metric.pop("inlier_coarse_3x3_precision"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
+            for t, m0, m1, m2 in zip(self.hparams.end_point_thresholds,
+                                     metric.pop("end_point_precisions"),
+                                     metric.pop("false_end_point_precisions"),
+                                     metric.pop("inlier_end_point_precisions")):
                 self.log(f"test_metric/end_point_precision@{t}", m0)
-                self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
+                self.log(f"test_metric/false_end_point_precision@{t}", m1)
+                self.log(f"test_metric/inlier_end_point_precision@{t}", m2)
 
         if self.hparams.dump_dir is not None:
             pathlib.Path(
