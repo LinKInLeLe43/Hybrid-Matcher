@@ -104,8 +104,9 @@ class MatchingModule(pl.LightningModule):
             assert False
 
         loss = self.loss(
-            **result, **supervision, mask0=batch.get("mask0"),
-            mask1=batch.get("mask1"))
+            **result, **supervision,
+            mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
+            mask1=batch.get(f"mask1_{self.net.scales[0]}x"))
         return result, loss
 
     def training_step(

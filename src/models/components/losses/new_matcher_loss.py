@@ -109,10 +109,9 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
     gt_flows: torch.Tensor,
     loss_weight: float = 1.0
 ) -> torch.Tensor:
-    device = flows_with_uncertainties.device
     m = len(flows_with_uncertainties)
-    if m == 0:
-        return loss_weight * torch.tensor(1.0, device=device)
+    if m == 1:
+        loss_weight = 0.0
 
     flows, log_stds_mul_2 = flows_with_uncertainties.chunk(2, dim=1)
     l2_distances = (flows - gt_flows) ** 2
@@ -121,7 +120,7 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
     return loss
 
 
-class LoFTRLoss(nn.Module):  # TODO: change name
+class NewMatcherLoss(nn.Module):  # TODO: change name
     def __init__(
         self,
         type: str,
