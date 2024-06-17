@@ -120,8 +120,8 @@ def create_first_stage_supervision(
         supervision["points1"] = points1
 
     if return_flow:
-        supervision["gt_flows0"] = flows0[b_idxes, i_idxes]
-        supervision["gt_flows1"] = flows1[b_idxes, j_idxes]
+        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
     return supervision
 
 

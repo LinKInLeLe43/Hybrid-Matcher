@@ -171,13 +171,6 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                            "points1": points1,
                            "confidences": confidences,
                            "first_stage_idxes": train_idxes}
-        if flow is not None:
-            if gt_idxes is not None:
-                b_idxes, i_idxes, j_idxes = gt_idxes
-            coarse_matching["flows_with_uncertainties0"] = (
-                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
-            coarse_matching["flows_with_uncertainties1"] = (
-                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return coarse_matching
 
     def forward(
@@ -238,6 +231,12 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         coarse_matching = self._create_coarse_matching(
             confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
+        if flow is not None and gt_idxes is not None:
+            b_idxes, i_idxes, j_idxes = gt_idxes
+            coarse_matching["flows_with_uncertainties0"] = (
+                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
+            coarse_matching["flows_with_uncertainties1"] = (
+                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         if confidences_with_bin is not None and self.sparse:
             coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
