@@ -6,6 +6,7 @@ from .fine_matching import FineMatching
 from .fine_preprocess import FinePreprocess
 from .flow_decoder import FlowDecoder
 from .hybrid_matcher_net import HybridMatcherNet
+from .mlp_mixer import MLPMixer
 from .positional_encoding import SinePositionalEncoding
 from .positional_encoding import LearnableFourierPositionalEncoding
 from .transformer import LoFTR
