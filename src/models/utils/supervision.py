@@ -58,7 +58,7 @@ def compute_gt_biases(
 
 
 @torch.no_grad()
-def create_first_stage_supervision(
+def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
     use_offset: bool = False,  # TODO: whether need actually
@@ -110,8 +110,8 @@ def create_first_stage_supervision(
                 else 3 * (torch.tensor([0], device=device),))
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
-    supervision = {"first_stage_gt_idxes": gt_idxes,
-                   "first_stage_gt_mask": gt_mask}
+    supervision = {"coarse_gt_idxes": gt_idxes,
+                   "coarse_gt_mask": gt_mask}
 
     if return_coor:
         if "scale1" in batch:
@@ -127,7 +127,7 @@ def create_first_stage_supervision(
 
 
 @torch.no_grad()
-def create_second_stage_supervision(
+def create_fine_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
@@ -143,7 +143,7 @@ def create_second_stage_supervision(
         gt_mask = torch.empty((0, ww, ww), dtype=torch.bool, device=device)
         supervision = {"points0_to_1": points0_to_1,
                        "points1": points1,
-                       "second_stage_gt_mask": gt_mask}
+                       "fine_gt_mask": gt_mask}
         return supervision
 
     n, _, h0, w0 = batch["image0"].shape
@@ -189,5 +189,5 @@ def create_second_stage_supervision(
         points1 = points1 / batch["scale1"][:, None]
     supervision = {"points0_to_1": points0_to_1,
                    "points1": points1,
-                   "second_stage_gt_mask": gt_mask}
+                   "fine_gt_mask": gt_mask}
     return supervision

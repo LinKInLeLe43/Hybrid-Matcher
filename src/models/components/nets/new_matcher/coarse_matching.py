@@ -142,7 +142,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                            "points0": points0,
                            "points1": points1,
                            "confidences": confidences,
-                           "first_stage_idxes": train_idxes}
+                           "coarse_cls_idxes": train_idxes}
         return coarse_matching
 
     def forward(
@@ -161,8 +161,8 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         n, l, c = x0.shape
         _, s, _ = x1.shape
 
-        x0, x1 = c ** -0.5 * x0, c ** -0.5 * x1
-        similarities = torch.einsum("nlc,nsc->nls", x0, x1) / self.temp
+        similarities = torch.einsum("nlc,nsc->nls", x0, x1) / c
+        similarities /= self.temp
         if mask0 is not None and mask1 is not None:
             mask = (mask0.flatten(start_dim=1)[:, :, None] &
                     mask1.flatten(start_dim=1)[:, None, :])
@@ -198,7 +198,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             confidences, size0, size1, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
         if confidences_with_bin is not None and self.sparse:
-            coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
+            coarse_matching["coarse_cls_heatmap"] = confidences_with_bin
         else:
-            coarse_matching["first_stage_cls_heatmap"] = confidences
+            coarse_matching["coarse_cls_heatmap"] = confidences
         return coarse_matching

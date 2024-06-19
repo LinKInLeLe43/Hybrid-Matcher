@@ -3,30 +3,32 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
+from .modules.utils import crop_windows
+
 
 class NewMatcherNet(nn.Module):
     def __init__(
         self,
+        type: str,
         backbone: nn.Module,
         positional_encoding: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
-        fine_preprocess: nn.Module,
-        fine_matching: nn.Module
+        fine_cls_matching: nn.Module,
+        fine_reg_matching: nn.Module
     ) -> None:
         super().__init__()
+        self.type = type
         self.backbone = backbone
         self.positional_encoding = positional_encoding
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
-        self.fine_preprocess = fine_preprocess
-        self.fine_matching = fine_matching
+        self.fine_cls_matching = fine_cls_matching
+        self.fine_reg_matching = fine_reg_matching
 
         self.scales = 16, 2
-        self.type = fine_matching.type
         self.use_flow = False
-        self.cls_window_size = fine_matching.cls_window_size
-        self.reg_window_size = fine_matching.reg_window_size
+        self.fine_reg_window_size = fine_reg_matching.window_size
 
     def _scale_points(
         self,
@@ -111,10 +113,38 @@ class NewMatcherNet(nn.Module):
             features1 = self.backbone.fuse(
                 features1 + [feature1_16x], align_corners)
 
-        fine_feature0, fine_feature1 = self.fine_preprocess(
-            features0[0], features1[0], result["first_stage_idxes"])
+        b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
+        fine_cls_w = self.fine_cls_matching.window_size
+        fine_cls_feature0 = crop_windows(
+            features0[0], fine_cls_w, stride=fine_cls_w)[b_idxes, i_idxes]
+        fine_cls_feature1 = crop_windows(
+            features1[0], fine_cls_w, stride=fine_cls_w)[b_idxes, j_idxes]
+        result.update(self.fine_cls_matching(
+            fine_cls_feature0, fine_cls_feature1))
 
-        result.update(self.fine_matching(fine_feature0, fine_feature1))
+        fine_reg_w = self.fine_reg_matching.window_size
+        padding_w = fine_cls_w + 2 * (fine_reg_w // 2)
+        fine_reg_feature0 = crop_windows(
+            features0[0], padding_w, stride=fine_cls_w,
+            padding=fine_reg_w // 2)[b_idxes, i_idxes]
+        fine_reg_feature1 = crop_windows(
+            features1[0], padding_w, stride=fine_cls_w,
+            padding=fine_reg_w // 2)[b_idxes, j_idxes]
+        fine_reg_feature0 = (fine_reg_feature0.transpose(1, 2).
+                             unflatten(2, (padding_w, padding_w)))
+        fine_reg_feature1 = (fine_reg_feature1.transpose(1, 2).
+                             unflatten(2, (padding_w, padding_w)))
+        m_idxes, i_idxes, j_idxes = result["fine_cls_idxes"]
+        fine_reg_feature0 = crop_windows(
+            fine_reg_feature0, fine_reg_w, stride=1)[m_idxes, i_idxes]
+        fine_reg_feature1 = crop_windows(
+            fine_reg_feature1, fine_reg_w, stride=1)[m_idxes, j_idxes]
+        result.update(self.fine_reg_matching(
+            fine_reg_feature0, fine_reg_feature1))
+
+        result["biases0"] = result["fine_cls_biases0"].detach()
+        result["biases1"] = (result["fine_cls_biases1"].detach() +
+                             result["fine_reg_biases"].detach())
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

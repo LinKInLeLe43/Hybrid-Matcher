@@ -109,10 +109,9 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
     gt_flows: torch.Tensor,
     loss_weight: float = 1.0
 ) -> torch.Tensor:
-    device = flows_with_uncertainties.device
     m = len(flows_with_uncertainties)
-    if m == 0:
-        return loss_weight * torch.tensor(1.0, device=device)
+    if m == 1:
+        loss_weight = 0.0
 
     flows, log_stds_mul_2 = flows_with_uncertainties.chunk(2, dim=1)
     l2_distances = (flows - gt_flows) ** 2
@@ -125,62 +124,39 @@ class LoFTRLoss(nn.Module):  # TODO: change name
     def __init__(
         self,
         type: str,
-        first_stage_cls_sparse: Optional[bool] = None,
-        first_stage_cls_loss_pos_weight: Optional[float] = None,
-        first_stage_cls_loss_neg_weight: Optional[float] = None,
-        second_stage_cls_sparse: Optional[bool] = None,
-        second_stage_cls_loss_pos_weight: Optional[float] = None,
-        second_stage_cls_loss_neg_weight: Optional[float] = None,
-        reg_loss_weight: Optional[float] = None,
+        coarse_cls_sparse: bool,
+        coarse_cls_loss_pos_weight: float,
+        coarse_cls_loss_neg_weight: float,
+        fine_reg_loss_weight: float,
+        fine_cls_sparse: Optional[bool] = None,
+        fine_cls_loss_pos_weight: Optional[float] = None,
+        fine_cls_loss_neg_weight: Optional[float] = None,
         use_flow: bool = False,
         flow_loss_weight: Optional[float] = None
     ) -> None:
         super().__init__()
         self.type = type
-        self.first_stage_cls_sparse = None
-        self.first_stage_cls_loss_pos_weight = None
-        self.first_stage_cls_loss_neg_weight = None
-        self.second_stage_cls_sparse = None
-        self.second_stage_cls_loss_pos_weight = None
-        self.second_stage_cls_loss_neg_weight = None
-        self.reg_loss_weight = None
+        self.coarse_cls_sparse = coarse_cls_sparse
+        self.coarse_cls_loss_pos_weight = coarse_cls_loss_pos_weight
+        self.coarse_cls_loss_neg_weight = coarse_cls_loss_neg_weight
+        self.fine_cls_sparse = None
+        self.fine_cls_loss_pos_weight = None
+        self.fine_cls_loss_neg_weight = None
+        self.fine_reg_loss_weight = fine_reg_loss_weight
         self.use_flow = use_flow
         self.flow_loss_weight = None
 
         if type == "one_stage":
-            if (first_stage_cls_sparse is None or
-                first_stage_cls_loss_pos_weight is None or
-                first_stage_cls_loss_neg_weight is None or
-                reg_loss_weight is None):
-                raise ValueError("")
-
-            self.first_stage_cls_sparse = first_stage_cls_sparse
-            self.first_stage_cls_loss_pos_weight = (
-                first_stage_cls_loss_pos_weight)
-            self.first_stage_cls_loss_neg_weight = (
-                first_stage_cls_loss_neg_weight)
-            self.reg_loss_weight = reg_loss_weight
+            pass
         elif type == "two_stage":
-            if (first_stage_cls_sparse is None or
-                first_stage_cls_loss_pos_weight is None or
-                first_stage_cls_loss_neg_weight is None or
-                second_stage_cls_sparse is None or
-                second_stage_cls_loss_pos_weight is None or
-                second_stage_cls_loss_neg_weight is None or
-                reg_loss_weight is None):
+            if (fine_cls_sparse is None or
+                fine_cls_loss_pos_weight is None or
+                fine_cls_loss_neg_weight is None):
                 raise ValueError("")
 
-            self.first_stage_cls_sparse = first_stage_cls_sparse
-            self.first_stage_cls_loss_pos_weight = (
-                first_stage_cls_loss_pos_weight)
-            self.first_stage_cls_loss_neg_weight = (
-                first_stage_cls_loss_neg_weight)
-            self.second_stage_cls_sparse = second_stage_cls_sparse
-            self.second_stage_cls_loss_pos_weight = (
-                second_stage_cls_loss_pos_weight)
-            self.second_stage_cls_loss_neg_weight = (
-                second_stage_cls_loss_neg_weight)
-            self.reg_loss_weight = reg_loss_weight
+            self.fine_cls_sparse = fine_cls_sparse
+            self.fine_cls_loss_pos_weight = fine_cls_loss_pos_weight
+            self.fine_cls_loss_neg_weight = fine_cls_loss_neg_weight
         else:
             raise ValueError("")
 
@@ -191,13 +167,13 @@ class LoFTRLoss(nn.Module):  # TODO: change name
 
     def forward(
         self,
-        first_stage_cls_heatmap: Optional[torch.Tensor] = None,
-        first_stage_gt_mask: Optional[torch.Tensor] = None,
-        second_stage_cls_heatmap: Optional[torch.Tensor] = None,
-        second_stage_gt_mask: Optional[torch.Tensor] = None,
-        reg_biases: Optional[torch.Tensor] = None,
-        gt_biases: Optional[torch.Tensor] = None,
-        reg_stds: Optional[torch.Tensor] = None,
+        coarse_cls_heatmap: torch.Tensor,
+        coarse_gt_mask: torch.Tensor,
+        fine_reg_biases: torch.Tensor,
+        fine_gt_biases: torch.Tensor,
+        fine_reg_stds: Optional[torch.Tensor] = None,
+        fine_cls_heatmap: Optional[torch.Tensor] = None,
+        fine_gt_mask: Optional[torch.Tensor] = None,
         flows_with_uncertainties0: Optional[torch.Tensor] = None,
         flows_with_uncertainties1: Optional[torch.Tensor] = None,
         gt_flows0: Optional[torch.Tensor] = None,
@@ -209,58 +185,29 @@ class LoFTRLoss(nn.Module):  # TODO: change name
         total_loss = 0.0
         loss = {"scalar": {}}
 
-        if self.type == "one_stage":
-            if (first_stage_cls_heatmap is None or
-                first_stage_gt_mask is None or reg_biases is None or
-                gt_biases is None):
+        coarse_cls_loss = _compute_cls_loss(
+            self.coarse_cls_sparse, coarse_cls_heatmap, coarse_gt_mask,
+            loss_pos_weight=self.coarse_cls_loss_pos_weight,
+            loss_neg_weight=self.coarse_cls_loss_neg_weight, mask0=mask0,
+            mask1=mask1)
+        total_loss += coarse_cls_loss
+        loss["scalar"]["coarse_cls_loss"] = coarse_cls_loss.detach().cpu()
+
+        fine_reg_loss = _compute_reg_loss(
+            fine_reg_biases, fine_gt_biases, reg_stds=fine_reg_stds,
+            loss_weight=self.fine_reg_loss_weight)
+        total_loss += fine_reg_loss
+        loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
+
+        if self.type == "two_stage":
+            if fine_cls_heatmap is None or fine_gt_mask is None:
                 raise ValueError("")
-
-            first_stage_cls_loss = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap,
-                first_stage_gt_mask,
-                loss_pos_weight=self.first_stage_cls_loss_pos_weight,
-                loss_neg_weight=self.first_stage_cls_loss_neg_weight,
-                mask0=mask0, mask1=mask1)
-            total_loss += first_stage_cls_loss
-            loss["scalar"]["first_stage_cls_loss"] = (
-                first_stage_cls_loss.detach().cpu())
-
-            reg_loss = _compute_reg_loss(
-                reg_biases, gt_biases, reg_stds=reg_stds,
-                loss_weight=self.reg_loss_weight)
-            total_loss += reg_loss
-            loss["scalar"]["reg_loss"] = reg_loss.detach().cpu()
-        elif self.type == "two_stage":
-            if (first_stage_cls_heatmap is None or
-                first_stage_gt_mask is None or
-                second_stage_cls_heatmap is None or
-                second_stage_gt_mask is None or reg_biases is None or
-                gt_biases is None):
-                raise ValueError("")
-
-            first_stage_cls_loss = _compute_cls_loss(
-                self.first_stage_cls_sparse, first_stage_cls_heatmap,
-                first_stage_gt_mask,
-                loss_pos_weight=self.first_stage_cls_loss_pos_weight,
-                loss_neg_weight=self.first_stage_cls_loss_neg_weight,
-                mask0=mask0, mask1=mask1)
-            total_loss += first_stage_cls_loss
-            loss["scalar"]["first_stage_cls_loss"] = (
-                first_stage_cls_loss.detach().cpu())
-
-            second_stage_cls_loss = _compute_cls_loss(
-                self.second_stage_cls_sparse, second_stage_cls_heatmap,
-                second_stage_gt_mask,
-                loss_pos_weight=self.second_stage_cls_loss_pos_weight,
-                loss_neg_weight=self.second_stage_cls_loss_neg_weight)
-            total_loss += second_stage_cls_loss
-            loss["scalar"]["second_stage_cls_loss"] = (
-                second_stage_cls_loss.detach().cpu())
-
-            reg_loss = _compute_reg_loss(
-                reg_biases, gt_biases, loss_weight=self.reg_loss_weight)
-            total_loss += reg_loss
-            loss["scalar"]["reg_loss"] = reg_loss.detach().cpu()
+            fine_cls_loss = _compute_cls_loss(
+                self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
+                loss_pos_weight=self.fine_cls_loss_pos_weight,
+                loss_neg_weight=self.fine_cls_loss_neg_weight)
+            total_loss += fine_cls_loss
+            loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
 
         if self.use_flow:
             if (flows_with_uncertainties0 is None or

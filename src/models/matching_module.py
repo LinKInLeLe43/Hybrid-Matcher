@@ -78,28 +78,28 @@ class MatchingModule(pl.LightningModule):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         supervision = {}
         if self.net.type == "one_stage":
-            supervision.update(utils.create_first_stage_supervision(
+            supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_coor=True,
                 return_flow=self.net.use_flow))
             result = self.net(
-                batch, gt_idxes=supervision["first_stage_gt_idxes"])
+                batch, gt_idxes=supervision["coarse_gt_idxes"])
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["first_stage_idxes"], self.net.scales[1],
+                result["coarse_cls_idxes"], self.net.scales[1],
                 self.net.reg_window_size)
-            supervision["gt_biases"] = gt_biases
+            supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "two_stage":
-            supervision.update(utils.create_first_stage_supervision(
+            supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_flow=self.net.use_flow))
             result = self.net(
-                batch, gt_idxes=supervision["first_stage_gt_idxes"])
-            supervision.update(utils.create_second_stage_supervision(
-                batch, self.net.scales, result["first_stage_idxes"]))
+                batch, gt_idxes=supervision["coarse_gt_idxes"])
+            supervision.update(utils.create_fine_supervision(
+                batch, self.net.scales, result["coarse_cls_idxes"]))
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["second_stage_idxes"], self.net.scales[1],
-                self.net.reg_window_size)
-            supervision["gt_biases"] = gt_biases
+                result["fine_cls_idxes"], self.net.scales[1],
+                self.net.fine_reg_window_size)
+            supervision["fine_gt_biases"] = gt_biases
         else:
             assert False
 

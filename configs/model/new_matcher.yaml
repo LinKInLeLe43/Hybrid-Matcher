@@ -2,6 +2,7 @@ _target_: src.models.MatchingModule
 
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
+  type: "two_stage"
   backbone:
     _target_: src.models.components.nets.new_matcher.backbones.create_resnet_selfcoc_fpn
   positional_encoding:
@@ -20,33 +21,26 @@ net:
     type: ???
     sparse: ???
     use_matchability: ${model.net.coarse_module.use_matchability}
-  fine_preprocess:
-    _target_: src.models.components.nets.new_matcher.FinePreprocess
-    window_size: 8
-    stride: 8
-    right_extra: 1
-  fine_matching:
+  fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-#    type: "one_stage"
-#    reg_window_size: ${model.net.fine_preprocess.window_size}
-#    reg_with_std: true
-    type: "two_stage"
-    cls_window_size: ${model.net.fine_preprocess.window_size}
-    cls_depth: 56
-    reg_window_size: 3
-    reg_with_std: false
-    reg_temperature: 10.0
+    type: "classification"
+    window_size: 8
+  fine_reg_matching:
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "regression"
+    window_size: 5
+    reg_with_std: true
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  type: "${model.net.fine_matching.type}"
-  first_stage_cls_sparse: ${model.net.coarse_matching.sparse}
-  first_stage_cls_loss_pos_weight: 1.0
-  first_stage_cls_loss_neg_weight: 1.0
-  second_stage_cls_sparse: ${model.net.coarse_matching.sparse}
-  second_stage_cls_loss_pos_weight: 1.0
-  second_stage_cls_loss_neg_weight: 1.0
-  reg_loss_weight: 1.0
+  type: "${model.net.type}"
+  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
+  fine_cls_sparse: ${model.net.coarse_matching.sparse}
+  fine_cls_loss_pos_weight: 1.0
+  fine_cls_loss_neg_weight: 1.0
+  fine_reg_loss_weight: 1.0
   use_flow: false
   flow_loss_weight: 0.05
 

@@ -8,6 +8,7 @@ from torch import nn
 class HybridMatcherNet(nn.Module):
     def __init__(
         self,
+        type: str,
         backbone: nn.Module,
         positional_encoding: nn.Module,
         local_coc: nn.Module,
@@ -18,6 +19,7 @@ class HybridMatcherNet(nn.Module):
         fine_matching: nn.Module
     ) -> None:
         super().__init__()
+        self.type = type
         self.backbone = backbone
         self.positional_encoding = positional_encoding
         self.local_coc = local_coc
@@ -30,7 +32,6 @@ class HybridMatcherNet(nn.Module):
         self.scales = (backbone.scales[0], backbone.scales[1] //
                        fine_preprocess.scale_before_crop)
         self.use_flow = getattr(coarse_module, "use_flow", False)
-        self.type = fine_matching.type
         self.cls_window_size = fine_matching.cls_window_size
         self.reg_window_size = fine_matching.reg_window_size
 
@@ -125,7 +126,7 @@ class HybridMatcherNet(nn.Module):
         fine_feature0, fine_feature1 = self.fine_preprocess(
             fine_features0 + [coarse_feature0],
             fine_features1 + [coarse_feature1], size0, size1,
-            result["first_stage_idxes"])
+            result["coarse_cls_idxes"])
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)
