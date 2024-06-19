@@ -20,6 +20,7 @@ class SEBlock(nn.Module):
         weight = self.relu(weight)
         weight = self.conv1(weight)
         weight.sigmoid_()
+
         out = weight * x
         return out
 

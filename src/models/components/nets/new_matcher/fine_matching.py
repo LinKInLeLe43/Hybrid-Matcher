@@ -26,10 +26,10 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         type: str,
         cls_depth: Optional[int] = None,
         cls_window_size: Optional[int] = None,
-        cls_temperature: int = 1.0,
+        cls_temperature: float = 1.0,
         reg_window_size: Optional[int] = None,
         reg_with_std: Optional[bool] = None,
-        reg_temperature: int = 1.0
+        reg_temperature: float = 1.0
     ) -> None:
         super().__init__()
         self.type = type

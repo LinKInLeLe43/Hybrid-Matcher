@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import torch
 from torch import nn
@@ -10,7 +10,6 @@ if hasattr(F, "scaled_dot_product_attention"):
 else:
     FLASH_AVAILABLE = False
 
-from .positional_encoding import ContinuousPositionBias
 from .mlp import Mlp
 
 
@@ -93,18 +92,10 @@ class SelfAttentionBlock(nn.Module):
         try_sdpa: bool = False,
         try_flash: bool = False,
         mlp_kernel_size0: int = 1,
-        mlp_kernel_size1: int = 1,
-        use_cpb: bool = False,
-        window_size: Optional[Tuple[int, int]] = None
+        mlp_kernel_size1: int = 1
     ) -> None:
         super().__init__()
         self.head_count = head_count
-        self.use_cpb = use_cpb
-
-        if use_cpb:
-            if window_size is None:
-                raise ValueError("")
-            self.cpb = ContinuousPositionBias(head_count, window_size)
 
         self.qkv_proj = nn.Linear(depth, 3 * depth, bias=bias)
         self.attention = Attention(
@@ -125,13 +116,7 @@ class SelfAttentionBlock(nn.Module):
         qkv = self.qkv_proj(x)
         qkv = qkv.unflatten(2, (self.head_count, -1)).transpose(1, 2)
         q, k, v = qkv.chunk(3, dim=3)
-
-        attn_mask = None
-        if self.use_cpb:
-            attn_mask = self.cpb(q)
-
-        message = self.attention(
-            q, k, v, q_mask=mask, kv_mask=mask, attn_mask=attn_mask)
+        message = self.attention(q, k, v, q_mask=mask, kv_mask=mask)
         message = message.transpose(1, 2).flatten(start_dim=2)
         message = self.merge(message)
         message = self.norm0(message)

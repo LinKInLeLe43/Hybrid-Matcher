@@ -6,8 +6,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .modules.attention import SelfAttentionBlock
-
 
 class Mlp(nn.Module):
     def __init__(
@@ -309,6 +307,7 @@ class GlobalClusterBlock(nn.Module):
         bias: bool = True
     ) -> None:
         super().__init__()
+
         self.cluster = GlobalCluster(
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
@@ -441,9 +440,50 @@ class LocalCoC(nn.Module):
         # return new_x2, new_x0
 
 
+class MergeBlock(nn.Module):
+    def __init__(
+        self,
+        scale: int,
+        depth: int,
+        bias: bool = True,
+        dropout: float = 0.0
+    ) -> None:
+        super().__init__()
+        self.scale = scale
+
+        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
+        self.norm = nn.GroupNorm(1, depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        center: torch.Tensor,
+        size: torch.Size
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        new_x = x.transpose(1, 2).unflatten(2, (size[0], size[1]))
+        new_center = center.transpose(1, 2).unflatten(
+            2, (size[0] // self.scale, size[1] // self.scale))
+        up_center = F.interpolate(
+            new_center, scale_factor=self.scale, mode="bilinear",
+            align_corners=True)
+        new_x = torch.cat([new_x, up_center], dim=1)
+
+        new_x = self.mlp(new_x)
+        new_x = self.norm(new_x)
+        new_center = F.interpolate(
+            new_x, scale_factor=1.0 / self.scale, mode="bilinear",
+            align_corners=True)
+        new_x = new_x.flatten(start_dim=2).transpose(1, 2)
+        new_center = new_center.flatten(start_dim=2).transpose(1, 2)
+        new_x += x
+        new_center += center
+        return new_x, new_center
+
+
 class GlobalCoC(nn.Module):
     def __init__(
         self,
+        scale: int,
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
@@ -455,8 +495,7 @@ class GlobalCoC(nn.Module):
         self.types = types
         self.use_matchability = use_matchability
 
-        merge_block = SelfAttentionBlock(
-            in_depth, heads_count, bias=bias, use_cpb=True, window_size=(4, 4))
+        merge_block = MergeBlock(scale, in_depth, bias=bias)
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in types])
 
@@ -486,75 +525,37 @@ class GlobalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def _merge(
-        self,
-        block: nn.Module,
-        x_8x: torch.Tensor,
-        x_16x: torch.Tensor,
-        x_32x: torch.Tensor,
-        size_16x: torch.Size,
-        mask: Optional[torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        n, _, c = x_16x.shape
-        fh, fw = size_16x[0] // 2, size_16x[1] // 2
-
-        x_16x = einops.rearrange(
-            x_16x, "n (fh sh fw sw) c -> (n fh fw) (sh sw) c", fh=fh, sh=2,
-            fw=fw, sw=2)
-        x_32x = x_32x.reshape(-1, 1, c)
-        x = torch.cat([x_32x, x_16x, x_8x], dim=1)
-        x[mask] = block(x[mask])
-        x_32x, x_16x, x_8x = x.split([1, 4, 16], dim=1)
-        x_32x = x_32x.reshape(n, -1, c)
-        x_16x = einops.rearrange(
-            x_16x, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh, sh=2,
-            fw=fw, sw=2)
-        return x_8x, x_16x, x_32x
-
     def forward(
         self,
-        x0_8x: torch.Tensor,
-        x1_8x: torch.Tensor,
         x0_16x: torch.Tensor,
         x1_16x: torch.Tensor,
         x0_32x: torch.Tensor,
         x1_32x: torch.Tensor,
         size0_16x: torch.Size,
         size1_16x: torch.Size,
-        mask0_8x: Optional[torch.Tensor] = None,
-        mask1_8x: Optional[torch.Tensor] = None,
         mask0_16x: Optional[torch.Tensor] = None,
         mask1_16x: Optional[torch.Tensor] = None,
         mask0_32x: Optional[torch.Tensor] = None,
-        mask1_32x: Optional[torch.Tensor] = None,
+        mask1_32x: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
         matchability0 = matchability1 = None
         if self.use_matchability:
             matchability0, matchability1 = [], []
 
-        mask01 = mask10 = merge_mask0 = merge_mask1 = None
-        if (mask0_8x is not None and mask1_8x is not None and
-            mask0_16x is not None and mask1_16x is not None and
+        mask01 = mask10 = None
+        if (mask0_16x is not None and mask1_16x is not None and
             mask0_32x is not None and mask1_32x is not None):
             mask01 = (mask0_16x.flatten(start_dim=1)[:, :, None] &
                       mask1_32x.flatten(start_dim=1)[:, None, :])
             mask10 = (mask1_16x.flatten(start_dim=1)[:, :, None] &
                       mask0_32x.flatten(start_dim=1)[:, None, :])
-            merge_mask0 = einops.rearrange(
-                mask0_8x, "n (fh sh) (fw sw) -> (n fh fw) (sh sw)", sh=4,
-                sw=4)[:, 0]
-            merge_mask1 = einops.rearrange(
-                mask1_8x, "n (fh sh) (fw sw) -> (n fh fw) (sh sw)", sh=4,
-                sw=4)[:, 0]
 
-        x0_8x = einops.rearrange(
-            x0_8x, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=4, sw=4)
-        x1_8x = einops.rearrange(
-            x1_8x, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=4, sw=4)
         for merge_block, global_block, matchability_decoder, type in zip(
             self.merge_blocks, self.global_blocks, self.matchability_decoders,
             self.types):
+            x0_16x, x0_32x = merge_block(x0_16x, x0_32x, size0_16x)
+            x1_16x, x0_32x = merge_block(x1_16x, x0_32x, size1_16x)
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)
@@ -568,29 +569,14 @@ class GlobalCoC(nn.Module):
                 # x1 = local_block(x1, mask=x1_mask)
                 # x0 = x0.flatten(start_dim=2).transpose(1, 2)
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
+
+                if self.use_matchability:
+                    matchability0.append(matchability_decoder(x0_16x).sigmoid())
+                    matchability1.append(matchability_decoder(x1_16x).sigmoid())
             else:
                 raise ValueError("")
-            x0_8x, x0_16x, x0_32x = self._merge(
-                merge_block, x0_8x, x0_16x, x0_32x, size0_16x, merge_mask0)
-            x1_8x, x1_16x, x1_32x = self._merge(
-                merge_block, x1_8x, x1_16x, x1_32x, size1_16x, merge_mask1)
 
-            if self.use_matchability:
-                matchability0.append(matchability_decoder(x0_8x).sigmoid())
-                matchability1.append(matchability_decoder(x1_8x).sigmoid())
-        x0_8x = einops.rearrange(
-            x0_8x, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=size0_16x[0] // 2, fw=size0_16x[1] // 2, sh=4, sw=4)
-        x1_8x = einops.rearrange(
-            x1_8x, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=size1_16x[0] // 2, fw=size1_16x[1] // 2, sh=4, sw=4)
         if self.use_matchability:
             matchability0 = torch.cat(matchability0, dim=2).mean(dim=2)
             matchability1 = torch.cat(matchability1, dim=2).mean(dim=2)
-            matchability0 = einops.rearrange(
-                matchability0, "(n fh fw) (sh sw) -> n (fh sh fw sw)",
-                fh=size0_16x[0] // 2, fw=size0_16x[1] // 2, sh=4, sw=4)
-            matchability1 = einops.rearrange(
-                matchability1, "(n fh fw) (sh sw) -> n (fh sh fw sw)",
-                fh=size1_16x[0] // 2, fw=size1_16x[1] // 2, sh=4, sw=4)
-        return x0_8x, x1_8x, matchability0, matchability1
+        return x0_16x, x1_16x, matchability0, matchability1

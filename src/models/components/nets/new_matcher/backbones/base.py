@@ -15,7 +15,7 @@ class Backbone(nn.Module):
         strides: List[int],
         use_fpn: bool = True,
         fpn_type: str = "loftr",
-        coarse_scale: int = 8
+        coarse_scale: int = 16
     ) -> None:
         super().__init__()
         assert len(block_counts) == len(layer_depths) == len(strides)

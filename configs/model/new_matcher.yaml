@@ -3,12 +3,13 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   backbone:
-    _target_: src.models.components.nets.new_matcher.backbones.create_resnet_selfcoc_fpn_1x
+    _target_: src.models.components.nets.new_matcher.backbones.create_resnet_selfcoc_fpn
   positional_encoding:
     _target_: src.models.components.nets.new_matcher.SinePositionalEncoding
     depth: 256
   coarse_module:
     _target_: src.models.components.nets.new_matcher.GlobalCoC
+    scale: 2
     in_depth: 256
     hidden_depth: 256
     heads_count: 8
