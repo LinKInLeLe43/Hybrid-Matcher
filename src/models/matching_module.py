@@ -81,32 +81,49 @@ class MatchingModule(pl.LightningModule):
             supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_coor=True,
                 return_flow=self.net.use_flow))
+
+            if hasattr(self.net, "extra_scale"):
+                supervision[f"coarse_extra_gt_mask"] = (
+                    utils.create_coarse_supervision(
+                        batch, self.net.extra_scale)["coarse_gt_mask"])
+
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["coarse_cls_idxes"], self.net.scales[1],
+                result["coarse_cls_idxes"], self.net.scales[-1],
                 self.net.reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "two_stage":
             supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_flow=self.net.use_flow))
+
+            if hasattr(self.net, "extra_scale"):
+                supervision[f"coarse_extra_gt_mask"] = (
+                    utils.create_coarse_supervision(
+                        batch, self.net.extra_scale)["coarse_gt_mask"])
+
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             supervision.update(utils.create_fine_supervision(
-                batch, self.net.scales, result["coarse_cls_idxes"]))
+                batch, self.net.scales[:2], result["coarse_cls_idxes"]))
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["fine_cls_idxes"], self.net.scales[1],
+                result["fine_cls_idxes"], self.net.scales[-1],
                 self.net.fine_reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         else:
             assert False
 
+        extra_mask0 = extra_mask1 = None
+        if hasattr(self.net, "extra_scale"):
+            extra_mask0 = batch.get(f"mask0_{self.net.extra_scale}x")
+            extra_mask1 = batch.get(f"mask1_{self.net.extra_scale}x")
         loss = self.loss(
             **result, **supervision,
             mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
-            mask1=batch.get(f"mask1_{self.net.scales[0]}x"))
+            mask1=batch.get(f"mask1_{self.net.scales[0]}x"),
+            extra_mask0=extra_mask0, extra_mask1=extra_mask1)
         return result, loss
 
     def training_step(

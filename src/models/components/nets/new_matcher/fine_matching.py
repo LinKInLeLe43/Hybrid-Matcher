@@ -11,10 +11,11 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     def __init__(
         self,
         type: str,
+        depth: int,
         window_size: int,
         temperature: float = 1.0,
         cls_border_removal: int = 0,
-        reg_with_std: bool = False
+        reg_by_exp_with_std: bool = False
     ) -> None:
         super().__init__()
         self.type = type
@@ -28,8 +29,24 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
             bias_table = (grid - w // 2 + 0.5).reshape(-1, 2)
             self.register_buffer("cls_bias_table", bias_table, persistent=False)
-        elif type == "regression":
-            self.reg_with_std = reg_with_std
+        elif type == "regression_by_expectation":
+            self.reg_by_exp_with_std = reg_by_exp_with_std
+        elif type == "regression_by_mlp":
+            self.compact = nn.Sequential(
+                nn.Conv2d(2 * depth, depth, 3, stride=2, padding=1, bias=False),
+                nn.BatchNorm2d(depth),
+                nn.ReLU(True),
+                nn.Conv2d(
+                    depth, depth // 2, 3, stride=2, padding=1, bias=False))
+            self.mlp = nn.Sequential(
+                nn.Linear(
+                    round(window_size / 4 + 0.5) ** 2 * (depth // 2),
+                    depth // 2, bias=False),
+                nn.LeakyReLU(),
+                nn.Linear(depth // 2, depth // 4, bias=False),
+                nn.LeakyReLU(),
+                nn.Linear(depth // 4, 2, bias=False),
+                nn.Tanh())
         else:
             raise ValueError("")
 
@@ -38,9 +55,12 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> Dict[str, Any]:
-        m, ww, c = x0.shape
         w, r = self.window_size, self.cls_border_removal
+        if len(x0.shape) == 4:
+            x0 = x0.flatten(start_dim=2).transpose(1, 2)
+            x1 = x1.flatten(start_dim=2).transpose(1, 2)
 
+        m, ww, c = x0.shape
         if m == 0:
             heatmap = x0.new_empty((0, ww, ww))
             idxes = 3 * (x0.new_empty((0,), dtype=torch.long),)
@@ -76,30 +96,35 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                   "fine_cls_biases1": biases1}
         return result
 
-    def _compute_reg_biases(
+    def _compute_reg_biases_by_expectation(
         self,
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> Dict[str, Any]:
-        m, ww, c = x0.shape
         w = self.window_size
+        if len(x0.shape) == 4:
+            x0 = x0.flatten(start_dim=2).transpose(1, 2)
+            x1 = x1.flatten(start_dim=2).transpose(1, 2)
 
+        m, ww, c = x0.shape
         if m == 0:
             biases = x0.new_empty((0, 2))
             result = {"fine_reg_biases": biases}
 
-            if self.reg_with_std:
+            if self.reg_by_exp_with_std:
                 stds = x0.new_empty((0,))
                 result["fine_reg_stds"] = stds
             return result
 
-        similarities = torch.einsum("mc,mrc->mr", x0[:, ww // 2], x1) / c ** 0.5
+        central_x0 = x0[:, ww // 2]
+        similarities = torch.einsum("mc,mrc->mr", central_x0, x1) / c ** 0.5
         similarities /= self.temperature
-        heatmap = F.softmax(similarities, dim=1).reshape(-1, w, w)
-        biases = w // 2 * geometry.spatial_expectation2d(heatmap[None])[0]
+        heatmap = F.softmax(similarities, dim=1)
+        heatmap = heatmap.reshape(m, w, w)
+        biases = geometry.spatial_expectation2d(heatmap[None])[0]
         result = {"fine_reg_biases": biases}
 
-        if self.reg_with_std:
+        if self.reg_by_exp_with_std:
             with torch.no_grad():
                 grid = K.create_meshgrid(w, w, device=x0.device) ** 2
                 vars = (heatmap[..., None] * grid).sum(dim=(1, 2)) - biases ** 2
@@ -107,14 +132,36 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             result["fine_reg_stds"] = stds
         return result
 
-    def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, Any]:
-        if x0.shape[1] != self.window_size ** 2:
-            raise ValueError("")
+    def _compute_reg_biases_by_mlp(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor
+    ) -> Dict[str, Any]:
+        w = self.window_size
+        if len(x0.shape) == 3:
+            x0 = x0.transpose(1, 2).unflatten(2, (w, w))
+            x1 = x1.transpose(1, 2).unflatten(2, (w, w))
 
+        m, c, w, w = x0.shape
+        if m == 0:
+            biases = x0.new_empty((0, 2))
+            result = {"fine_reg_biases": biases}
+            return result
+
+        x = torch.cat([x0, x1], dim=1)
+        x = self.compact(x)
+        x = x.reshape(m, -1)
+        biases = self.mlp(x)
+        result = {"fine_reg_biases": biases}
+        return result
+
+    def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, Any]:
         if self.type == "classification":
             result = self._compute_cls_biases(x0, x1)
-        elif self.type == "regression":
-            result = self._compute_reg_biases(x0, x1)
+        elif self.type == "regression_by_expectation":
+            result = self._compute_reg_biases_by_expectation(x0, x1)
+        elif self.type == "regression_by_mlp":
+            result = self._compute_reg_biases_by_mlp(x0, x1)
         else:
             assert False
         return result

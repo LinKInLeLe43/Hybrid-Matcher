@@ -555,7 +555,7 @@ class GlobalCoC(nn.Module):
             self.merge_blocks, self.global_blocks, self.matchability_decoders,
             self.types):
             x0_16x, x0_32x = merge_block(x0_16x, x0_32x, size0_16x)
-            x1_16x, x0_32x = merge_block(x1_16x, x0_32x, size1_16x)
+            x1_16x, x1_32x = merge_block(x1_16x, x1_32x, size1_16x)
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)

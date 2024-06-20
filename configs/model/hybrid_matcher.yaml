@@ -72,9 +72,9 @@ net:
 loss:
   _target_: src.models.components.losses.LoFTRLoss
   type: "${model.net.type}"
-  coarse_stage_cls_sparse: ${model.net.coarse_matching.sparse}
-  coarse_stage_cls_loss_pos_weight: 1.0
-  coarse_stage_cls_loss_neg_weight: 1.0
+  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
   fine_cls_sparse: ${model.net.coarse_matching.sparse}
   fine_cls_loss_pos_weight: 1.0
   fine_cls_loss_neg_weight: 1.0
