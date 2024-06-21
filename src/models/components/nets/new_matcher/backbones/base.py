@@ -22,7 +22,7 @@ class Backbone(nn.Module):
         self.strides = strides
 
         if fpn_type not in ["loftr"]:
-            assert False
+            raise ValueError("")
         self.fpn_type = fpn_type
 
         self.layers = nn.ModuleList()
@@ -127,7 +127,7 @@ class Backbone(nn.Module):
                 scale = xs[i].new_tensor([sw - s, sh - s])
                 grid = K.create_meshgrid(
                     sh, sw, normalized_coordinates=False, device=xs[i].device)
-                grid = 2 * grid / scale - 1
+                grid = (2 * grid / scale - 1).repeat(len(xs[i]), 1, 1, 1)
                 out[i] += F.grid_sample(out[i + 1], grid, align_corners=True)
             else:
                 out[i] += F.interpolate(

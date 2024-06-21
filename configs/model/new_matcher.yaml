@@ -24,12 +24,17 @@ net:
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "classification"
-    window_size: 8
+    depth: 64
+    window_size: 16
+    temperature: 1.0
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-    type: "regression"
-    window_size: 5
-    reg_with_std: true
+    type: "regression_by_expectation"
+    depth: 64
+    window_size: 3
+    reg_by_exp_with_std: true
+    temperature: 10.0
+  use_extra: true
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
@@ -41,6 +46,7 @@ loss:
   fine_cls_loss_pos_weight: 1.0
   fine_cls_loss_neg_weight: 1.0
   fine_reg_loss_weight: 1.0
+  use_extra: ${model.net.use_extra}
   use_flow: false
   flow_loss_weight: 0.05
 

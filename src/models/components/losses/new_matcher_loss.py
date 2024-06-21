@@ -131,6 +131,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         fine_cls_sparse: Optional[bool] = None,
         fine_cls_loss_pos_weight: Optional[float] = None,
         fine_cls_loss_neg_weight: Optional[float] = None,
+        use_extra: bool = False,
         use_flow: bool = False,
         flow_loss_weight: Optional[float] = None
     ) -> None:
@@ -143,6 +144,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self.fine_cls_loss_pos_weight = None
         self.fine_cls_loss_neg_weight = None
         self.fine_reg_loss_weight = fine_reg_loss_weight
+        self.use_extra = use_extra
         self.use_flow = use_flow
         self.flow_loss_weight = None
 
@@ -171,6 +173,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         coarse_gt_mask: torch.Tensor,
         fine_reg_biases: torch.Tensor,
         fine_gt_biases: torch.Tensor,
+        coarse_extra_cls_heatmap: Optional[torch.Tensor] = None,
+        coarse_extra_gt_mask: Optional[torch.Tensor] = None,
         fine_reg_stds: Optional[torch.Tensor] = None,
         fine_cls_heatmap: Optional[torch.Tensor] = None,
         fine_gt_mask: Optional[torch.Tensor] = None,
@@ -180,6 +184,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         gt_flows1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        extra_mask0: Optional[torch.Tensor] = None,
+        extra_mask1: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Dict[str, Any]:
         total_loss = 0.0
@@ -209,9 +215,24 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
             total_loss += fine_cls_loss
             loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
 
+        if self.use_extra:
+            if coarse_extra_cls_heatmap is None or coarse_extra_gt_mask is None:
+                raise ValueError("")
+
+            coarse_extra_cls_loss = _compute_cls_loss(
+                self.coarse_cls_sparse, coarse_extra_cls_heatmap,
+                coarse_extra_gt_mask,
+                loss_pos_weight=self.coarse_cls_loss_pos_weight,
+                loss_neg_weight=self.coarse_cls_loss_neg_weight,
+                mask0=extra_mask0, mask1=extra_mask1)
+            total_loss += coarse_extra_cls_loss
+            loss["scalar"]["coarse_extra_cls_loss"] = (
+                coarse_extra_cls_loss.detach().cpu())
+
         if self.use_flow:
             if (flows_with_uncertainties0 is None or
-                flows_with_uncertainties1 is None or gt_flows0 is None or
+                flows_with_uncertainties1 is None or
+                gt_flows0 is None or
                 gt_flows1 is None):
                 raise ValueError("")
 

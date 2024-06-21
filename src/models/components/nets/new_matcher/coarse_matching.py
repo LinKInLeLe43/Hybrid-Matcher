@@ -194,9 +194,11 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         else:
             assert False
 
-        coarse_matching = self._create_coarse_matching(
-            confidences, size0, size1, mask0=mask0, mask1=mask1,
-            gt_idxes=gt_idxes)
+        coarse_matching = {}
+        if not self.training or gt_idxes is not None:
+            coarse_matching = self._create_coarse_matching(
+                confidences, size0, size1, mask0=mask0, mask1=mask1,
+                gt_idxes=gt_idxes)
         if confidences_with_bin is not None and self.sparse:
             coarse_matching["coarse_cls_heatmap"] = confidences_with_bin
         else:

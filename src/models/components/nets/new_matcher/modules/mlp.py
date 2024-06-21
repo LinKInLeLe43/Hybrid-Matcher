@@ -14,29 +14,35 @@ class Mlp(nn.Module):
         bias: bool = True,
         kernel_size0: int = 1,
         kernel_size1: int = 1,
+        padding0: Optional[int] = None,
+        padding1: Optional[int] = None,
         act: nn.Module = nn.GELU()
     ) -> None:
         super().__init__()
 
         self.proj0 = self._create_proj(
-            in_depth, hidden_depth, kernel_size0, bias)
+            in_depth, hidden_depth, kernel_size0, padding0, bias)
         self.act = act
         self.proj1 = self._create_proj(
-            hidden_depth, out_depth, kernel_size1, bias)
+            hidden_depth, out_depth, kernel_size1, padding1, bias)
 
     def _create_proj(
         self,
         in_depth: int,
         out_depth: int,
         kernel_size: int,
+        padding: Optional[int],
         bias: bool
     ) -> nn.Module:
         if kernel_size == 1:
+            if padding is not None:
+                raise ValueError("")
+
             proj = nn.Linear(in_depth, out_depth, bias=bias)
         else:
+            padding = padding if padding is not None else kernel_size // 2
             proj = nn.Conv2d(
-                in_depth, out_depth, kernel_size, padding=kernel_size // 2,
-                bias=bias)
+                in_depth, out_depth, kernel_size, padding=padding, bias=bias)
         return proj
 
     def _forward(

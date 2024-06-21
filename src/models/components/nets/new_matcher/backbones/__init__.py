@@ -13,7 +13,7 @@ RepVggBlock = functools.partial(
 
 def create_resnet_selfcoc_fpn():
     layer_depths = [64, 64, 128, 256, 256, 256, 256]
-    strides = [2, 1, 2, 2, 1, 2, 2]
+    strides = [1, 2, 2, 2, 1, 2, 2]
     stem = nn.Sequential(
         nn.Conv2d(
             1, layer_depths[0], 7, stride=strides[0], padding=7 // 2,
@@ -39,7 +39,7 @@ def create_resnet_selfcoc_fpn():
 
 def create_repvgg_selfcoc_fpn():
     layer_depths = [64, 64, 128, 256, 256, 256, 256]
-    strides = [2, 1, 2, 2, 1, 2, 2]
+    strides = [1, 2, 2, 2, 1, 2, 2]
     SelfClusterBlock8x = functools.partial(
         SelfClusterBlock, kernel_size=3, head_count=8, fold_size=(1, 1),
         anchor_size=(8, 8))

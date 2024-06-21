@@ -13,7 +13,7 @@ def _warp_point(
     K1: torch.Tensor,
     T0_to_1: torch.Tensor
 ) -> torch.Tensor:
-    image_grid0 = image_point0.round().long()
+    image_grid0 = image_point0.clamp(min=0).round().long()
     image_depth0 = torch.stack(
         [depth0[b, grid0[:, 1], grid0[:, 0]]
          for b, grid0 in enumerate(image_grid0)])[:, :, None]
@@ -61,7 +61,7 @@ def compute_gt_biases(
 def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
-    use_offset: bool = False,  # TODO: whether need actually
+    offset: float = 0.0,  # TODO: whether need actually
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -81,7 +81,6 @@ def create_coarse_supervision(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.reshape(1, -1, 2).repeat(n, 1, 1)
     coors1 = coors1.reshape(1, -1, 2).repeat(n, 1, 1)
-    offset = 0.5 if use_offset else 0.0
     points0 = scale0 * (coors0 + offset)
     points1 = scale1 * (coors1 + offset)
     if mask0 is not None:

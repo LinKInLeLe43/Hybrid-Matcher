@@ -54,6 +54,6 @@ test_sampler:
   _partial_: true
   shuffle: false
 
-workers_count: 4
+workers_count: 10
 
 seed: ${seed}

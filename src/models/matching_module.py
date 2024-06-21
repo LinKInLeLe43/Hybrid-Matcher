@@ -81,6 +81,12 @@ class MatchingModule(pl.LightningModule):
             supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_coor=True,
                 return_flow=self.net.use_flow))
+
+            if hasattr(self.net, "extra_scale"):
+                supervision[f"coarse_extra_gt_mask"] = (
+                    utils.create_coarse_supervision(
+                        batch, self.net.extra_scale)["coarse_gt_mask"])
+
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             gt_biases = utils.compute_gt_biases(
@@ -91,6 +97,14 @@ class MatchingModule(pl.LightningModule):
         elif self.net.type == "two_stage":
             supervision.update(utils.create_coarse_supervision(
                 batch, self.net.scales[0], return_flow=self.net.use_flow))
+
+            if hasattr(self.net, "extra_scale"):
+                offset = -(self.net.scales[0] / self.net.extra_scale / 2) + 0.5
+                supervision[f"coarse_extra_gt_mask"] = (
+                    utils.create_coarse_supervision(
+                        batch, self.net.extra_scale,
+                        offset=offset)["coarse_gt_mask"])
+
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             supervision.update(utils.create_fine_supervision(
@@ -103,10 +117,15 @@ class MatchingModule(pl.LightningModule):
         else:
             assert False
 
+        extra_mask0 = extra_mask1 = None
+        if hasattr(self.net, "extra_scale"):
+            extra_mask0 = batch.get(f"mask0_{self.net.extra_scale}x")
+            extra_mask1 = batch.get(f"mask1_{self.net.extra_scale}x")
         loss = self.loss(
             **result, **supervision,
             mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
-            mask1=batch.get(f"mask1_{self.net.scales[0]}x"))
+            mask1=batch.get(f"mask1_{self.net.scales[0]}x"),
+            extra_mask0=extra_mask0, extra_mask1=extra_mask1)
         return result, loss
 
     def training_step(

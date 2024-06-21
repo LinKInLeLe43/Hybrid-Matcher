@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
+import kornia as K
 
 from .modules.utils import crop_windows
 
@@ -15,9 +16,11 @@ class NewMatcherNet(nn.Module):
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_cls_matching: nn.Module,
-        fine_reg_matching: nn.Module
+        fine_reg_matching: nn.Module,
+        use_extra: bool = False
     ) -> None:
         super().__init__()
+
         self.type = type
         self.backbone = backbone
         self.positional_encoding = positional_encoding
@@ -26,9 +29,25 @@ class NewMatcherNet(nn.Module):
         self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
 
-        self.scales = 16, 2
+        if use_extra:
+            self.extra_scale = 8
+
+        self.scales = 16, 1
         self.use_flow = False
         self.fine_reg_window_size = fine_reg_matching.window_size
+
+        p = self.fine_reg_window_size // 2
+        w = fine_cls_matching.window_size + 2 * p
+        mask = torch.zeros((w, w), dtype=torch.bool)
+        mask[p:-p, p:-p] = True
+        mask = mask.flatten()
+        self.register_buffer("fine_cls_mask", mask, persistent=False)
+
+        delta_idxes = K.create_meshgrid(
+            self.fine_reg_window_size, self.fine_reg_window_size,
+            normalized_coordinates=False, dtype=torch.long)
+        delta_idxes = delta_idxes.reshape(-1, 2)
+        self.register_buffer("fine_delta_idxes", delta_idxes, persistent=False)
 
     def _scale_points(
         self,
@@ -62,6 +81,7 @@ class NewMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
+        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
         mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
@@ -113,38 +133,46 @@ class NewMatcherNet(nn.Module):
             features1 = self.backbone.fuse(
                 features1 + [feature1_16x], align_corners)
 
+        if True:
+            size0, size1 = features0[-2].shape[2:], features1[-2].shape[2:]
+            features0_8x = features0[-2].flatten(start_dim=2).transpose(1, 2)
+            features1_8x = features1[-2].flatten(start_dim=2).transpose(1, 2)
+            use_matchability = self.coarse_matching.use_matchability
+            self.coarse_matching.use_matchability = False
+            result["coarse_extra_cls_heatmap"] = self.coarse_matching(
+                features0_8x, features1_8x, size0, size1, mask0=mask0_8x,
+                mask1=mask1_8x)["coarse_cls_heatmap"]
+            self.coarse_matching.use_matchability = use_matchability
+
         b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
         fine_cls_w = self.fine_cls_matching.window_size
-        fine_cls_feature0 = crop_windows(
-            features0[0], fine_cls_w, stride=fine_cls_w)[b_idxes, i_idxes]
-        fine_cls_feature1 = crop_windows(
-            features1[0], fine_cls_w, stride=fine_cls_w)[b_idxes, j_idxes]
-        result.update(self.fine_cls_matching(
-            fine_cls_feature0, fine_cls_feature1))
-
         fine_reg_w = self.fine_reg_matching.window_size
-        padding_w = fine_cls_w + 2 * (fine_reg_w // 2)
-        fine_reg_feature0 = crop_windows(
-            features0[0], padding_w, stride=fine_cls_w,
-            padding=fine_reg_w // 2)[b_idxes, i_idxes]
-        fine_reg_feature1 = crop_windows(
-            features1[0], padding_w, stride=fine_cls_w,
-            padding=fine_reg_w // 2)[b_idxes, j_idxes]
-        fine_reg_feature0 = (fine_reg_feature0.transpose(1, 2).
-                             unflatten(2, (padding_w, padding_w)))
-        fine_reg_feature1 = (fine_reg_feature1.transpose(1, 2).
-                             unflatten(2, (padding_w, padding_w)))
-        m_idxes, i_idxes, j_idxes = result["fine_cls_idxes"]
-        fine_reg_feature0 = crop_windows(
-            fine_reg_feature0, fine_reg_w, stride=1)[m_idxes, i_idxes]
-        fine_reg_feature1 = crop_windows(
-            fine_reg_feature1, fine_reg_w, stride=1)[m_idxes, j_idxes]
-        result.update(self.fine_reg_matching(
-            fine_reg_feature0, fine_reg_feature1))
+        p = fine_reg_w // 2
+        w = fine_cls_w + 2 * p
+        fine_feature0 = crop_windows(
+            features0[0], w, stride=fine_cls_w, padding=p)
+        fine_feature1 = crop_windows(
+            features1[0], w, stride=fine_cls_w, padding=p)
+        fine_feature0 = fine_feature0[b_idxes, i_idxes]
+        fine_feature1 = fine_feature1[b_idxes, j_idxes]
+        result.update(self.fine_cls_matching(
+            fine_feature0[:, self.fine_cls_mask],
+            fine_feature1[:, self.fine_cls_mask]))
+
+        m_idxes, i_idxes, j_idxes = map(
+            lambda x: x[:, None], result["fine_cls_idxes"])
+        i_idxes = ((fine_cls_w + 2 * p) *
+                   (i_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
+                   i_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
+        j_idxes = ((fine_cls_w + 2 * p) *
+                   (j_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
+                   j_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
+        fine_feature0 = fine_feature0[m_idxes, i_idxes]
+        fine_feature1 = fine_feature1[m_idxes, j_idxes]
+        result.update(self.fine_reg_matching(fine_feature0, fine_feature1))
 
         result["biases0"] = result["fine_cls_biases0"].detach()
         result["biases1"] = (result["fine_cls_biases1"].detach() +
-                             result["fine_reg_biases"].detach())
-
+                             p * result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
