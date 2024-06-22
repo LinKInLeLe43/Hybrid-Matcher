@@ -164,6 +164,8 @@ def create_fine_supervision(
     coors1 = _crop_windows(coors1, stride, stride, 0)[b_idxes, j_idxes]
     idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
     idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
+    idxes0 = torch.where(idxes0 == 0, -1, idxes0)
+    idxes1 = torch.where(idxes1 == 0, -1, idxes1)
     coors0 = coors0 + 0.5
     coors1 = coors1 + 0.5
     points0 = scale0 * coors0
@@ -181,6 +183,8 @@ def create_fine_supervision(
     _mask_out_of_bound(coors1_to_0, h0, w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
     idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
+    idxes0_to_1 = torch.where(idxes0_to_1 == 0, -2, idxes0_to_1)
+    idxes1_to_0 = torch.where(idxes1_to_0 == 0, -2, idxes1_to_0)
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
     if "scale1" in batch:
