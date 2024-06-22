@@ -85,15 +85,19 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         device = matching_idxes[0].device
 
         matching_count, gt_count = len(matching_idxes[0]), len(gt_idxes[0])
-        rest_count = train_count - self.train_min_gt_count
-        if matching_count <= rest_count:
+        if train_count < 0:
             matching_subidxes = torch.arange(matching_count, device=device)
+            gt_subidxes = torch.arange(gt_count, device=device)
         else:
-            matching_subidxes = torch.randint(
-                matching_count, (rest_count,), device=device)
-            matching_count = rest_count
-        gt_subidxes = torch.randint(
-            gt_count, (train_count - matching_count,), device=device)
+            rest_count = train_count - self.train_min_gt_count
+            if matching_count <= rest_count:
+                matching_subidxes = torch.arange(matching_count, device=device)
+            else:
+                matching_subidxes = torch.randint(
+                    matching_count, (rest_count,), device=device)
+                matching_count = rest_count
+            gt_subidxes = torch.randint(
+                gt_count, (train_count - matching_count,), device=device)
 
         matching_idxes = tuple(map(
             lambda x: x[matching_subidxes], matching_idxes))
@@ -130,7 +134,8 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         if self.training:
             max_count = torch.stack(
                 [h0s * w0s, h1s * w1s], dim=1).amin(dim=1).sum()
-            train_count = int(self.train_percent * max_count)
+            train_count = (int(self.train_percent * max_count)
+                           if self.train_percent >= 0 else self.train_percent)
             train_idxes, matching_idxes = self._sample_for_train(
                 train_count, matching_idxes, gt_idxes)
 
