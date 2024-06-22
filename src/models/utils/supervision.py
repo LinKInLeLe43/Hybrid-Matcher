@@ -3,6 +3,7 @@ from typing import Any, Dict, Optional, Tuple
 import einops
 import kornia as K
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 
@@ -129,7 +130,8 @@ def create_coarse_supervision(
 def create_fine_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    detector: Optional[nn.Module] = None
 ) -> Dict[str, Any]:
     device = batch["image0"].device
     stride = scales[0] // scales[1]
@@ -143,6 +145,10 @@ def create_fine_supervision(
         supervision = {"points0_to_1": points0_to_1,
                        "points1": points1,
                        "fine_gt_mask": gt_mask}
+
+        if detector is not None:
+            gt_idxes = 3 * (torch.tensor([], dtype=torch.long, device=device),)
+            supervision["reg_gt_idxes"] = gt_idxes
         return supervision
 
     n, _, h0, w0 = batch["image0"].shape
@@ -193,4 +199,29 @@ def create_fine_supervision(
     supervision = {"points0_to_1": points0_to_1,
                    "points1": points1,
                    "fine_gt_mask": gt_mask}
+
+    if detector is not None:
+        topk = 4
+        values0, i_idxes0 = (detector(batch["image0"], stride)[b_idxes, i_idxes]
+                             .masked_fill(~gt_mask.sum(dim=2).bool(), 0.0)
+                             .topk(topk, dim=1))
+        values0, i_idxes0 = values0.flatten(), i_idxes0.flatten()
+        m_idxes0 = torch.arange(
+            m, device=device).repeat_interleave(topk)[values0 > 0.0]
+        i_idxes0 = i_idxes0[values0 > 0.0]
+        j_idxes0 = gt_mask[m_idxes0, i_idxes0, :].nonzero(as_tuple=True)[1]
+
+        values1, j_idxes1 = (detector(batch["image1"], stride)[b_idxes, j_idxes]
+                             .masked_fill(~gt_mask.sum(dim=1).bool(), 0.0)
+                             .topk(topk, dim=1))
+        values1, j_idxes1 = values1.flatten(), j_idxes1.flatten()
+        m_idxes1 = torch.arange(
+            m, device=device).repeat_interleave(topk)[values1 > 0.0]
+        j_idxes1 = j_idxes1[values1 > 0.0]
+        i_idxes1 = gt_mask[m_idxes1, :, j_idxes1].nonzero(as_tuple=True)[1]
+
+        gt_idxes = (torch.cat([m_idxes0, m_idxes1]),
+                    torch.cat([i_idxes0, i_idxes1]),
+                    torch.cat([j_idxes0, j_idxes1]))
+        supervision["reg_gt_idxes"] = gt_idxes
     return supervision

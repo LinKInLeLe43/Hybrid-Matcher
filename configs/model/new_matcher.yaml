@@ -69,3 +69,6 @@ end_point_thresholds: ???
 epipolar_thresholds: ???
 
 pose_thresholds: ???
+
+train_detector:
+  _target_: src.models.utils.SuperPoint

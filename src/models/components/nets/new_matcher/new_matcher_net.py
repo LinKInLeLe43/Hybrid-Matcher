@@ -168,20 +168,36 @@ class NewMatcherNet(nn.Module):
             result["points1"] = result["points1"].repeat_interleave(
                 self.fine_cls_matching.cls_topk, dim=0)
 
-        m_idxes, i_idxes, j_idxes = map(
-            lambda x: x[:, None], result["fine_cls_idxes"])
-        i_idxes = ((fine_cls_w + 2 * p) *
-                   (i_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
-                   i_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
-        j_idxes = ((fine_cls_w + 2 * p) *
-                   (j_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
-                   j_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
-        fine_feature0 = fine_feature0[m_idxes, i_idxes]
-        fine_feature1 = fine_feature1[m_idxes, j_idxes]
-        result.update(self.fine_reg_matching(fine_feature0, fine_feature1))
+        if True:
+            result["fine_feature0"] = fine_feature0
+            result["fine_feature1"] = fine_feature1
+
+        result.update(self.estimate_reg_biases(
+            fine_feature0, fine_feature1, result["fine_cls_idxes"]))
 
         result["biases0"] = result["fine_cls_biases0"].detach()
         result["biases1"] = (result["fine_cls_biases1"].detach() +
                              p * result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
+
+    def estimate_reg_biases(
+        self,
+        feature0: torch.Tensor,
+        feature1: torch.Tensor,
+        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Dict[str, Any]:
+        fine_cls_w = self.fine_cls_matching.window_size
+        fine_reg_w = self.fine_reg_matching.window_size
+        p = fine_reg_w // 2
+
+        m_idxes, i_idxes, j_idxes = map(lambda x: x[:, None], idxes)
+        i_idxes = ((fine_cls_w + 2 * p) *
+                   (i_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
+                   i_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
+        j_idxes = ((fine_cls_w + 2 * p) *
+                   (j_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
+                   j_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
+        feature0 = feature0[m_idxes, i_idxes]
+        feature1 = feature1[m_idxes, j_idxes]
+        return self.fine_reg_matching(feature0, feature1)

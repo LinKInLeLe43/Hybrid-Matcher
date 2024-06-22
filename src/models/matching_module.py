@@ -45,6 +45,7 @@ class MatchingModule(pl.LightningModule):
         end_point_thresholds: List[float],
         epipolar_thresholds: List[float],
         pose_thresholds: List[float],
+        train_detector: Optional[nn.Module] = None,
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
         test_preparation_enabled: bool = False,
@@ -55,7 +56,9 @@ class MatchingModule(pl.LightningModule):
         super().__init__()
         self.net = net
         self.loss = loss
-        self.save_hyperparameters(ignore=["net", "loss"], logger=False)
+        self.train_detector = train_detector
+        self.save_hyperparameters(
+            ignore=["net", "loss", "train_detector"], logger=False)
 
         self.test_time_profiler = utils.InferenceProfiler()
 
@@ -108,11 +111,19 @@ class MatchingModule(pl.LightningModule):
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             supervision.update(utils.create_fine_supervision(
-                batch, self.net.scales, result["coarse_cls_idxes"]))
+                batch, self.net.scales, result["coarse_cls_idxes"],
+                detector=self.train_detector))
+
+            reg_idxes = result["fine_cls_idxes"]
+            if self.train_detector is not None:
+                reg_idxes = supervision["reg_gt_idxes"]
+                result.update(self.net.estimate_reg_biases(
+                    result["fine_feature0"], result["fine_feature1"],
+                    reg_idxes))
+
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["fine_cls_idxes"], self.net.scales[1],
-                self.net.fine_reg_window_size)
+                reg_idxes, self.net.scales[1], self.net.fine_reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         else:
             assert False
