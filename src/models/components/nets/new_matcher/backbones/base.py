@@ -1,6 +1,5 @@
-from typing import List
+from typing import List, Optional
 
-import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -12,18 +11,12 @@ class Backbone(nn.Module):
         block_builders: List,
         block_counts: List[int],
         layer_depths: List[int],
-        strides: List[int],
-        use_fpn: bool = True,
-        fpn_type: str = "loftr",
-        coarse_scale: int = 16
+        strides: List[int]
     ) -> None:
         super().__init__()
-        assert len(block_counts) == len(layer_depths) == len(strides)
+        assert (len(block_builders) == len(block_counts) == len(layer_depths) ==
+                len(strides))
         self.strides = strides
-
-        if fpn_type not in ["loftr"]:
-            raise ValueError("")
-        self.fpn_type = fpn_type
 
         self.layers = nn.ModuleList()
         self.in_depth = 1
@@ -37,30 +30,6 @@ class Backbone(nn.Module):
             self.layers.append(self._make_layer(
                 block_builders[i], layer_depths[i], block_counts[i],
                 stride=strides[i]))
-
-        if use_fpn:
-            last_scale = cur_scale = 1
-            fpn_layer_depths = []
-            self.fpn_scale = []
-            for i in range(len(strides)):
-                cur_scale *= strides[i]
-                if cur_scale > coarse_scale:
-                    break
-                if i == len(strides) - 1 or strides[i + 1] != 1:
-                    fpn_layer_depths.append(layer_depths[i])
-                    if cur_scale != 1:
-                        self.fpn_scale.append(cur_scale // last_scale)
-                    last_scale = cur_scale
-
-            self.ups = nn.ModuleList()
-            self.downs = nn.ModuleList()
-            for i in range(len(fpn_layer_depths[:-1])):
-                self.ups.append(self._create_up_branch(
-                    fpn_layer_depths[i], fpn_layer_depths[i + 1]))
-                self.downs.append(self._create_down_branch(
-                    fpn_layer_depths[i + 1], fpn_layer_depths[i]))
-            self.ups.append(self._create_up_branch(
-                fpn_layer_depths[-1], fpn_layer_depths[-1]))
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -84,24 +53,6 @@ class Backbone(nn.Module):
             self.in_depth = out_depth
         return layer
 
-    def _create_up_branch(self, in_depth: int, out_depth: int) -> nn.Module:
-        if self.fpn_type == "loftr":
-            branch = nn.Conv2d(in_depth, out_depth, 1, bias=False)
-        else:
-            assert False
-        return branch
-
-    def _create_down_branch(self, in_depth: int, out_depth: int) -> nn.Module:
-        if self.fpn_type == "loftr":
-            branch = nn.Sequential(
-                nn.Conv2d(in_depth, in_depth, 3, padding=1, bias=False),
-                nn.BatchNorm2d(in_depth),
-                nn.LeakyReLU(inplace=True),
-                nn.Conv2d(in_depth, out_depth, 3, padding=1, bias=False))
-        else:
-            assert False
-        return branch
-
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         out = []
         cur_scale = 1
@@ -112,26 +63,84 @@ class Backbone(nn.Module):
                 out.append(x)
         return out
 
-    def fuse(
+
+class Fusion(nn.Module):
+    def __init__(
         self,
-        xs: List[torch.Tensor],
-        align_corners: List[bool]
+        layer_depths0: List[Optional[int]],
+        layer_depths1: Optional[List[Optional[int]]] = None,
+        type: str = "loftr"
+    ) -> None:
+        super().__init__()
+        self.type = type
+
+        self.ups = nn.ModuleList()
+        self.downs = nn.ModuleList()
+        if type == "loftr":
+            for i in range(len(layer_depths0[:-1])):
+                up = None
+                if layer_depths0[i] is not None:
+                    up = self._create_up_branch(
+                        layer_depths0[i], layer_depths0[i + 1])
+                self.ups.append(up)
+                down_out_depth = layer_depths0[i]
+                if down_out_depth is None:
+                    for depth in layer_depths0[i + 1:]:
+                        if depth is not None:
+                            down_out_depth = depth
+                            break
+                down_in_depth = layer_depths0[i + 1]
+                if down_in_depth is None:
+                    down_in_depth = down_out_depth
+                if layer_depths1 is not None and layer_depths1[i] is not None:
+                    down_in_depth = down_in_depth + layer_depths1[i]
+                self.downs.append(self._create_down_branch(
+                    down_in_depth, down_out_depth))
+            self.ups.append(self._create_up_branch(
+                layer_depths0[-1], layer_depths0[-1]))
+        else:
+            raise ValueError("")
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(
+                    m.weight, mode="fan_out", nonlinearity="relu")
+            elif isinstance(m, (nn.BatchNorm2d, nn.LayerNorm)):
+                nn.init.constant_(m.weight, 1.0)
+                nn.init.constant_(m.bias, 0.0)
+
+    def _create_up_branch(self, in_depth: int, out_depth: int) -> nn.Module:
+        if self.type == "loftr":
+            branch = nn.Conv2d(in_depth, out_depth, 1, bias=False)
+        else:
+            assert False
+        return branch
+
+    def _create_down_branch(self, in_depth: int, out_depth: int) -> nn.Module:
+        if self.type == "loftr":
+            branch = nn.Sequential(
+                nn.Conv2d(in_depth, in_depth, 3, padding=1, bias=False),
+                nn.BatchNorm2d(in_depth),
+                nn.LeakyReLU(inplace=True),
+                nn.Conv2d(in_depth, out_depth, 3, padding=1, bias=False))
+        else:
+            assert False
+        return branch
+
+    def forward(
+        self,
+        xs0: List[Optional[torch.Tensor]],
+        xs1: Optional[List[Optional[torch.Tensor]]] = None
     ) -> List[torch.Tensor]:
-        n = len(xs)
-        out = (n - 1) * [None] + [self.ups[-1](xs[-1])]
+        n = len(xs0)
+        out = (n - 1) * [None] + [self.ups[-1](xs0[-1])]
         for i in reversed(range(n - 1)):
-            out[i] = self.ups[i](xs[i])
-            s = self.fpn_scale[i]
-            if align_corners[i]:
-                sh, sw = s * out[i + 1].shape[2], s * out[i + 1].shape[3]
-                scale = xs[i].new_tensor([sw - s, sh - s])
-                grid = K.create_meshgrid(
-                    sh, sw, normalized_coordinates=False, device=xs[i].device)
-                grid = (2 * grid / scale - 1).repeat(len(xs[i]), 1, 1, 1)
-                out[i] += F.grid_sample(out[i + 1], grid, align_corners=True)
-            else:
-                out[i] += F.interpolate(
-                    out[i + 1], scale_factor=s, mode="bilinear",
-                    align_corners=False)
+            out[i] = F.interpolate(
+                out[i + 1], scale_factor=2, mode="bilinear",
+                align_corners=False)
+            if xs0[i] is not None:
+                out[i] = out[i] + self.ups[i](xs0[i])
+            if xs1 is not None and xs1[i] is not None:
+                out[i] = torch.cat([out[i], xs1[i]], dim=1)
             out[i] = self.downs[i](out[i])
         return out

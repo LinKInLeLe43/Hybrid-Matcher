@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 
 import einops
+import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -11,10 +12,11 @@ from src.models.components.nets.new_matcher.modules.mlp import Mlp
 class SelfCluster(nn.Module):
     def __init__(
         self,
-        depth: int,
+        in_depth: int,
         head_count: int,
         fold_size: Tuple[int, int],
         anchor_size: Tuple[int, int],
+        hidden_depth: Optional[int] = None,
         bias: bool = True,
         enable_efficient: bool = True
     ) -> None:
@@ -24,9 +26,10 @@ class SelfCluster(nn.Module):
         self.anchor_size = anchor_size
         self.enable_efficient = enable_efficient
 
-        self.proj = nn.Conv2d(depth, 2 * depth, 1, bias=bias)
+        hidden_depth = hidden_depth if hidden_depth is not None else in_depth
+        self.proj = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
         self.anchor_proposal = nn.AdaptiveAvgPool2d(anchor_size)
-        self.merge = nn.Conv2d(depth, depth, 1, bias=bias)
+        self.merge = nn.Conv2d(hidden_depth, in_depth, 1, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -112,18 +115,28 @@ class SelfClusterBlock(nn.Module):
         fold_size: Tuple[int, int],
         anchor_size: Tuple[int, int],
         stride: int = 1,
-        bias: bool = True
+        hidden_depth: Optional[int] = None,
+        padding: Optional[int] = None,
+        bias: bool = True,
+        with_coor: bool = False
     ) -> None:
         super().__init__()
 
+        self.with_coor = False
         self.point_reducer = nn.Identity()
         if out_depth != in_depth or stride != 1:
+            if with_coor:
+                in_depth = in_depth + 2
+                self.with_coor = True
+
+            padding = padding if padding is not None else kernel_size // 2
             self.point_reducer = nn.Conv2d(
                 in_depth, out_depth, kernel_size, stride=stride,
-                padding=kernel_size // 2, bias=bias)
+                padding=padding, bias=bias)
 
         self.cluster = SelfCluster(
-            out_depth, head_count, fold_size, anchor_size, bias=bias)
+            out_depth, head_count, fold_size, anchor_size,
+            hidden_depth=hidden_depth, bias=bias)
         self.norm0 = nn.GroupNorm(1, out_depth)
 
         self.mlp = Mlp(2 * out_depth, 2 * out_depth, out_depth, bias=bias)
@@ -134,6 +147,12 @@ class SelfClusterBlock(nn.Module):
         x: torch.Tensor,
         mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
+        if self.with_coor:
+            n, _, h, w = x.shape
+            coors = K.create_meshgrid(h, w, device=x.device)
+            coors = (coors / 2).permute(0, 3, 1, 2).expand(n, -1, -1, -1)
+            x = torch.cat([x, coors], dim=1)
+
         x = self.point_reducer(x)
 
         message = self.cluster(x, mask=mask)

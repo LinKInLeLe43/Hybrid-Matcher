@@ -22,7 +22,7 @@ class NewMatcherNet(nn.Module):
         super().__init__()
 
         self.type = type
-        self.backbone = backbone
+        self.backbone, self.fusion = backbone
         self.positional_encoding = positional_encoding
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
@@ -87,12 +87,26 @@ class NewMatcherNet(nn.Module):
 
         if batch["image0"].shape == batch["image1"].shape:
             data = torch.cat([batch["image0"], batch["image1"]])
-            features = self.backbone(data)
+            if isinstance(self.backbone, nn.ModuleList):
+                features = self.backbone[0](data)
+                messages = self.backbone[1](data)
+            elif isinstance(self.backbone, nn.Module):
+                features = self.backbone(data)
+            else:
+                assert False
             feature0_32x, feature1_32x = features.pop(-1).chunk(2)
             feature0_16x, feature1_16x = features.pop(-1).chunk(2)
         else:
-            features0 = self.backbone(batch["image0"])
-            features1 = self.backbone(batch["image1"])
+            if isinstance(self.backbone, nn.ModuleList):
+                features0 = self.backbone[0](batch["image0"])
+                features1 = self.backbone[0](batch["image1"])
+                messages0 = self.backbone[1](batch["image0"])
+                messages1 = self.backbone[1](batch["image1"])
+            elif isinstance(self.backbone, nn.Module):
+                features0 = self.backbone(batch["image0"])
+                features1 = self.backbone(batch["image1"])
+            else:
+                assert False
             feature0_32x, feature1_32x = features0.pop(-1), features1.pop(-1)
             feature0_16x, feature1_16x = features0.pop(-1), features1.pop(-1)
         size0, size1 = feature0_16x.shape[2:], feature1_16x.shape[2:]
@@ -117,21 +131,32 @@ class NewMatcherNet(nn.Module):
 
         feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
         feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
-        align_corners = [False, False, False, False]
         if batch["image0"].shape == batch["image1"].shape:
             features_16x = torch.cat([feature0_16x, feature1_16x])
-            features = self.backbone.fuse(
-                features + [features_16x], align_corners)
+            if isinstance(self.backbone, nn.ModuleList):
+                features = self.fusion(
+                    [None, None] + features + [features_16x],
+                    xs1=messages)
+            elif isinstance(self.backbone, nn.Module):
+                features = self.fusion(features + [features_16x])
+            else:
+                assert False
             features0, features1 = [], []
             for feature in features:
                 feature0, feature1 = feature.chunk(2)
                 features0.append(feature0)
                 features1.append(feature1)
         else:
-            features0 = self.backbone.fuse(
-                features0 + [feature0_16x], align_corners)
-            features1 = self.backbone.fuse(
-                features1 + [feature1_16x], align_corners)
+            if isinstance(self.backbone, nn.ModuleList):
+                features0 = self.fusion(
+                    [None, None] + features0 + [feature0_16x], xs1=messages0)
+                features1 = self.fusion(
+                    [None, None] + features1 + [feature1_16x], xs1=messages1)
+            elif isinstance(self.backbone, nn.Module):
+                features0 = self.fusion(features0 + [feature0_16x])
+                features1 = self.fusion(features1 + [feature1_16x])
+            else:
+                assert False
 
         if True:
             size0, size1 = features0[-2].shape[2:], features1[-2].shape[2:]
