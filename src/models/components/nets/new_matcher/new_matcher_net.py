@@ -159,6 +159,15 @@ class NewMatcherNet(nn.Module):
             fine_feature0[:, self.fine_cls_mask],
             fine_feature1[:, self.fine_cls_mask]))
 
+        if self.fine_cls_matching.cls_topk != 1:
+            result["idxes"] = tuple(map(
+                lambda x: x.repeat_interleave(self.fine_cls_matching.cls_topk),
+                result["idxes"]))
+            result["points0"] = result["points0"].repeat_interleave(
+                self.fine_cls_matching.cls_topk, dim=0)
+            result["points1"] = result["points1"].repeat_interleave(
+                self.fine_cls_matching.cls_topk, dim=0)
+
         m_idxes, i_idxes, j_idxes = map(
             lambda x: x[:, None], result["fine_cls_idxes"])
         i_idxes = ((fine_cls_w + 2 * p) *

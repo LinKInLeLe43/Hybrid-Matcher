@@ -17,16 +17,19 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         window_size: int,
         temperature: float = 1.0,
         cls_border_removal: int = 0,
+        cls_topk: int = 1,
         reg_by_exp_with_std: bool = False
     ) -> None:
         super().__init__()
         self.type = type
+        self.depth = depth
         self.window_size = window_size
         self.temperature = temperature
 
         w = window_size
         if type == "classification":
             self.cls_border_removal = cls_border_removal
+            self.cls_topk = cls_topk
 
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
             bias_table = (grid - w // 2 + 0.5).reshape(-1, 2)
@@ -68,18 +71,28 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                    F.softmax(similarities, dim=2))
 
         with torch.no_grad():
-            _heatmap = heatmap
+            _heatmap = heatmap.clone()
             if r != 0:
                 mask = x0.new_zeros((m, w, w, w, w), dtype=torch.bool)
                 mask[:, r:-r, r:-r, r:-r, r:-r] = True
                 mask = mask.reshape(m, ww, ww)
-                _heatmap = heatmap.masked_fill(~mask, float("-inf"))
+                _heatmap.masked_fill_(~mask, float("-inf"))
 
             m_idxes = torch.arange(m, device=x0.device)
-            idxes = _heatmap.flatten(start_dim=1).argmax(dim=1)
-            idxes = m_idxes, idxes // ww, idxes % ww
-            biases0 = self.cls_bias_table.index_select(0, idxes[1])
-            biases1 = self.cls_bias_table.index_select(0, idxes[2])
+            i_idxes, j_idxes = [], []
+            for _ in range(self.cls_topk):
+                _idxes = _heatmap.flatten(start_dim=1).argmax(dim=1)
+                _i_idxes, _j_idxes = _idxes // ww, _idxes % ww
+                _heatmap[m_idxes, _i_idxes, :] = float("-inf")
+                _heatmap[m_idxes, :, _j_idxes] = float("-inf")
+                i_idxes.append(_i_idxes)
+                j_idxes.append(_j_idxes)
+            m_idxes = m_idxes.repeat_interleave(self.cls_topk)
+            i_idxes = torch.stack(i_idxes, dim=1).flatten()
+            j_idxes = torch.stack(j_idxes, dim=1).flatten()
+            idxes = m_idxes, i_idxes, j_idxes
+            biases0 = self.cls_bias_table.index_select(0, i_idxes)
+            biases1 = self.cls_bias_table.index_select(0, j_idxes)
         result = {"fine_cls_heatmap": heatmap,
                   "fine_cls_idxes": idxes,
                   "fine_cls_biases0": biases0,
