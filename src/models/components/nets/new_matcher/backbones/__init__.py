@@ -1,8 +1,9 @@
+from typing import Tuple
 import functools
 
 from torch import nn
 
-from .base import Backbone
+from .base import Backbone, Fusion
 from .mobileone_block import MobileOneBlock
 from .resnet_block import ResNetBlock
 from .self_cluster_block import SelfClusterBlock
@@ -11,7 +12,7 @@ RepVggBlock = functools.partial(
     MobileOneBlock, kernel_size=3, act=nn.ReLU(inplace=True))
 
 
-def create_resnet_selfcoc_fpn():
+def create_resnet_selfcoc_fpn() -> Tuple[nn.Module, nn.Module]:
     layer_depths = [64, 64, 128, 256, 256, 256, 256]
     strides = [1, 2, 2, 2, 1, 2, 2]
     stem = nn.Sequential(
@@ -34,10 +35,11 @@ def create_resnet_selfcoc_fpn():
                       SelfClusterBlock32x]
     block_counts = [1, 2, 2, 2, 2, 2, 2]
     net = Backbone(block_builders, block_counts, layer_depths, strides)
-    return net
+    fusion = Fusion([64, 64, 128, 256, 256])
+    return net, fusion
 
 
-def create_repvgg_selfcoc_fpn():
+def create_repvgg_selfcoc_fpn() -> Tuple[nn.Module, nn.Module]:
     layer_depths = [64, 64, 128, 256, 256, 256, 256]
     strides = [1, 2, 2, 2, 1, 2, 2]
     SelfClusterBlock8x = functools.partial(
@@ -54,4 +56,5 @@ def create_repvgg_selfcoc_fpn():
                       SelfClusterBlock32x]
     block_counts = [1, 2, 4, 14, 2, 2, 2]
     net = Backbone(block_builders, block_counts, layer_depths, strides)
-    return net
+    fusion = Fusion([64, 64, 128, 256, 256])
+    return net, fusion

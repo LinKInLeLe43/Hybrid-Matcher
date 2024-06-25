@@ -22,7 +22,7 @@ class NewMatcherNet(nn.Module):
         super().__init__()
 
         self.type = type
-        self.backbone = backbone
+        self.backbone, self.fusion = backbone
         self.positional_encoding = positional_encoding
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
@@ -117,21 +117,18 @@ class NewMatcherNet(nn.Module):
 
         feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
         feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
-        align_corners = [False, False, False, False]
+        aligns = [False, False, False, False]
         if batch["image0"].shape == batch["image1"].shape:
             features_16x = torch.cat([feature0_16x, feature1_16x])
-            features = self.backbone.fuse(
-                features + [features_16x], align_corners)
+            features = self.fusion(features + [features_16x], aligns)
             features0, features1 = [], []
             for feature in features:
                 feature0, feature1 = feature.chunk(2)
                 features0.append(feature0)
                 features1.append(feature1)
         else:
-            features0 = self.backbone.fuse(
-                features0 + [feature0_16x], align_corners)
-            features1 = self.backbone.fuse(
-                features1 + [feature1_16x], align_corners)
+            features0 = self.fusion(features0 + [feature0_16x], aligns)
+            features1 = self.fusion(features1 + [feature1_16x], aligns)
 
         if True:
             size0, size1 = features0[-2].shape[2:], features1[-2].shape[2:]
