@@ -18,8 +18,6 @@ net:
     use_matchability: true
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
-    type: ???
-    sparse: ???
     use_matchability: ${model.net.coarse_module.use_matchability}
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
@@ -39,10 +37,10 @@ net:
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
   type: "${model.net.type}"
-  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
+  coarse_cls_sparse: ???
   coarse_cls_loss_pos_weight: 1.0
   coarse_cls_loss_neg_weight: 1.0
-  fine_cls_sparse: ${model.net.coarse_matching.sparse}
+  fine_cls_sparse: ???
   fine_cls_loss_pos_weight: 1.0
   fine_cls_loss_neg_weight: 1.0
   fine_reg_loss_weight: 1.0

@@ -79,6 +79,8 @@ class NewMatcherNet(nn.Module):
         self,
         batch: Dict[str, Any],
         gt_idxes:
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
@@ -111,10 +113,9 @@ class NewMatcherNet(nn.Module):
             mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
         result = self.coarse_matching(
-            feature0_16x, feature1_16x, size0, size1,
+            "uni_softmax", feature0_16x, feature1_16x, size0, size1,
             matchability0=matchability0, matchability1=matchability1,
-            mask0=mask0_16x, mask1=mask1_16x, bidirectional=False,
-            gt_idxes=gt_idxes)
+            mask0=mask0_16x, mask1=mask1_16x, gt_idxes=gt_idxes)
 
         feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
         feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
@@ -138,8 +139,9 @@ class NewMatcherNet(nn.Module):
             use_matchability = self.coarse_matching.use_matchability
             self.coarse_matching.use_matchability = False
             result["coarse_extra_cls_heatmap"] = self.coarse_matching(
-                features0_8x, features1_8x, size0, size1, mask0=mask0_8x,
-                mask1=mask1_8x)["coarse_cls_heatmap"]
+                "bi_softmax", features0_8x, features1_8x, size0, size1,
+                mask0=mask0_8x, mask1=mask1_8x,
+                gt_idxes=extra_gt_idxes)["coarse_cls_heatmap"]
             self.coarse_matching.use_matchability = use_matchability
 
         b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]

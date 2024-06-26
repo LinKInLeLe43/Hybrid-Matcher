@@ -7,10 +7,9 @@ defaults:
 tags: ["train-new_matcher-megadepth-ds-sparse", "bs=8-image_size=832"]
 
 model:
-  net:
-    coarse_matching:
-      type: "dual_softmax"
-      sparse: true
+  loss:
+    coarse_cls_sparse: true
+    fine_cls_sparse: true
 
 trainer:
   devices: 8

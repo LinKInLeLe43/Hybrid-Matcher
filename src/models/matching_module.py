@@ -97,7 +97,8 @@ class MatchingModule(pl.LightningModule):
                 return_flow=self.net.use_flow))
 
             result = self.net(
-                batch, gt_idxes=supervision["coarse_gt_idxes"])
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
             supervision.update(utils.create_fine_supervision(
                 batch, self.net.scales, result["coarse_cls_idxes"],
                 return_coor=True))
@@ -251,7 +252,7 @@ class MatchingModule(pl.LightningModule):
         dump = {}
         if self.hparams.dump_dir is not None:
             dump = error
-            for k in ("points0", "points1", "confidences"):
+            for k in ("points0", "points1", "scores"):
                 dump[k] = result[k].cpu().numpy()
         output = {"error": error, "dump": dump}
         return output
