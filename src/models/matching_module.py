@@ -79,13 +79,9 @@ class MatchingModule(pl.LightningModule):
         supervision = {}
         if self.net.type == "one_stage":
             supervision.update(utils.create_coarse_supervision(
-                batch, self.net.scales[0], return_coor=True,
+                batch, self.net.scales[0],
+                bi_scale=getattr(self.net, "extra_scale"), return_coor=True,
                 return_flow=self.net.use_flow))
-
-            if hasattr(self.net, "extra_scale"):
-                supervision[f"coarse_extra_gt_mask"] = (
-                    utils.create_coarse_supervision(
-                        batch, self.net.extra_scale)["coarse_gt_mask"])
 
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
@@ -96,19 +92,15 @@ class MatchingModule(pl.LightningModule):
             supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "two_stage":
             supervision.update(utils.create_coarse_supervision(
-                batch, self.net.scales[0], return_flow=self.net.use_flow))
-
-            if hasattr(self.net, "extra_scale"):
-                offset = -(self.net.scales[0] / self.net.extra_scale / 2) + 0.5
-                supervision[f"coarse_extra_gt_mask"] = (
-                    utils.create_coarse_supervision(
-                        batch, self.net.extra_scale,
-                        offset=offset)["coarse_gt_mask"])
+                batch, self.net.scales[0],
+                bi_scale=getattr(self.net, "extra_scale"),
+                return_flow=self.net.use_flow))
 
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"])
             supervision.update(utils.create_fine_supervision(
-                batch, self.net.scales, result["coarse_cls_idxes"]))
+                batch, self.net.scales, result["coarse_cls_idxes"],
+                return_coor=True))
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
                 result["fine_cls_idxes"], self.net.scales[1],

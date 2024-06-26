@@ -62,9 +62,17 @@ def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
     offset: float = 0.0,  # TODO: whether need actually
+    bi_scale: Optional[int] = None,
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
+    if bi_scale is not None:
+        if bi_scale >= scale:
+            raise ValueError("")
+
+        stride = scale // bi_scale
+        scale = bi_scale
+
     device = batch["image0"].device
     n, _, h0, w0 = batch["image0"].shape
     _, _, h1, w1 = batch["image1"].shape
@@ -109,8 +117,20 @@ def create_coarse_supervision(
                 else 3 * (torch.tensor([0], device=device),))
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
-    supervision = {"coarse_gt_idxes": gt_idxes,
-                   "coarse_gt_mask": gt_mask}
+    supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
+
+    if bi_scale is not None:
+        fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
+        gt_mask = gt_mask.reshape(
+            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+        gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+        gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+        gt_idxes = (gt_mask.nonzero(as_tuple=True) if gt_mask.any() else
+                    3 * (torch.tensor([0], device=device),))
+        supervision["coarse_extra_gt_idxes"] = supervision["coarse_gt_idxes"]
+        supervision["coarse_extra_gt_mask"] = supervision["coarse_gt_mask"]
+        supervision["coarse_gt_idxes"] = gt_idxes
+        supervision["coarse_gt_mask"] = gt_mask
 
     if return_coor:
         if "scale1" in batch:
@@ -129,7 +149,8 @@ def create_coarse_supervision(
 def create_fine_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    return_coor: bool = False
 ) -> Dict[str, Any]:
     device = batch["image0"].device
     stride = scales[0] // scales[1]
@@ -137,12 +158,16 @@ def create_fine_supervision(
     b_idxes, i_idxes, j_idxes = idxes
     m = len(b_idxes)
     if m == 0:
-        points0_to_1 = torch.empty((0, ww, 2), device=device)
-        points1 = torch.empty((0, ww, 2), device=device)
+        _gt_idxes = torch.empty((0,), dtype=torch.long, device=device)
+        gt_idxes = 3 * (_gt_idxes,)
         gt_mask = torch.empty((0, ww, ww), dtype=torch.bool, device=device)
-        supervision = {"points0_to_1": points0_to_1,
-                       "points1": points1,
-                       "fine_gt_mask": gt_mask}
+        supervision = {"fine_gt_idxes": gt_idxes, "fine_gt_mask": gt_mask}
+
+        if return_coor:
+            points0_to_1 = torch.empty((0, ww, 2), device=device)
+            points1 = torch.empty((0, ww, 2), device=device)
+            supervision["points0_to_1"] = points0_to_1
+            supervision["points1"] = points1
         return supervision
 
     n, _, h0, w0 = batch["image0"].shape
@@ -187,10 +212,14 @@ def create_fine_supervision(
     idxes1_to_0 = torch.where(idxes1_to_0 == 0, -2, idxes1_to_0)
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
-    if "scale1" in batch:
-        points0_to_1 = points0_to_1 / batch["scale1"][:, None]
-        points1 = points1 / batch["scale1"][:, None]
-    supervision = {"points0_to_1": points0_to_1,
-                   "points1": points1,
-                   "fine_gt_mask": gt_mask}
+    gt_idxes = (gt_mask.nonzero(as_tuple=True) if gt_mask.any() else
+                3 * (torch.tensor([0], device=device),))
+    supervision = {"fine_gt_idxes": gt_idxes, "fine_gt_mask": gt_mask}
+
+    if return_coor:
+        if "scale1" in batch:
+            points0_to_1 = points0_to_1 / batch["scale1"][:, None]
+            points1 = points1 / batch["scale1"][:, None]
+        supervision["points0_to_1"] = points0_to_1
+        supervision["points1"] = points1
     return supervision

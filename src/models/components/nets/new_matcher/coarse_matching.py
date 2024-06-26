@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
 from torch import nn
@@ -105,7 +105,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
     @torch.no_grad()
     def _create_coarse_matching(
         self,
-        confidences: torch.Tensor,
+        confidences: Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
         size0: Tuple[int, int],
         size1: Tuple[int, int],
         mask0: Optional[torch.Tensor] = None,
@@ -115,16 +115,40 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
     ) -> Dict[str, Any]:
         (h0, w0), (h1, w1) = size0, size1
 
-        mask = (confidences > self.threshold).reshape(-1, h0, w0, h1, w1)
-        if mask0 is not None:
-            mask0, mask1 = mask0.reshape(-1, h0, w0), mask1.reshape(-1, h1, w1)
-        h0s, w0s, h1s, w1s = self._remove_mask_margin(
-            mask, mask0=mask0, mask1=mask1)
-        mask = mask.reshape(-1, h0 * w0, h1 * w1)
+        if isinstance(confidences, tuple):
+            confidences01, confidences10 = confidences
+            mask01 = confidences01 > self.threshold
+            mask01 = mask01.reshape(-1, h0, w0, h1, w1)
+            h0s, w0s, h1s, w1s = self._remove_mask_margin(
+                mask01, mask0=mask0, mask1=mask1)
+            mask01 = mask01.reshape(-1, h0 * w0, h1 * w1)
+            idxes0_to_1_mask = (confidences01 ==
+                                confidences01.amax(dim=2, keepdim=True))
+            mask01 &= idxes0_to_1_mask
 
-        idxes0_to_1_mask = confidences == confidences.amax(dim=2, keepdim=True)
-        idxes1_to_0_mask = confidences == confidences.amax(dim=1, keepdim=True)
-        mask &= idxes0_to_1_mask & idxes1_to_0_mask
+            mask10 = confidences10 > self.threshold
+            mask10 = mask10.reshape(-1, h0, w0, h1, w1)
+            h0s, w0s, h1s, w1s = self._remove_mask_margin(
+                mask10, mask0=mask0, mask1=mask1)
+            mask10 = mask10.reshape(-1, h0 * w0, h1 * w1)
+            idxes1_to_0_mask = (confidences10 ==
+                                confidences10.amax(dim=1, keepdim=True))
+            mask10 &= idxes1_to_0_mask
+
+            mask = mask01 | mask10
+        elif isinstance(confidences, torch.Tensor):
+            mask = (confidences > self.threshold).reshape(-1, h0, w0, h1, w1)
+            h0s, w0s, h1s, w1s = self._remove_mask_margin(
+                mask, mask0=mask0, mask1=mask1)
+            mask = mask.reshape(-1, h0 * w0, h1 * w1)
+
+            idxes0_to_1_mask = (confidences ==
+                                confidences.amax(dim=2, keepdim=True))
+            idxes1_to_0_mask = (confidences ==
+                                confidences.amax(dim=1, keepdim=True))
+            mask &= idxes0_to_1_mask & idxes1_to_0_mask
+        else:
+            assert False
 
         train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
         if self.training:
@@ -137,7 +161,15 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         b_idxes, i_idxes, j_idxes = matching_idxes
         points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
         points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
-        confidences = confidences[matching_idxes]
+
+        if isinstance(confidences, tuple):
+            confidences = torch.maximum(confidences01[matching_idxes],
+                                        confidences10[matching_idxes])
+        elif isinstance(confidences, torch.Tensor):
+            confidences = confidences[matching_idxes]
+        else:
+            assert False
+
         coarse_matching = {"idxes": matching_idxes,
                            "points0": points0,
                            "points1": points1,
@@ -155,6 +187,7 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         matchability1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        bidirectional: bool = True,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
@@ -183,6 +216,9 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                 confidences_with_bin[:, :-1, -1] = 1 - matchability0
                 confidences_with_bin[:, -1, :-1] = 1 - matchability1
         elif self.type == "optimal_transport":
+            if not bidirectional:
+                raise ValueError("")
+
             confidences_with_bin = optimal_transport.log_optimal_transport(
                 similarities, self.ot_bin_score, self.ot_its_count).exp()
             confidences = confidences_with_bin[:, :l, :s]
@@ -196,8 +232,11 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
 
         coarse_matching = {}
         if not self.training or gt_idxes is not None:
+            _confidences = (
+                confidences if bidirectional else
+                (idxes0_to_1_confidences, idxes1_to_0_confidences))
             coarse_matching = self._create_coarse_matching(
-                confidences, size0, size1, mask0=mask0, mask1=mask1,
+                _confidences, size0, size1, mask0=mask0, mask1=mask1,
                 gt_idxes=gt_idxes)
         if confidences_with_bin is not None and self.sparse:
             coarse_matching["coarse_cls_heatmap"] = confidences_with_bin

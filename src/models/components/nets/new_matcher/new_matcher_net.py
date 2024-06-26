@@ -113,7 +113,8 @@ class NewMatcherNet(nn.Module):
         result = self.coarse_matching(
             feature0_16x, feature1_16x, size0, size1,
             matchability0=matchability0, matchability1=matchability1,
-            mask0=mask0_16x, mask1=mask1_16x, gt_idxes=gt_idxes)
+            mask0=mask0_16x, mask1=mask1_16x, bidirectional=False,
+            gt_idxes=gt_idxes)
 
         feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
         feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
