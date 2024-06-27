@@ -8,18 +8,26 @@ from torch.nn import functional as F
 class CoarseMatching(nn.Module):
     def __init__(
         self,
+        type: str,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
         use_matchability: bool = False,
+        sub_stride: Optional[int] = None,
         train_percent: float = 0.2,
         train_min_gt_count: int = 200
     ) -> None:
         super().__init__()
+
+        if type not in ("bi_softmax", "uni_softmax", "bi_filter"):
+            raise ValueError("")
+
+        self.type = type
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
         self.use_matchability = use_matchability
+        self.sub_stride = sub_stride
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
 
@@ -94,43 +102,48 @@ class CoarseMatching(nn.Module):
     def _create_coarse_matching(
         self,
         score: Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
-        threshold: float,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
+        prior_mask: Optional[torch.Tensor],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
+        only_return_mask: bool,
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
+        t = self.threshold
         (_, w0), (_, w1) = size0, size1
 
         if isinstance(score, tuple):
             score0_to_1, score1_to_0 = score
 
             mask0_to_1, max_count = self._remove_border(
-                score0_to_1 > threshold, size0, size1, mask0, mask1)
+                score0_to_1 > t, size0, size1, mask0, mask1)
             mask0_to_1 &= score0_to_1 == score0_to_1.amax(dim=2, keepdim=True)
 
             mask1_to_0, max_count = self._remove_border(
-                score1_to_0 > threshold, size0, size1, mask0, mask1)
+                score1_to_0 > t, size0, size1, mask0, mask1)
             mask1_to_0 &= score1_to_0 == score1_to_0.amax(dim=1, keepdim=True)
 
             mask = mask0_to_1 | mask1_to_0
         elif isinstance(score, torch.Tensor):
             mask, max_count = self._remove_border(
-                score > threshold, size0, size1, mask0, mask1)
+                score > t, size0, size1, mask0, mask1)
             mask &= ((score == score.amax(dim=2, keepdim=True)) &
                      (score == score.amax(dim=1, keepdim=True)))
         else:
             assert False
 
+        if prior_mask is not None:
+            mask &= prior_mask
+
+        if only_return_mask:
+            result = {"coarse_cls_mask": mask}
+            return result
+
         train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
         if self.training and gt_idxes is not None:
             train_idxes, matching_idxes = self._sample_for_train(
                 max_count, matching_idxes, gt_idxes)
-
-        b_idxes, i_idxes, j_idxes = matching_idxes
-        points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
-        points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
 
         if isinstance(score, tuple):
             scores = torch.maximum(
@@ -140,37 +153,58 @@ class CoarseMatching(nn.Module):
         else:
             assert False
 
+        if self.sub_stride is not None:
+            s = self.sub_stride
+            m = len(matching_idxes[0])
+
+            b_idxes, i_idxes, j_idxes = train_idxes
+            ix_idxes, iy_idxes = i_idxes % w0, i_idxes // w0
+            jx_idxes, jy_idxes = j_idxes % w1, j_idxes // w1
+            i_idxes = (w0 // s) * (iy_idxes // s) + (ix_idxes // s)
+            j_idxes = (w1 // s) * (jy_idxes // s) + (jx_idxes // s)
+            sub_i_idxes = s * (iy_idxes % s) + (ix_idxes % s)
+            sub_j_idxes = s * (jy_idxes % s) + (jx_idxes % s)
+            train_idxes = b_idxes, i_idxes, j_idxes
+            train_sub_idxes = sub_i_idxes, sub_j_idxes
+            matching_idxes = b_idxes[:m], i_idxes[:m], j_idxes[:m]
+            w0, w1 = w0 // s, w1 // s
+
+        b_idxes, i_idxes, j_idxes = matching_idxes
+        points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
+        points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
+
         result = {"idxes": matching_idxes,
                   "points0": points0,
                   "points1": points1,
                   "scores": scores,
                   "coarse_cls_idxes": train_idxes}
+
+        if self.sub_stride is not None:
+            result["coarse_cls_sub_idxes"] = train_sub_idxes
         return result
 
     def forward(
         self,
-        type: str,
         x0: torch.Tensor,
         x1: torch.Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
         matchability0: Optional[torch.Tensor] = None,
         matchability1: Optional[torch.Tensor] = None,
+        prior_mask: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
+        only_return_mask: bool = False,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        if type not in ("bi_softmax", "uni_softmax", "bi_filter"):
-            raise ValueError("")
-
         n, l, c = x0.shape
         _, s, _ = x1.shape
 
         with torch.autocast(
             "cuda",
             enabled=(torch.is_autocast_enabled() or
-                     (type == "bi_filter" and not self.training))
+                     (self.type == "bi_filter" and not self.training))
         ):
             x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
             similarity = torch.einsum("nlc,nsc->nls", x0, x1)
@@ -181,7 +215,7 @@ class CoarseMatching(nn.Module):
                 similarity.masked_fill_(~mask, float("-inf"))
 
         confidence = confidence_with_bin = None
-        if type != "bi_filter" or self.training:
+        if self.type != "bi_filter" or self.training:
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
 
@@ -201,20 +235,18 @@ class CoarseMatching(nn.Module):
                 confidence_with_bin[:, :-1, -1] = 1 - matchability0
                 confidence_with_bin[:, -1, :-1] = 1 - matchability1
 
-        if type == "bi_softmax" or type == "uni_softmax":
+        if self.type == "bi_softmax" or type == "uni_softmax":
             score = confidence
-            threshold = self.threshold
-        elif type == "uni_softmax":
+        elif self.type == "uni_softmax":
             score = (confidence0_to_1, confidence1_to_0)
-            threshold = self.threshold
-        elif type == "bi_filter":
+        elif self.type == "bi_filter":
             score = similarity
-            threshold = 0.0
         else:
-            raise ValueError("")
+            assert False
 
         result = self._create_coarse_matching(
-            score, threshold, size0, size1, mask0, mask1, gt_idxes)
+            score, size0, size1, prior_mask, mask0, mask1, only_return_mask,
+            gt_idxes)
 
         if confidence_with_bin is not None:
             result["coarse_cls_heatmap"] = confidence_with_bin

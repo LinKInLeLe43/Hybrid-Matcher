@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Tuple
 
 import kornia as K
 from kornia import geometry
@@ -17,7 +17,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         window_size: int,
         temperature: float = 1.0,
         cls_border_removal: int = 0,
-        cls_topk: int = 1,
+        cls_sub_stride: Optional[int] = None,
         reg_by_exp_with_std: bool = False
     ) -> None:
         super().__init__()
@@ -29,7 +29,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         w = window_size
         if type == "classification":
             self.cls_border_removal = cls_border_removal
-            self.cls_topk = cls_topk
+            self.cls_sub_stride = cls_sub_stride
 
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
             bias_table = (grid - w // 2 + 0.5).reshape(-1, 2)
@@ -46,8 +46,13 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
     def _compute_cls_biases(
         self,
         x0: torch.Tensor,
-        x1: torch.Tensor
+        x1: torch.Tensor,
+        sub_idxes: Optional[Tuple[torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
+        if self.cls_sub_stride is not None:
+            if sub_idxes is None:
+                raise ValueError("")
+
         w, r = self.window_size, self.cls_border_removal
         if len(x0.shape) == 4:
             x0 = x0.flatten(start_dim=2).transpose(1, 2)
@@ -71,28 +76,29 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                    F.softmax(similarities, dim=2))
 
         with torch.no_grad():
-            _heatmap = heatmap.clone()
+            _heatmap = heatmap
             if r != 0:
                 mask = x0.new_zeros((m, w, w, w, w), dtype=torch.bool)
                 mask[:, r:-r, r:-r, r:-r, r:-r] = True
                 mask = mask.reshape(m, ww, ww)
-                _heatmap.masked_fill_(~mask, float("-inf"))
+                _heatmap = heatmap.masked_fill(~mask, float("-inf"))
 
             m_idxes = torch.arange(m, device=x0.device)
-            i_idxes, j_idxes = [], []
-            for _ in range(self.cls_topk):
-                _idxes = _heatmap.flatten(start_dim=1).argmax(dim=1)
-                _i_idxes, _j_idxes = _idxes // ww, _idxes % ww
-                _heatmap[m_idxes, _i_idxes, :] = float("-inf")
-                _heatmap[m_idxes, :, _j_idxes] = float("-inf")
-                i_idxes.append(_i_idxes)
-                j_idxes.append(_j_idxes)
-            m_idxes = m_idxes.repeat_interleave(self.cls_topk)
-            i_idxes = torch.stack(i_idxes, dim=1).flatten()
-            j_idxes = torch.stack(j_idxes, dim=1).flatten()
-            idxes = m_idxes, i_idxes, j_idxes
-            biases0 = self.cls_bias_table.index_select(0, i_idxes)
-            biases1 = self.cls_bias_table.index_select(0, j_idxes)
+            if self.cls_sub_stride is not None:
+                fw, sw = self.cls_sub_stride, w // self.cls_sub_stride
+                mask = x0.new_zeros(
+                    (m, fw ** 2, fw ** 2, sw ** 2, sw ** 2), dtype=torch.bool)
+                mask[m_idxes, sub_idxes[0], sub_idxes[1]] = True
+                mask = mask.reshape(m, fw, fw, fw, fw, sw, sw, sw, sw)
+                mask = mask.permute(0, 1, 5, 2, 6, 3, 7, 4, 8)
+                mask = mask.reshape(m, ww, ww)
+                _heatmap = heatmap.masked_fill(~mask, float("-inf"))
+
+            idxes = _heatmap.flatten(start_dim=1).argmax(dim=1)
+            idxes = m_idxes, idxes // ww, idxes % ww
+            biases0 = self.cls_bias_table.index_select(0, idxes[1])
+            biases1 = self.cls_bias_table.index_select(0, idxes[2])
+
         result = {"fine_cls_heatmap": heatmap,
                   "fine_cls_idxes": idxes,
                   "fine_cls_biases0": biases0,
@@ -159,9 +165,14 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         result = {"fine_reg_biases": biases}
         return result
 
-    def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, Any]:
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        sub_idxes: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+    ) -> Dict[str, Any]:
         if self.type == "classification":
-            result = self._compute_cls_biases(x0, x1)
+            result = self._compute_cls_biases(x0, x1, sub_idxes)
         elif self.type == "regression_by_expectation":
             result = self._compute_reg_biases_by_expectation(x0, x1)
         elif self.type == "regression_by_mlp":

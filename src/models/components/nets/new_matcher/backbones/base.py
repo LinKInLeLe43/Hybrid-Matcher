@@ -123,8 +123,8 @@ class Fusion(nn.Module):
         for i in reversed(range(l - 1)):
             out[i] = self.ups[i](xs[i])
 
+            n, _, h, w = out[i].shape
             if aligns[i]:
-                n, _, h, w = out[i + 1].shape
                 grid = K.create_meshgrid(
                     h, w, normalized_coordinates=False,
                     device=out[i + 1].device)
@@ -132,7 +132,6 @@ class Fusion(nn.Module):
                 grid = (2 * grid / scale - 1).expand(n, -1, -1, -1)
                 out[i] += F.grid_sample(out[i + 1], grid, align_corners=True)
             else:
-                n, _, h, w = out[i].shape
                 grid = K.create_meshgrid(
                     h, w, normalized_coordinates=False, device=out[i].device)
                 scale = out[i].new_tensor([w - 1, h - 1])
