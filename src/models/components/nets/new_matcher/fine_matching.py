@@ -32,7 +32,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             self.cls_sub_stride = cls_sub_stride
 
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
-            bias_table = (grid - w // 2 + 0.5).reshape(-1, 2)
+            bias_table = (grid - w / 2 + 0.5).reshape(-1, 2)
             self.register_buffer("cls_bias_table", bias_table, persistent=False)
         elif type == "regression_by_expectation":
             self.reg_by_exp_with_std = reg_by_exp_with_std
@@ -81,7 +81,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                 mask = x0.new_zeros((m, w, w, w, w), dtype=torch.bool)
                 mask[:, r:-r, r:-r, r:-r, r:-r] = True
                 mask = mask.reshape(m, ww, ww)
-                _heatmap = heatmap.masked_fill(~mask, float("-inf"))
+                _heatmap = _heatmap.masked_fill(~mask, float("-inf"))
 
             m_idxes = torch.arange(m, device=x0.device)
             if self.cls_sub_stride is not None:
@@ -92,7 +92,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                 mask = mask.reshape(m, fw, fw, fw, fw, sw, sw, sw, sw)
                 mask = mask.permute(0, 1, 5, 2, 6, 3, 7, 4, 8)
                 mask = mask.reshape(m, ww, ww)
-                _heatmap = heatmap.masked_fill(~mask, float("-inf"))
+                _heatmap = _heatmap.masked_fill(~mask, float("-inf"))
 
             idxes = _heatmap.flatten(start_dim=1).argmax(dim=1)
             idxes = m_idxes, idxes // ww, idxes % ww

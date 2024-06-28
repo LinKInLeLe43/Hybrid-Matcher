@@ -235,7 +235,7 @@ class CoarseMatching(nn.Module):
                 confidence_with_bin[:, :-1, -1] = 1 - matchability0
                 confidence_with_bin[:, -1, :-1] = 1 - matchability1
 
-        if self.type == "bi_softmax" or type == "uni_softmax":
+        if self.type == "bi_softmax":
             score = confidence
         elif self.type == "uni_softmax":
             score = (confidence0_to_1, confidence1_to_0)

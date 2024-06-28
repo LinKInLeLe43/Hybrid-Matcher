@@ -126,7 +126,8 @@ class MatchingModule(pl.LightningModule):
             supervision.update(utils.create_fine_supervision(
                 batch, self.net.scales[1:],
                 result[f"coarse_cls_idxes_{self.net.scales[1]}x"],
-                align=True, return_coor=True))
+                window_size=self.net.fine_cls_1x_window_size,
+                offset=self.net.scales[1] * 0.5, return_coor=True))
 
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),

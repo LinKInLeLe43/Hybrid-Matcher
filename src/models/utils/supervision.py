@@ -72,6 +72,7 @@ def create_coarse_supervision(
 
         stride = scale // bi_scale
         scale = bi_scale
+        offset = offset - stride // 2 + 0.5
 
     device = batch["image0"].device
     n, _, h0, w0 = batch["image0"].shape
@@ -149,17 +150,14 @@ def create_fine_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    align: bool = False,
+    window_size: Optional[int] = None,
+    offset: Optional[float] = None,  # TODO: whether need actually
     return_coor: bool = False
 ) -> Dict[str, Any]:
     device = batch["image0"].device
     stride = scales[0] // scales[1]
-    if align:
-        window_size = stride + 1
-        offset = 0.0
-    else:
-        window_size = stride
-        offset = 0.5
+    window_size = window_size if window_size is not None else stride
+    offset = offset if offset is not None else 0.5
     ww = window_size ** 2
     b_idxes, i_idxes, j_idxes = idxes
     m = len(b_idxes)
@@ -190,8 +188,8 @@ def create_fine_supervision(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
     coors1 = coors1.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
-    coors0 = F.pad(coors0, [stride // 2, 0, stride // 2, 0])
-    coors1 = F.pad(coors1, [stride // 2, 0, stride // 2, 0])
+    coors0 = F.pad(coors0, [window_size // 2, 0, window_size // 2, 0])
+    coors1 = F.pad(coors1, [window_size // 2, 0, window_size // 2, 0])
     coors0 = _crop_windows(coors0, window_size, stride, 0)[b_idxes, i_idxes]
     coors1 = _crop_windows(coors1, window_size, stride, 0)[b_idxes, j_idxes]
     idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]

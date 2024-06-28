@@ -35,6 +35,7 @@ class NewMatcherNet(nn.Module):
         self.extra_scale = 8
         self.use_flow = False
         self.fine_reg_window_size = fine_reg_matching.window_size
+        self.fine_cls_1x_window_size = fine_cls_matching_1x.window_size
 
         p = self.fine_reg_window_size // 2
         w = fine_cls_matching_1x.window_size + 2 * p
@@ -187,11 +188,13 @@ class NewMatcherNet(nn.Module):
         result["fine_cls_heatmap_2x"] = result_2x.pop("fine_cls_heatmap")
         m_idxes, fine_i_idxes, fine_j_idxes = result_2x.pop("fine_cls_idxes")
         i_idxes = (
-            size0_2x[1] * (8 * (i_idxes // size0_16x[1]) + fine_i_idxes // 8) +
-            8 * (i_idxes % size0_16x[1]) + fine_i_idxes % 8)
+            size0_2x[1] *
+            (8 * (i_idxes // size0_16x[1]) + fine_i_idxes // 8 - 4) +
+            8 * (i_idxes % size0_16x[1]) + fine_i_idxes % 8 - 4)
         j_idxes = (
-            size1_2x[1] * (8 * (j_idxes // size1_16x[1]) + fine_j_idxes // 8) +
-            8 * (j_idxes % size1_16x[1]) + fine_j_idxes % 8)
+            size1_2x[1] *
+            (8 * (j_idxes // size1_16x[1]) + fine_j_idxes // 8 - 4) +
+            8 * (j_idxes % size1_16x[1]) + fine_j_idxes % 8 - 4)
         result["coarse_cls_idxes_2x"] = b_idxes, i_idxes, j_idxes
 
         feature0_1x = feature0_1x[m_idxes, fine_i_idxes]
