@@ -123,117 +123,140 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
 class NewMatcherLoss(nn.Module):  # TODO: change name
     def __init__(
         self,
-        type: str,
-        coarse_cls_sparse: bool,
-        coarse_cls_loss_pos_weight: float,
-        coarse_cls_loss_neg_weight: float,
-        fine_reg_loss_weight: float,
-        fine_cls_sparse: Optional[bool] = None,
-        fine_cls_loss_pos_weight: Optional[float] = None,
-        fine_cls_loss_neg_weight: Optional[float] = None,
-        use_extra: bool = False,
-        use_flow: bool = False,
+        coarse_cls_sparse_16x: Optional[bool] = None,
+        coarse_cls_loss_pos_weight_16x: Optional[float] = None,
+        coarse_cls_loss_neg_weight_16x: Optional[float] = None,
+        coarse_cls_sparse_8x: Optional[bool] = None,
+        coarse_cls_loss_pos_weight_8x: Optional[float] = None,
+        coarse_cls_loss_neg_weight_8x: Optional[float] = None,
+        fine_cls_sparse_2x: Optional[bool] = None,
+        fine_cls_loss_pos_weight_2x: Optional[float] = None,
+        fine_cls_loss_neg_weight_2x: Optional[float] = None,
+        fine_cls_sparse_1x: Optional[bool] = None,
+        fine_cls_loss_pos_weight_1x: Optional[float] = None,
+        fine_cls_loss_neg_weight_1x: Optional[float] = None,
+        fine_reg_loss_weight: Optional[float] = None,
         flow_loss_weight: Optional[float] = None
     ) -> None:
         super().__init__()
-        self.type = type
-        self.coarse_cls_sparse = coarse_cls_sparse
-        self.coarse_cls_loss_pos_weight = coarse_cls_loss_pos_weight
-        self.coarse_cls_loss_neg_weight = coarse_cls_loss_neg_weight
-        self.fine_cls_sparse = None
-        self.fine_cls_loss_pos_weight = None
-        self.fine_cls_loss_neg_weight = None
+        self.coarse_cls_sparse_16x = coarse_cls_sparse_16x
+        self.coarse_cls_loss_pos_weight_16x = coarse_cls_loss_pos_weight_16x
+        self.coarse_cls_loss_neg_weight_16x = coarse_cls_loss_neg_weight_16x
+        self.coarse_cls_sparse_8x = coarse_cls_sparse_8x
+        self.coarse_cls_loss_pos_weight_8x = coarse_cls_loss_pos_weight_8x
+        self.coarse_cls_loss_neg_weight_8x = coarse_cls_loss_neg_weight_8x
+        self.fine_cls_sparse_2x = fine_cls_sparse_2x
+        self.fine_cls_loss_pos_weight_2x = fine_cls_loss_pos_weight_2x
+        self.fine_cls_loss_neg_weight_2x = fine_cls_loss_neg_weight_2x
+        self.fine_cls_sparse_1x = fine_cls_sparse_1x
+        self.fine_cls_loss_pos_weight_1x = fine_cls_loss_pos_weight_1x
+        self.fine_cls_loss_neg_weight_1x = fine_cls_loss_neg_weight_1x
         self.fine_reg_loss_weight = fine_reg_loss_weight
-        self.use_extra = use_extra
-        self.use_flow = use_flow
-        self.flow_loss_weight = None
-
-        if type == "one_stage":
-            pass
-        elif type == "two_stage":
-            if (fine_cls_sparse is None or
-                fine_cls_loss_pos_weight is None or
-                fine_cls_loss_neg_weight is None):
-                raise ValueError("")
-
-            self.fine_cls_sparse = fine_cls_sparse
-            self.fine_cls_loss_pos_weight = fine_cls_loss_pos_weight
-            self.fine_cls_loss_neg_weight = fine_cls_loss_neg_weight
-        else:
-            raise ValueError("")
-
-        if use_flow:
-            if flow_loss_weight is None:
-                raise ValueError("")
-            self.flow_loss_weight = flow_loss_weight
+        self.flow_loss_weight = flow_loss_weight
 
     def forward(
         self,
-        coarse_cls_heatmap: torch.Tensor,
-        coarse_gt_mask: torch.Tensor,
-        fine_reg_biases: torch.Tensor,
-        fine_gt_biases: torch.Tensor,
-        coarse_extra_cls_heatmap: Optional[torch.Tensor] = None,
-        coarse_extra_gt_mask: Optional[torch.Tensor] = None,
+        coarse_cls_heatmap_16x: Optional[torch.Tensor] = None,
+        coarse_gt_mask_16x: Optional[torch.Tensor] = None,
+        coarse_cls_heatmap_8x: Optional[torch.Tensor] = None,
+        coarse_gt_mask_8x: Optional[torch.Tensor] = None,
+        fine_cls_heatmap_2x: Optional[torch.Tensor] = None,
+        fine_gt_mask_2x: Optional[torch.Tensor] = None,
+        fine_cls_heatmap_1x: Optional[torch.Tensor] = None,
+        fine_gt_mask_1x: Optional[torch.Tensor] = None,
+        fine_reg_biases: Optional[torch.Tensor] = None,
+        fine_gt_biases: Optional[torch.Tensor] = None,
         fine_reg_stds: Optional[torch.Tensor] = None,
-        fine_cls_heatmap: Optional[torch.Tensor] = None,
-        fine_gt_mask: Optional[torch.Tensor] = None,
         flows_with_uncertainties0: Optional[torch.Tensor] = None,
         flows_with_uncertainties1: Optional[torch.Tensor] = None,
         gt_flows0: Optional[torch.Tensor] = None,
         gt_flows1: Optional[torch.Tensor] = None,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None,
-        extra_mask0: Optional[torch.Tensor] = None,
-        extra_mask1: Optional[torch.Tensor] = None,
+        mask0_16x: Optional[torch.Tensor] = None,
+        mask1_16x: Optional[torch.Tensor] = None,
+        mask0_8x: Optional[torch.Tensor] = None,
+        mask1_8x: Optional[torch.Tensor] = None,
         **kwargs
     ) -> Dict[str, Any]:
         total_loss = 0.0
         loss = {"scalar": {}}
 
-        coarse_cls_loss = _compute_cls_loss(
-            self.coarse_cls_sparse, coarse_cls_heatmap, coarse_gt_mask,
-            loss_pos_weight=self.coarse_cls_loss_pos_weight,
-            loss_neg_weight=self.coarse_cls_loss_neg_weight, mask0=mask0,
-            mask1=mask1)
-        total_loss += coarse_cls_loss
-        loss["scalar"]["coarse_cls_loss"] = coarse_cls_loss.detach().cpu()
-
-        fine_reg_loss = _compute_reg_loss(
-            fine_reg_biases, fine_gt_biases, reg_stds=fine_reg_stds,
-            loss_weight=self.fine_reg_loss_weight)
-        total_loss += fine_reg_loss
-        loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
-
-        if self.type == "two_stage":
-            if fine_cls_heatmap is None or fine_gt_mask is None:
-                raise ValueError("")
-            fine_cls_loss = _compute_cls_loss(
-                self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
-                loss_pos_weight=self.fine_cls_loss_pos_weight,
-                loss_neg_weight=self.fine_cls_loss_neg_weight)
-            total_loss += fine_cls_loss
-            loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
-
-        if self.use_extra:
-            if coarse_extra_cls_heatmap is None or coarse_extra_gt_mask is None:
+        if (self.coarse_cls_sparse_16x is not None and
+            self.coarse_cls_loss_pos_weight_16x is not None and
+            self.coarse_cls_loss_neg_weight_16x is not None and
+            coarse_cls_heatmap_16x is not None):
+            if coarse_gt_mask_16x is None:
                 raise ValueError("")
 
-            coarse_extra_cls_loss = _compute_cls_loss(
-                self.coarse_cls_sparse, coarse_extra_cls_heatmap,
-                coarse_extra_gt_mask,
-                loss_pos_weight=self.coarse_cls_loss_pos_weight,
-                loss_neg_weight=self.coarse_cls_loss_neg_weight,
-                mask0=extra_mask0, mask1=extra_mask1)
-            total_loss += coarse_extra_cls_loss
-            loss["scalar"]["coarse_extra_cls_loss"] = (
-                coarse_extra_cls_loss.detach().cpu())
+            coarse_cls_loss_16x = _compute_cls_loss(
+                self.coarse_cls_sparse_16x, coarse_cls_heatmap_16x,
+                coarse_gt_mask_16x,
+                loss_pos_weight=self.coarse_cls_loss_pos_weight_16x,
+                loss_neg_weight=self.coarse_cls_loss_neg_weight_16x,
+                mask0=mask0_16x, mask1=mask1_16x)
+            total_loss += coarse_cls_loss_16x
+            loss["scalar"]["coarse_cls_loss_16x"] = (
+                coarse_cls_loss_16x.detach().cpu())
 
-        if self.use_flow:
-            if (flows_with_uncertainties0 is None or
-                flows_with_uncertainties1 is None or
-                gt_flows0 is None or
-                gt_flows1 is None):
+        if (self.coarse_cls_sparse_8x is not None and
+            self.coarse_cls_loss_pos_weight_8x is not None and
+            self.coarse_cls_loss_neg_weight_8x is not None and
+            coarse_cls_heatmap_8x is not None):
+            if coarse_gt_mask_8x is None:
+                raise ValueError("")
+
+            coarse_cls_loss_8x = _compute_cls_loss(
+                self.coarse_cls_sparse_8x, coarse_cls_heatmap_8x,
+                coarse_gt_mask_8x,
+                loss_pos_weight=self.coarse_cls_loss_pos_weight_8x,
+                loss_neg_weight=self.coarse_cls_loss_neg_weight_8x,
+                mask0=mask0_8x, mask1=mask1_8x)
+            total_loss += coarse_cls_loss_8x
+            loss["scalar"]["coarse_cls_loss_8x"] = (
+                coarse_cls_loss_8x.detach().cpu())
+
+        if (self.fine_cls_sparse_2x is not None and
+            self.fine_cls_loss_pos_weight_2x is not None and
+            self.fine_cls_loss_neg_weight_2x is not None and
+            fine_cls_heatmap_2x is not None):
+            if fine_gt_mask_2x is None:
+                raise ValueError("")
+
+            fine_cls_loss_2x = _compute_cls_loss(
+                self.fine_cls_sparse_2x, fine_cls_heatmap_2x, fine_gt_mask_2x,
+                loss_pos_weight=self.fine_cls_loss_pos_weight_2x,
+                loss_neg_weight=self.fine_cls_loss_neg_weight_2x)
+            total_loss += fine_cls_loss_2x
+            loss["scalar"]["fine_cls_loss_2x"] = fine_cls_loss_2x.detach().cpu()
+
+        if (self.fine_cls_sparse_1x is not None and
+            self.fine_cls_loss_pos_weight_1x is not None and
+            self.fine_cls_loss_neg_weight_1x is not None and
+            fine_cls_heatmap_1x is not None):
+            if fine_gt_mask_1x is None:
+                raise ValueError("")
+
+            fine_cls_loss_1x = _compute_cls_loss(
+                self.fine_cls_sparse_1x, fine_cls_heatmap_1x, fine_gt_mask_1x,
+                loss_pos_weight=self.fine_cls_loss_pos_weight_1x,
+                loss_neg_weight=self.fine_cls_loss_neg_weight_1x)
+            total_loss += fine_cls_loss_1x
+            loss["scalar"]["fine_cls_loss_1x"] = fine_cls_loss_1x.detach().cpu()
+
+        if (self.fine_reg_loss_weight is not None and
+            fine_reg_biases is not None):
+            if fine_gt_biases is None:
+                raise ValueError("")
+
+            fine_reg_loss = _compute_reg_loss(
+                fine_reg_biases, fine_gt_biases, reg_stds=fine_reg_stds,
+                loss_weight=self.fine_reg_loss_weight)
+            total_loss += fine_reg_loss
+            loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
+
+        if (self.flow_loss_weight is not None and
+            flows_with_uncertainties0 is not None and
+            flows_with_uncertainties1 is not None):
+            if gt_flows0 is None or gt_flows1 is None:
                 raise ValueError("")
 
             flow_loss0 = _compute_flow_loss(
@@ -245,6 +268,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
             flow_loss = (flow_loss0 + flow_loss1) / 2
             total_loss += flow_loss
             loss["scalar"]["flow_loss"] = flow_loss.detach().cpu()
+
         loss["loss"] = total_loss
         loss["scalar"]["total_loss"] = total_loss.detach().cpu()
         return loss

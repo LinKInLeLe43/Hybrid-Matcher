@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from .modules.mlp import Mlp
 
 
-class FineMatching(nn.Module):  # TODO: change name to second stage
+class FineMatching(nn.Module):
     def __init__(
         self,
         type: str,
@@ -31,15 +31,15 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             self.cls_border_removal = cls_border_removal
             self.cls_topk = cls_topk
 
-            grid = K.create_meshgrid(w, w, normalized_coordinates=False)
-            bias_table = (grid - w // 2 + 0.5).reshape(-1, 2)
-            self.register_buffer("cls_bias_table", bias_table, persistent=False)
+            cls_delta = K.create_meshgrid(w, w, normalized_coordinates=False)
+            cls_delta = cls_delta - w / 2 + 0.5
+            cls_delta = cls_delta.reshape(-1, 2)
+            self.register_buffer("cls_delta", cls_delta, persistent=False)
         elif type == "regression_by_expectation":
             self.reg_by_exp_with_std = reg_by_exp_with_std
         elif type == "regression_by_mlp":
-            padding = 0 if window_size != 1 else None
-            self.mlp = Mlp(
-                2 * depth, depth, 2, kernel_size0=window_size, padding0=padding)
+            p = 0 if w != 1 else None
+            self.mlp = Mlp(2 * depth, depth, 2, kernel_size0=w, padding0=p)
         else:
             raise ValueError("")
 
@@ -48,14 +48,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> Dict[str, Any]:
-        w, r = self.window_size, self.cls_border_removal
-        if len(x0.shape) == 4:
-            x0 = x0.flatten(start_dim=2).transpose(1, 2)
-            x1 = x1.flatten(start_dim=2).transpose(1, 2)
-
-        m, ww, c = x0.shape
-        if m == 0:
-            heatmap = x0.new_empty((0, ww, ww))
+        w = self.window_size
+        if len(x0) == 0:
+            heatmap = x0.new_empty((0, w ** 2, w ** 2))
             idxes = 3 * (x0.new_empty((0,), dtype=torch.long),)
             biases0 = x0.new_empty((0, 2))
             biases1 = x0.new_empty((0, 2))
@@ -65,18 +60,28 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                       "fine_cls_biases1": biases1}
             return result
 
-        similarities = torch.einsum("mlc,msc->mls", x0, x1) / c
-        similarities /= self.temperature
-        heatmap = (F.softmax(similarities, dim=1) *
-                   F.softmax(similarities, dim=2))
+        if len(x0.shape) == 3:
+            pass
+        elif len(x0.shape) == 4:
+            x0 = x0.flatten(start_dim=2).transpose(1, 2)
+            x1 = x1.flatten(start_dim=2).transpose(1, 2)
+        else:
+            assert False
+        r = self.cls_border_removal
+        m, ww, c = x1.shape
+
+        x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
+        similarity = torch.einsum("mlc,msc->mls", x0, x1)
+        similarity /= self.temperature
+        heatmap = F.softmax(similarity, dim=1) * F.softmax(similarity, dim=2)
 
         with torch.no_grad():
-            _heatmap = heatmap.clone()
+            _heatmap = heatmap
             if r != 0:
                 mask = x0.new_zeros((m, w, w, w, w), dtype=torch.bool)
                 mask[:, r:-r, r:-r, r:-r, r:-r] = True
-                mask = mask.reshape(m, ww, ww)
-                _heatmap.masked_fill_(~mask, float("-inf"))
+                mask = mask.reshape(-1, ww, ww)
+                _heatmap = _heatmap.masked_fill(~mask, float("-inf"))
 
             m_idxes = torch.arange(m, device=x0.device)
             i_idxes, j_idxes = [], []
@@ -91,8 +96,9 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
             i_idxes = torch.stack(i_idxes, dim=1).flatten()
             j_idxes = torch.stack(j_idxes, dim=1).flatten()
             idxes = m_idxes, i_idxes, j_idxes
-            biases0 = self.cls_bias_table.index_select(0, i_idxes)
-            biases1 = self.cls_bias_table.index_select(0, j_idxes)
+            biases0 = self.cls_delta.index_select(0, idxes[1])
+            biases1 = self.cls_delta.index_select(0, idxes[2])
+
         result = {"fine_cls_heatmap": heatmap,
                   "fine_cls_idxes": idxes,
                   "fine_cls_biases0": biases0,
@@ -104,13 +110,7 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> Dict[str, Any]:
-        w = self.window_size
-        if len(x0.shape) == 4:
-            x0 = x0.flatten(start_dim=2).transpose(1, 2)
-            x1 = x1.flatten(start_dim=2).transpose(1, 2)
-
-        m, ww, c = x0.shape
-        if m == 0:
+        if len(x0) == 0:
             biases = x0.new_empty((0, 2))
             result = {"fine_reg_biases": biases}
 
@@ -119,11 +119,23 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
                 result["fine_reg_stds"] = stds
             return result
 
-        central_x0 = x0[:, ww // 2]
-        similarities = torch.einsum("mc,mrc->mr", central_x0, x1) / c ** 0.5
-        similarities /= self.temperature
-        heatmap = F.softmax(similarities, dim=1)
-        heatmap = heatmap.reshape(m, w, w)
+        w = self.window_size
+        if len(x0.shape) == 2:
+            central_x0 = x0
+        elif len(x0.shape) == 3:
+            central_x0 = x0[:, w ** 2 // 2]
+        elif len(x0.shape) == 4:
+            central_x0 = x0[:, :, w // 2, w // 2]
+            x1 = x1.flatten(start_dim=2).transpose(1, 2)
+        else:
+            assert False
+        _, _, c = x1.shape
+
+        central_x0, x1 = central_x0 / c ** 0.25, x1 / c ** 0.25
+        similarity = torch.einsum("mc,mrc->mr", central_x0, x1)
+        similarity /= self.temperature
+        heatmap = F.softmax(similarity, dim=1)
+        heatmap = heatmap.reshape(-1, w, w)
         biases = geometry.spatial_expectation2d(heatmap[None])[0]
         result = {"fine_reg_biases": biases}
 
@@ -140,20 +152,21 @@ class FineMatching(nn.Module):  # TODO: change name to second stage
         x0: torch.Tensor,
         x1: torch.Tensor
     ) -> Dict[str, Any]:
-        w = self.window_size
-        if len(x0.shape) == 3:
-            x0 = x0.transpose(1, 2).unflatten(2, (w, w))
-            x1 = x1.transpose(1, 2).unflatten(2, (w, w))
-
-        m, c, w, w = x0.shape
-        if m == 0:
+        if len(x0) == 0:
             biases = x0.new_empty((0, 2))
             result = {"fine_reg_biases": biases}
             return result
 
-        x = torch.cat([x0, x1], dim=1)
-        x = self.mlp(x)
-        x = x.reshape(m, 2)
+        if len(x0.shape) == 3:
+            x = torch.cat([x0, x1], dim=2)
+        elif len(x0.shape) == 4:
+            x = torch.cat([x0, x1], dim=1)
+        else:
+            assert False
+        w = self.window_size
+
+        x = self.mlp(x, size=(w, w))
+        x = x.reshape(-1, 2)
         x /= self.temperature
         biases = x.tanh()
         result = {"fine_reg_biases": biases}

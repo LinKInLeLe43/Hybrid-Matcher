@@ -113,35 +113,13 @@ class Fusion(nn.Module):
             assert False
         return branch
 
-    def forward(
-        self,
-        xs: List[torch.Tensor],
-        aligns: List[bool]
-    ) -> List[torch.Tensor]:
+    def forward(self, xs: List[torch.Tensor]) -> List[torch.Tensor]:
         l = len(xs)
         out = (l - 1) * [None] + [self.ups[-1](xs[-1])]
         for i in reversed(range(l - 1)):
             out[i] = self.ups[i](xs[i])
-
-            if aligns[i]:
-                n, _, h, w = out[i + 1].shape
-                grid = K.create_meshgrid(
-                    h, w, normalized_coordinates=False,
-                    device=out[i + 1].device)
-                scale = out[i + 1].new_tensor([w - 2, h - 2])
-                grid = (2 * grid / scale - 1).expand(n, -1, -1, -1)
-                out[i] += F.grid_sample(out[i + 1], grid, align_corners=True)
-            else:
-                n, _, h, w = out[i].shape
-                grid = K.create_meshgrid(
-                    h, w, normalized_coordinates=False, device=out[i].device)
-                scale = out[i].new_tensor([w - 1, h - 1])
-                grid = (2 * (grid - 0.5) / scale - 1).expand(n, -1, -1, -1)
-                out[i] = F.grid_sample(out[i], grid, align_corners=True)
-
-                out[i] += F.interpolate(
-                    out[i + 1], scale_factor=2, mode="bilinear",
-                    align_corners=False)
-
+            out[i] += F.interpolate(
+                out[i + 1], scale_factor=2, mode="bilinear",
+                align_corners=False)
             out[i] = self.downs[i](out[i])
         return out

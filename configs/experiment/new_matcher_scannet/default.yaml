@@ -11,8 +11,11 @@ data:
 
 model:
   net:
-    coarse_matching:
-      threshold: 0.1
+    positional_encoding:
+      train_size: [480, 640]
+      test_size: [480, 640]
+    coarse_matching_16x:
+      threshold: 0.2
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true

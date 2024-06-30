@@ -17,8 +17,15 @@ data:
 
 model:
   net:
-    coarse_matching:
-      train_percent: 0.3
+    positional_encoding:
+      train_size:
+        - ${data.train_dataset.image_size}
+        - ${data.train_dataset.image_size}
+      test_size:
+        - ${data.test_dataset.image_size}
+        - ${data.test_dataset.image_size}
+    coarse_matching_16x:
+      train_percent: 1
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true
