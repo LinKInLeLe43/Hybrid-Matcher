@@ -11,10 +11,11 @@ data:
     image_size: 1216
 
 model:
-  net:
-    coarse_matching:
-      type: "dual_softmax"
-      sparse: true  # no effect for evaluation
+  loss:
+    coarse_cls_sparse_16x: true
+    coarse_cls_sparse_8x: true
+    fine_cls_sparse_2x: true
+    fine_cls_sparse_1x: true
 
 trainer:
   devices: 8

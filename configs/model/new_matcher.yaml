@@ -2,7 +2,7 @@ _target_: src.models.MatchingModule
 
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
-  type: "two_stage"
+  type: "three_stage"
   backbone:
     _target_: src.models.components.nets.new_matcher.backbones.create_resnet_selfcoc_fpn
   positional_encoding:
@@ -16,39 +16,54 @@ net:
     heads_count: 8
     types: ["cross", "cross", "cross", "cross"]
     use_matchability: true
-  coarse_matching:
+  coarse_matching_16x:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
-    type: ???
-    sparse: ???
+    type: "unidirectional"
     use_matchability: ${model.net.coarse_module.use_matchability}
-  fine_cls_matching:
+  coarse_matching_8x:
+    _target_: src.models.components.nets.new_matcher.CoarseMatching
+    type: "bidirectional"
+  fine_cls_matching_2x:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "classification"
     depth: 64
-    window_size: 16
+    window_size: 8
+    temperature: 1.0
+  fine_module:
+    _target_: src.models.components.nets.new_matcher.LoFTR
+    depth: 64
+    heads_count: 8
+    attention:
+      _target_: src.models.components.nets.new_matcher.FullAttention
+    types: ["self", "cross"]
+  fine_cls_matching_1x:
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "classification"
+    depth: 64
+    window_size: 5
     temperature: 1.0
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "regression_by_expectation"
     depth: 64
     window_size: 3
-    reg_by_exp_with_std: true
     temperature: 10.0
-  use_extra: true
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  type: "${model.net.type}"
-  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
-  coarse_cls_loss_pos_weight: 1.0
-  coarse_cls_loss_neg_weight: 1.0
-  fine_cls_sparse: ${model.net.coarse_matching.sparse}
-  fine_cls_loss_pos_weight: 1.0
-  fine_cls_loss_neg_weight: 1.0
+  coarse_cls_sparse_16x: ???
+  coarse_cls_loss_pos_weight_16x: 1.0
+  coarse_cls_loss_neg_weight_16x: 1.0
+  coarse_cls_sparse_8x: ???
+  coarse_cls_loss_pos_weight_8x: 1.0
+  coarse_cls_loss_neg_weight_8x: 1.0
+  fine_cls_sparse_2x: ???
+  fine_cls_loss_pos_weight_2x: 1.0
+  fine_cls_loss_neg_weight_2x: 1.0
+  fine_cls_sparse_1x: ???
+  fine_cls_loss_pos_weight_1x: 1.0
+  fine_cls_loss_neg_weight_1x: 1.0
   fine_reg_loss_weight: 1.0
-  use_extra: ${model.net.use_extra}
-  use_flow: false
-  flow_loss_weight: 0.05
 
 optimizer: ???
 

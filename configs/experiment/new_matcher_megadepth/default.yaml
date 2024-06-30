@@ -17,7 +17,7 @@ data:
 
 model:
   net:
-    coarse_matching:
+    coarse_matching_8x:
       train_percent: 0.3
   optimizer:
     _target_: torch.optim.AdamW

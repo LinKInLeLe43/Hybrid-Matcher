@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 import kornia as K
 
 from .modules.utils import crop_windows
@@ -14,40 +15,78 @@ class NewMatcherNet(nn.Module):
         backbone: nn.Module,
         positional_encoding: nn.Module,
         coarse_module: nn.Module,
-        coarse_matching: nn.Module,
-        fine_cls_matching: nn.Module,
-        fine_reg_matching: nn.Module,
-        use_extra: bool = False
+        coarse_matching_16x: nn.Module,
+        coarse_matching_8x: nn.Module,
+        fine_cls_matching_2x: nn.Module,
+        fine_module: nn.Module,
+        fine_cls_matching_1x: nn.Module,
+        fine_reg_matching: nn.Module
     ) -> None:
         super().__init__()
-
         self.type = type
         self.backbone, self.fusion = backbone
         self.positional_encoding = positional_encoding
         self.coarse_module = coarse_module
-        self.coarse_matching = coarse_matching
-        self.fine_cls_matching = fine_cls_matching
+        self.coarse_matching_16x = coarse_matching_16x
+        self.coarse_matching_8x = coarse_matching_8x
+        self.fine_cls_matching_2x = fine_cls_matching_2x
+        self.fine_module = fine_module
+        self.fine_cls_matching_1x = fine_cls_matching_1x
         self.fine_reg_matching = fine_reg_matching
 
-        if use_extra:
-            self.extra_scale = 8
-
-        self.scales = 16, 1
+        self.scales = 16, 2, 1
+        self.extra_scale = 8
         self.use_flow = False
-        self.fine_reg_window_size = fine_reg_matching.window_size
 
-        p = self.fine_reg_window_size // 2
-        w = fine_cls_matching.window_size + 2 * p
-        mask = torch.zeros((w, w), dtype=torch.bool)
-        mask[p:-p, p:-p] = True
-        mask = mask.flatten()
-        self.register_buffer("fine_cls_mask", mask, persistent=False)
+        self.cls_1x_window_size = fine_cls_matching_1x.window_size
+        self.reg_window_size = fine_reg_matching.window_size
+        assert fine_cls_matching_2x.window_size == 8
+        assert self.cls_1x_window_size % 2 == 1
+        assert self.reg_window_size % 2 == 1
+        radius0 = self.cls_1x_window_size // 2
+        radius1 = radius0 + self.reg_window_size // 2
 
-        delta_idxes = K.create_meshgrid(
-            self.fine_reg_window_size, self.fine_reg_window_size,
+        self.p0_2x = (radius0 + 1) // 2
+        self.w0_2x = 8 + 2 * self.p0_2x
+        mask0_2x = torch.zeros((self.w0_2x, self.w0_2x), dtype=torch.bool)
+        mask0_2x[self.p0_2x:-self.p0_2x, self.p0_2x:-self.p0_2x] = True
+        mask0_2x = mask0_2x.flatten()
+        self.register_buffer("cls_mask0_2x", mask0_2x, persistent=False)
+
+        self.p1_2x = (radius1 + 1) // 2
+        self.w1_2x = 8 + 2 * self.p1_2x
+        mask1_2x = torch.zeros((self.w1_2x, self.w1_2x), dtype=torch.bool)
+        mask1_2x[self.p1_2x:-self.p1_2x, self.p1_2x:-self.p1_2x] = True
+        mask1_2x = mask1_2x.flatten()
+        self.register_buffer("cls_mask1_2x", mask1_2x, persistent=False)
+
+        self.w0_1x = self.cls_1x_window_size
+        cls_delta0_1x = K.create_meshgrid(
+            self.w0_1x, self.w0_1x, normalized_coordinates=False,
+            dtype=torch.long)
+        cls_delta0_1x = cls_delta0_1x + 2 * self.p0_2x - radius0
+        cls_delta0_1x = cls_delta0_1x.reshape(-1, 2)
+        self.register_buffer("cls_delta0_1x", cls_delta0_1x, persistent=False)
+
+        self.w1_1x = self.cls_1x_window_size + 2 * (self.reg_window_size // 2)
+        cls_delta1_1x = K.create_meshgrid(
+            self.w1_1x, self.w1_1x, normalized_coordinates=False,
+            dtype=torch.long)
+        cls_delta1_1x = cls_delta1_1x + 2 * self.p1_2x - radius1
+        cls_delta1_1x = cls_delta1_1x.reshape(-1, 2)
+        self.register_buffer("cls_delta1_1x", cls_delta1_1x, persistent=False)
+
+        self.p1_1x = self.reg_window_size // 2
+        mask1_1x = torch.zeros((self.w1_1x, self.w1_1x), dtype=torch.bool)
+        mask1_1x[self.p1_1x:-self.p1_1x, self.p1_1x:-self.p1_1x] = True
+        mask1_1x = mask1_1x.flatten()
+        self.register_buffer("cls_mask1_1x", mask1_1x, persistent=False)
+
+        reg_delta1 = K.create_meshgrid(
+            self.reg_window_size, self.reg_window_size,
             normalized_coordinates=False, dtype=torch.long)
-        delta_idxes = delta_idxes.reshape(-1, 2)
-        self.register_buffer("fine_delta_idxes", delta_idxes, persistent=False)
+        reg_delta1 = reg_delta1.reshape(-1, 2)
+        self.register_buffer("reg_delta1", reg_delta1, persistent=False)
 
     def _scale_points(
         self,
@@ -55,24 +94,25 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
-        n = len(result["points0"])
+        m = len(result["points0"])
+        b_idxes = result["idxes"][0]
 
         coarse_points0 = self.scales[0] * result["points0"]
         fine_points0 = coarse_points0.clone()
         if "biases0" in result:
-            fine_points0 += self.scales[1] * result["biases0"][:n]
+            fine_points0 += self.scales[-1] * result["biases0"][:m]
         if scale0 is not None:
-            coarse_points0 *= scale0[result["idxes"][0]]
-            fine_points0 *= scale0[result["idxes"][0]]
+            coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
         result["coarse_points0"] = coarse_points0  # for evaluate coarse precision
         result["points0"] = fine_points0
 
         coarse_points1 = self.scales[0] * result["points1"]
         fine_points1 = coarse_points1.clone()
         if "biases1" in result:
-            fine_points1 += self.scales[1] * result["biases1"][:n]
+            fine_points1 += self.scales[-1] * result["biases1"][:m]
         if scale1 is not None:
-            fine_points1 *= scale1[result["idxes"][0]]
+            fine_points1 *= scale1[b_idxes]
         result["points1"] = fine_points1
 
     def forward(
@@ -84,6 +124,7 @@ class NewMatcherNet(nn.Module):
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
         mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        result = {}
 
         if batch["image0"].shape == batch["image1"].shape:
             data = torch.cat([batch["image0"], batch["image1"]])
@@ -95,7 +136,7 @@ class NewMatcherNet(nn.Module):
             features1 = self.backbone(batch["image1"])
             feature0_32x, feature1_32x = features0.pop(-1), features1.pop(-1)
             feature0_16x, feature1_16x = features0.pop(-1), features1.pop(-1)
-        size0, size1 = feature0_16x.shape[2:], feature1_16x.shape[2:]
+        size0_16x, size1_16x = feature0_16x.shape[2:], feature1_16x.shape[2:]
 
         feature0_16x, _ = self.positional_encoding(feature0_16x)
         feature1_16x, _ = self.positional_encoding(feature1_16x)
@@ -106,18 +147,20 @@ class NewMatcherNet(nn.Module):
 
         (feature0_16x, feature1_16x,
          matchability0, matchability1) = self.coarse_module(
-            feature0_16x, feature1_16x, feature0_32x, feature1_32x, size0,
-            size1, mask0_16x=mask0_16x, mask1_16x=mask1_16x,
+            feature0_16x, feature1_16x, feature0_32x, feature1_32x, size0_16x,
+            size1_16x, mask0_16x=mask0_16x, mask1_16x=mask1_16x,
             mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
-        result = self.coarse_matching(
-            feature0_16x, feature1_16x, size0, size1,
+        result_16x = self.coarse_matching_16x(
+            feature0_16x, feature1_16x, size0_16x, size1_16x,
             matchability0=matchability0, matchability1=matchability1,
-            mask0=mask0_16x, mask1=mask1_16x, bidirectional=False,
-            gt_idxes=gt_idxes)
+            mask0=mask0_16x, mask1=mask1_16x, gt_idxes=gt_idxes)
+        result["coarse_cls_heatmap_16x"] = result_16x.pop("coarse_cls_heatmap")
+        result["coarse_cls_idxes_16x"] = result_16x.pop("coarse_cls_idxes")
+        result.update(result_16x)
 
-        feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
-        feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
+        feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0_16x)
+        feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1_16x)
         aligns = [False, False, False, False]
         if batch["image0"].shape == batch["image1"].shape:
             features_16x = torch.cat([feature0_16x, feature1_16x])
@@ -132,54 +175,102 @@ class NewMatcherNet(nn.Module):
             features1 = self.fusion(features1 + [feature1_16x], aligns)
 
         if True:
-            size0, size1 = features0[-2].shape[2:], features1[-2].shape[2:]
+            size0_8x = features0[-2].shape[2:]
+            size1_8x = features1[-2].shape[2:]
             features0_8x = features0[-2].flatten(start_dim=2).transpose(1, 2)
             features1_8x = features1[-2].flatten(start_dim=2).transpose(1, 2)
-            use_matchability = self.coarse_matching.use_matchability
-            self.coarse_matching.use_matchability = False
-            result["coarse_extra_cls_heatmap"] = self.coarse_matching(
-                features0_8x, features1_8x, size0, size1, mask0=mask0_8x,
-                mask1=mask1_8x)["coarse_cls_heatmap"]
-            self.coarse_matching.use_matchability = use_matchability
+            result_8x = self.coarse_matching_8x(
+                features0_8x, features1_8x, size0_8x, size1_8x, mask0=mask0_8x,
+                mask1=mask1_8x)
+            result["coarse_cls_heatmap_8x"] = result_8x.pop(
+                "coarse_cls_heatmap")
 
-        b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
-        fine_cls_w = self.fine_cls_matching.window_size
-        fine_reg_w = self.fine_reg_matching.window_size
-        p = fine_reg_w // 2
-        w = fine_cls_w + 2 * p
-        fine_feature0 = crop_windows(
-            features0[0], w, stride=fine_cls_w, padding=p)
-        fine_feature1 = crop_windows(
-            features1[0], w, stride=fine_cls_w, padding=p)
-        fine_feature0 = fine_feature0[b_idxes, i_idxes]
-        fine_feature1 = fine_feature1[b_idxes, j_idxes]
-        result.update(self.fine_cls_matching(
-            fine_feature0[:, self.fine_cls_mask],
-            fine_feature1[:, self.fine_cls_mask]))
+        w = 8
+        b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes_16x"]
+        feature0_2x, feature1_2x = features0[0], features1[0]
+        feature0_2x = crop_windows(
+            feature0_2x, self.w0_2x, stride=w, padding=self.p0_2x)
+        feature1_2x = crop_windows(
+            feature1_2x, self.w1_2x, stride=w, padding=self.p1_2x)
+        feature0_2x = feature0_2x[b_idxes, i_idxes]
+        feature1_2x = feature1_2x[b_idxes, j_idxes]
+        result_2x = self.fine_cls_matching_2x(
+            feature0_2x[:, self.cls_mask0_2x],
+            feature1_2x[:, self.cls_mask1_2x])
+        result["fine_cls_heatmap_2x"] = result_2x.pop("fine_cls_heatmap")
+        cls_idxes_2x = result_2x.pop("fine_cls_idxes")
 
-        if self.fine_cls_matching.cls_topk != 1:
+        if True:
+            _, sub_i_idxes, sub_j_idxes = cls_idxes_2x
+            size0_2x, size1_2x = features0[0].shape[2:], features1[0].shape[2:]
+            offset = w // 2
+            i_idxes = (
+                size0_2x[1] *
+                (w * (i_idxes // size0_16x[1]) + sub_i_idxes // w - offset) +
+                w * (i_idxes % size0_16x[1]) + sub_i_idxes % w - offset)
+            j_idxes = (
+                size1_2x[1] *
+                (w * (j_idxes // size1_16x[1]) + sub_j_idxes // w - offset) +
+                w * (j_idxes % size1_16x[1]) + sub_j_idxes % w - offset)
+            result["coarse_cls_idxes_2x"] = b_idxes, i_idxes, j_idxes
+
+        topk = self.fine_cls_matching_2x.cls_topk
+        if topk != 1:
             result["idxes"] = tuple(map(
-                lambda x: x.repeat_interleave(self.fine_cls_matching.cls_topk),
-                result["idxes"]))
+                lambda x: x.repeat_interleave(topk), result["idxes"]))
             result["points0"] = result["points0"].repeat_interleave(
                 self.fine_cls_matching.cls_topk, dim=0)
             result["points1"] = result["points1"].repeat_interleave(
                 self.fine_cls_matching.cls_topk, dim=0)
 
-        m_idxes, i_idxes, j_idxes = map(
-            lambda x: x[:, None], result["fine_cls_idxes"])
-        i_idxes = ((fine_cls_w + 2 * p) *
-                   (i_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
-                   i_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
-        j_idxes = ((fine_cls_w + 2 * p) *
-                   (j_idxes // fine_cls_w + self.fine_delta_idxes[:, 1]) +
-                   j_idxes % fine_cls_w + self.fine_delta_idxes[:, 0])
-        fine_feature0 = fine_feature0[m_idxes, i_idxes]
-        fine_feature1 = fine_feature1[m_idxes, j_idxes]
-        result.update(self.fine_reg_matching(fine_feature0, fine_feature1))
+        m_idxes, sub_i_idxes, sub_j_idxes = map(
+            lambda x: x[:, None], cls_idxes_2x)
+        sub_i_idxes = ((2 * self.w0_2x - 1) *
+                       (2 * (sub_i_idxes // w) + self.cls_delta0_1x[:, 1]) +
+                       2 * (sub_i_idxes % w) + self.cls_delta0_1x[:, 0])
+        sub_j_idxes = ((2 * self.w1_2x - 1) *
+                       (2 * (sub_j_idxes // w) + self.cls_delta1_1x[:, 1]) +
+                       2 * (sub_j_idxes % w) + self.cls_delta1_1x[:, 0])
+        feature0_2x = (feature0_2x.transpose(1, 2)
+                       .unflatten(2, (self.w0_2x, self.w0_2x)))
+        feature1_2x = (feature1_2x.transpose(1, 2)
+                       .unflatten(2, (self.w1_2x, self.w1_2x)))
+        feature0_1x = F.interpolate(
+            feature0_2x, size=(2 * self.w0_2x - 1, 2 * self.w0_2x - 1),
+            mode="bilinear", align_corners=True)
+        feature1_1x = F.interpolate(
+            feature1_2x, size=(2 * self.w1_2x - 1, 2 * self.w1_2x - 1),
+            mode="bilinear", align_corners=True)
+        feature0_1x = feature0_1x.flatten(start_dim=2).transpose(1, 2)
+        feature1_1x = feature1_1x.flatten(start_dim=2).transpose(1, 2)
+        feature0_1x = feature0_1x[m_idxes, sub_i_idxes]
+        feature1_1x = feature1_1x[m_idxes, sub_j_idxes]
 
-        result["biases0"] = result["fine_cls_biases0"].detach()
-        result["biases1"] = (result["fine_cls_biases1"].detach() +
-                             p * result["fine_reg_biases"].detach())
+        tr_feature0_1x = feature0_1x
+        tr_feature1_1x = feature1_1x[:, self.cls_mask1_1x]
+        if len(feature0_1x) != 0:
+            tr_feature0_1x, tr_feature1_1x = self.fine_module(
+                tr_feature0_1x, tr_feature1_1x)
+
+        result_1x = self.fine_cls_matching_1x(
+            tr_feature0_1x, tr_feature1_1x)
+        result["fine_cls_heatmap_1x"] = result_1x.pop("fine_cls_heatmap")
+        result["cls_idxes_1x"] = result_1x.pop("fine_cls_idxes")
+
+        w = self.cls_1x_window_size
+        m_idxes, sub_i_idxes, sub_j_idxes = result["cls_idxes_1x"]
+        sub_j_idxes = sub_j_idxes[:, None]
+        sub_j_idxes = (self.w1_1x * (sub_j_idxes // w + self.reg_delta1[:, 1]) +
+                       sub_j_idxes % w + self.reg_delta1[:, 0])
+        reg_feature0 = feature0_1x[m_idxes, sub_i_idxes]
+        reg_feature1 = feature1_1x[m_idxes[:, None], sub_j_idxes]
+        reg_result = self.fine_reg_matching(reg_feature0, reg_feature1)
+        result.update(reg_result)
+
+        result["biases0"] = (2 * result_2x["fine_cls_biases0"].detach() +
+                             result_1x["fine_cls_biases0"].detach())
+        result["biases1"] = (2 * result_2x["fine_cls_biases1"].detach() +
+                             result_1x["fine_cls_biases1"].detach() +
+                             reg_result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
