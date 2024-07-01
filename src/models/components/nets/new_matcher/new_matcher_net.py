@@ -245,14 +245,12 @@ class NewMatcherNet(nn.Module):
         feature0_1x = feature0_1x.flatten(start_dim=2).transpose(1, 2)
         feature1_1x = feature1_1x.flatten(start_dim=2).transpose(1, 2)
 
-        tr_feature0_1x = feature0_1x
-        tr_feature1_1x = feature1_1x[:, self.cls_mask1_1x]
         if len(feature0_1x) != 0:
-            tr_feature0_1x, tr_feature1_1x = self.fine_module(
-                tr_feature0_1x, tr_feature1_1x)
+            feature0_1x, feature1_1x = self.fine_module(
+                feature0_1x, feature1_1x)
 
         result_1x = self.fine_cls_matching_1x(
-            tr_feature0_1x, tr_feature1_1x)
+            feature0_1x, feature1_1x[:, self.cls_mask1_1x])
         result["fine_cls_heatmap_1x"] = result_1x.pop("fine_cls_heatmap")
         result["local_cls_idxes_1x"] = result_1x.pop("fine_cls_idxes")
 
