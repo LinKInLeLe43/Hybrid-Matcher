@@ -90,7 +90,7 @@ class MatchingModule(pl.LightningModule):
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
                 result[f"global_cls_idxes_{self.net.scales[0]}x"],
-                self.net.scales[1], self.net.reg_window_size)
+                self.net.scales[-1], self.net.reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "two_stage":
             supervision.update(utils.create_coarse_supervision(
@@ -102,14 +102,14 @@ class MatchingModule(pl.LightningModule):
                 batch,
                 gt_idxes=supervision[f"coarse_gt_idxes_{self.net.scales[0]}x"])
             supervision.update(utils.create_fine_supervision(
-                batch, self.net.scales,
+                batch, self.net.scales[:2],
                 result[f"global_cls_idxes_{self.net.scales[0]}x"],
                 return_coor=True))
 
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
                 result[f"local_cls_idxes_{self.net.scales[1]}x"],
-                self.net.scales[1], self.net.reg_window_size)
+                self.net.scales[-1], self.net.reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "three_stage":
             if len(self.net.scales) != 3:
@@ -136,7 +136,7 @@ class MatchingModule(pl.LightningModule):
             gt_biases = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
                 result[f"local_cls_idxes_{self.net.scales[2]}x"],
-                self.net.scales[2], self.net.reg_window_size)
+                self.net.scales[-1], self.net.reg_window_size)
             supervision["fine_gt_biases"] = gt_biases
         else:
             assert False
