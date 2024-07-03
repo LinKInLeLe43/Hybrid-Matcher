@@ -72,6 +72,7 @@ def create_coarse_supervision(
 
         stride = scale // bi_scale
         scale = bi_scale
+        offset = offset - stride // 2 + 0.5
 
     device = batch["image0"].device
     n, _, h0, w0 = batch["image0"].shape
@@ -150,6 +151,7 @@ def create_fine_supervision(
     batch: Dict[str, Any],
     scales: Tuple[int, int],
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    offset: float = 0.5,
     return_coor: bool = False
 ) -> Dict[str, Any]:
     device = batch["image0"].device
@@ -187,29 +189,41 @@ def create_fine_supervision(
     coors1 = F.pad(coors1, [stride // 2, 0, stride // 2, 0])
     coors0 = _crop_windows(coors0, stride, stride, 0)[b_idxes, i_idxes]
     coors1 = _crop_windows(coors1, stride, stride, 0)[b_idxes, j_idxes]
-    idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
-    idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
-    idxes0 = torch.where(idxes0 == 0, -1, idxes0)
-    idxes1 = torch.where(idxes1 == 0, -1, idxes1)
-    coors0 = coors0 + 0.5
-    coors1 = coors1 + 0.5
-    points0 = scale0 * coors0
-    points1 = scale1 * coors1
-    points0_to_1 = _warp_point(
-        points0.reshape(1, -1, 2), batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"]).reshape(-1, ww, 2)
-    points1_to_0 = _warp_point(
-        points1.reshape(1, -1, 2), batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]).reshape(-1, ww, 2)
+    _mask_out_of_bound(coors0, h0 - offset, w0 - offset)
+    _mask_out_of_bound(coors1, h1 - offset, w1 - offset)
+    idxes0 = h0 * w0 * b_idxes[:, None] + w0 * coors0[:, :, 1] + coors0[:, :, 0]
+    idxes1 = h1 * w1 * b_idxes[:, None] + w1 * coors1[:, :, 1] + coors1[:, :, 0]
+    idxes0 = torch.where(idxes0 == 0, -10, idxes0)
+    idxes1 = torch.where(idxes1 == 0, -10, idxes1)
+    points0 = scale0 * (coors0 + offset)
+    points1 = scale1 * (coors1 + offset)
+    points0_to_1 = torch.zeros_like(points0)
+    points1_to_0 = torch.zeros_like(points1)
+    for b in range(n):
+        b_mask = b_idxes == b
+        b_points0 = points0[b_mask].reshape(1, -1, 2)
+        b_points1 = points1[b_mask].reshape(1, -1, 2)
+        b_points0_to_1 = _warp_point(
+            b_points0, batch["depth0"][[b]], batch["K0"][[b]], batch["K1"][[b]],
+            batch["T0_to_1"][[b]])
+        b_points1_to_0 = _warp_point(
+            b_points1, batch["depth1"][[b]], batch["K1"][[b]], batch["K0"][[b]],
+            batch["T1_to_0"][[b]])
+        points0_to_1[b_mask] = b_points0_to_1.reshape(-1, ww, 2)
+        points1_to_0[b_mask] = b_points1_to_0.reshape(-1, ww, 2)
     flows0 = coors0_to_1 = points0_to_1 / scale1
     flows1 = coors1_to_0 = points1_to_0 / scale0
 
-    coors0_to_1 = (coors0_to_1 - 0.5).round().long()
-    coors1_to_0 = (coors1_to_0 - 0.5).round().long()
+    coors0_to_1 = (coors0_to_1 - offset).round().long()
+    coors1_to_0 = (coors1_to_0 - offset).round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
-    idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
-    idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
-    idxes0_to_1 = torch.where(idxes0_to_1 == 0, -2, idxes0_to_1)
-    idxes1_to_0 = torch.where(idxes1_to_0 == 0, -2, idxes1_to_0)
+    idxes0_to_1 = (h1 * w1 * b_idxes[:, None] +
+                   w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0])
+    idxes1_to_0 = (h0 * w0 * b_idxes[:, None] +
+                   w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0])
+    idxes0_to_1 = torch.where(idxes0_to_1 == 0, -20, idxes0_to_1)
+    idxes1_to_0 = torch.where(idxes1_to_0 == 0, -20, idxes1_to_0)
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
     gt_idxes = (gt_mask.nonzero(as_tuple=True) if gt_mask.any() else
