@@ -10,7 +10,7 @@ net:
 #    depth: 256
   coarse_module:
     _target_: src.models.components.nets.new_matcher.GlobalCoC
-    scale: 4
+    scale: 2
     in_depth: 256
     hidden_depth: 256
     heads_count: 8

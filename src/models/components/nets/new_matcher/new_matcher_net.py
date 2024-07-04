@@ -23,7 +23,7 @@ class NewMatcherNet(nn.Module):
         super().__init__()
 
         self.type = type
-        self.backbone = backbone
+        self.backbone, self.fusion = backbone
         # self.positional_encoding = positional_encoding
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
@@ -87,6 +87,7 @@ class NewMatcherNet(nn.Module):
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
+        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
@@ -97,7 +98,8 @@ class NewMatcherNet(nn.Module):
             data = torch.cat([data, coors], dim=1)
             features = self.backbone(data)
             feature0_32x, feature1_32x = features.pop(-1).chunk(2)
-            feature0_8x, feature1_8x = features.pop(-2).chunk(2)
+            feature0_16x, feature1_16x = features.pop(-1).chunk(2)
+            features_8x = features.pop(-1)
             feature0_2x, feature1_2x = features.pop(0).chunk(2)
         else:
             data = batch["image0"]
@@ -113,23 +115,43 @@ class NewMatcherNet(nn.Module):
             data = torch.cat([data, coors], dim=1)
             features1 = self.backbone(data)
             feature0_32x, feature1_32x = features0.pop(-1), features1.pop(-1)
-            feature0_8x, feature1_8x = features0.pop(-2), features1.pop(-2)
+            feature0_16x, feature1_16x = features0.pop(-1), features1.pop(-1)
+            feature0_8x, feature1_8x = features0.pop(-1), features1.pop(-1)
             feature0_2x, feature1_2x = features0.pop(0), features1.pop(0)
-        size0, size1 = feature0_8x.shape[2:], feature1_8x.shape[2:]
+        size0, size1 = feature0_16x.shape[2:], feature1_16x.shape[2:]
 
         # feature0_8x, _ = self.positional_encoding(feature0_8x)
         # feature1_8x, _ = self.positional_encoding(feature1_8x)
 
-        feature0_8x, feature1_8x, feature0_32x, feature1_32x = map(
+        feature0_16x, feature1_16x, feature0_32x, feature1_32x = map(
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
-            (feature0_8x, feature1_8x, feature0_32x, feature1_32x))
+            (feature0_16x, feature1_16x, feature0_32x, feature1_32x))
 
-        (feature0_8x, feature1_8x,
+        (feature0_16x, feature1_16x,
          matchability0, matchability1) = self.coarse_module(
-            feature0_8x, feature1_8x, feature0_32x, feature1_32x, size0, size1,
-            mask0_8x=mask0_8x, mask1_8x=mask1_8x, mask0_32x=mask0_32x,
-            mask1_32x=mask1_32x)
+            feature0_16x, feature1_16x, feature0_32x, feature1_32x, size0,
+            size1, mask0_16x=mask0_16x, mask1_16x=mask1_16x,
+            mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
+        feature0_16x = feature0_16x.transpose(1, 2).unflatten(2, size0)
+        feature1_16x = feature1_16x.transpose(1, 2).unflatten(2, size1)
+        aligns = [False]
+        if batch["image0"].shape == batch["image1"].shape:
+            features_16x = torch.cat([feature0_16x, feature1_16x])
+            features = self.fusion([features_8x, features_16x], aligns)
+            features0, features1 = [], []
+            for feature in features:
+                feature0, feature1 = feature.chunk(2)
+                features0.append(feature0)
+                features1.append(feature1)
+            size0 = size1 = features_8x.shape[2:]
+        else:
+            features0 = self.fusion([feature0_8x, feature0_16x], aligns)
+            features1 = self.fusion([feature1_8x, feature1_16x], aligns)
+            size0, size1 = feature0_8x.shape[2:], feature1_8x.shape[2:]
+
+        feature0_8x = features0[0].flatten(start_dim=2).transpose(1, 2)
+        feature1_8x = features1[0].flatten(start_dim=2).transpose(1, 2)
         result = self.coarse_matching(
             feature0_8x, feature1_8x, size0, size1,
             matchability0=matchability0, matchability1=matchability1,

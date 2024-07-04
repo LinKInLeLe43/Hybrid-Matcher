@@ -35,8 +35,8 @@ def create_resnet_selfcoc_fpn() -> Tuple[nn.Module, nn.Module]:
                       SelfClusterBlock32x]
     block_counts = [1, 2, 2, 2, 2, 2, 2]
     net = Backbone(block_builders, block_counts, layer_depths, strides)
-    # fusion = Fusion([128, 128, 196, 256])
-    return net
+    fusion = Fusion([256, 256])
+    return net, fusion
 
 
 def create_repvgg_selfcoc_fpn() -> Tuple[nn.Module, nn.Module]:
@@ -56,5 +56,5 @@ def create_repvgg_selfcoc_fpn() -> Tuple[nn.Module, nn.Module]:
                       SelfClusterBlock32x]
     block_counts = [1, 2, 4, 14, 2, 2, 2]
     net = Backbone(block_builders, block_counts, layer_depths, strides)
-    # fusion = Fusion([128, 128, 196, 256])
-    return net
+    fusion = Fusion([256, 256])
+    return net, fusion

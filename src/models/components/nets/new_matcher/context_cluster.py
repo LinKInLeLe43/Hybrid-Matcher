@@ -527,14 +527,14 @@ class GlobalCoC(nn.Module):
 
     def forward(
         self,
-        x0_8x: torch.Tensor,
-        x1_8x: torch.Tensor,
+        x0_16x: torch.Tensor,
+        x1_16x: torch.Tensor,
         x0_32x: torch.Tensor,
         x1_32x: torch.Tensor,
-        size0_8x: torch.Size,
-        size1_8x: torch.Size,
-        mask0_8x: Optional[torch.Tensor] = None,
-        mask1_8x: Optional[torch.Tensor] = None,
+        size0_16x: torch.Size,
+        size1_16x: torch.Size,
+        mask0_16x: Optional[torch.Tensor] = None,
+        mask1_16x: Optional[torch.Tensor] = None,
         mask0_32x: Optional[torch.Tensor] = None,
         mask1_32x: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor,
@@ -544,25 +544,25 @@ class GlobalCoC(nn.Module):
             matchability0, matchability1 = [], []
 
         mask01 = mask10 = None
-        if (mask0_8x is not None and mask1_8x is not None and
+        if (mask0_16x is not None and mask1_16x is not None and
             mask0_32x is not None and mask1_32x is not None):
-            mask01 = (mask0_8x.flatten(start_dim=1)[:, :, None] &
+            mask01 = (mask0_16x.flatten(start_dim=1)[:, :, None] &
                       mask1_32x.flatten(start_dim=1)[:, None, :])
-            mask10 = (mask1_8x.flatten(start_dim=1)[:, :, None] &
+            mask10 = (mask1_16x.flatten(start_dim=1)[:, :, None] &
                       mask0_32x.flatten(start_dim=1)[:, None, :])
 
         for merge_block, global_block, matchability_decoder, type in zip(
             self.merge_blocks, self.global_blocks, self.matchability_decoders,
             self.types):
-            x0_8x, x0_32x = merge_block(x0_8x, x0_32x, size0_8x)
-            x1_8x, x1_32x = merge_block(x1_8x, x1_32x, size1_8x)
+            x0_16x, x0_32x = merge_block(x0_16x, x0_32x, size0_16x)
+            x1_16x, x1_32x = merge_block(x1_16x, x1_32x, size1_16x)
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)
                 pass
             elif type == "cross":
-                x0_8x = global_block(x0_8x, x1_32x, size0_8x, mask=mask01)
-                x1_8x = global_block(x1_8x, x0_32x, size1_8x, mask=mask10)
+                x0_16x = global_block(x0_16x, x1_32x, size0_16x, mask=mask01)
+                x1_16x = global_block(x1_16x, x0_32x, size1_16x, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
                 # x0 = local_block(x0, mask=x0_mask)
@@ -571,12 +571,12 @@ class GlobalCoC(nn.Module):
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
 
                 if self.use_matchability:
-                    matchability0.append(matchability_decoder(x0_8x).sigmoid())
-                    matchability1.append(matchability_decoder(x1_8x).sigmoid())
+                    matchability0.append(matchability_decoder(x0_16x).sigmoid())
+                    matchability1.append(matchability_decoder(x1_16x).sigmoid())
             else:
                 raise ValueError("")
 
         if self.use_matchability:
             matchability0 = torch.cat(matchability0, dim=2).mean(dim=2)
             matchability1 = torch.cat(matchability1, dim=2).mean(dim=2)
-        return x0_8x, x1_8x, matchability0, matchability1
+        return x0_16x, x1_16x, matchability0, matchability1
