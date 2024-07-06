@@ -25,7 +25,7 @@ class CoarseMatching(nn.Module):
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
 
-        if type not in ("bidirectional", "unidirectional"):
+        if type not in ("bisoftmax", "unisoftmax", "bifilter"):
             raise ValueError("")
 
     def _remove_border(
@@ -99,56 +99,53 @@ class CoarseMatching(nn.Module):
     def _create_coarse_matching(
         self,
         score: Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor],
+        threshold: float,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
+        prior_mask: Optional[torch.Tensor],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
-        (_, w0), (_, w1) = size0, size1
-
-        if isinstance(score, tuple):
+        if self.type == "unisoftmax":
             score0_to_1, score1_to_0 = score
 
-            mask0_to_1, max_count = self._remove_border(
-                score0_to_1 > self.threshold, size0, size1, mask0, mask1)
+            mask0_to_1, _ = self._remove_border(
+                score0_to_1 > threshold, size0, size1, mask0, mask1)
             mask0_to_1 &= score0_to_1 == score0_to_1.amax(dim=2, keepdim=True)
 
-            mask1_to_0, max_count = self._remove_border(
-                score1_to_0 > self.threshold, size0, size1, mask0, mask1)
+            mask1_to_0, _ = self._remove_border(
+                score1_to_0 > threshold, size0, size1, mask0, mask1)
             mask1_to_0 &= score1_to_0 == score1_to_0.amax(dim=1, keepdim=True)
 
             mask = mask0_to_1 | mask1_to_0
-        elif isinstance(score, torch.Tensor):
+            result = {"coarse_cls_mask": mask}
+        elif self.type == "bisoftmax" or self.type == "bifilter":
             mask, max_count = self._remove_border(
-                score > self.threshold, size0, size1, mask0, mask1)
+                score > threshold, size0, size1, mask0, mask1)
             mask &= ((score == score.amax(dim=2, keepdim=True)) &
                      (score == score.amax(dim=1, keepdim=True)))
-        else:
-            assert False
+            if prior_mask is not None:
+                mask &= prior_mask
 
-        train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
-        if self.training and gt_idxes is not None:
-            train_idxes, matching_idxes = self._sample_for_train(
-                max_count, matching_idxes, gt_idxes)
+            train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
+            if self.training and gt_idxes is not None:
+                train_idxes, matching_idxes = self._sample_for_train(
+                    max_count, matching_idxes, gt_idxes)
 
-        if isinstance(score, tuple):
-            scores = torch.maximum(
-                score0_to_1[matching_idxes], score1_to_0[matching_idxes])
-        elif isinstance(score, torch.Tensor):
+            b_idxes, i_idxes, j_idxes = matching_idxes
+            points0 = torch.stack([i_idxes % size0[1],
+                                   i_idxes // size0[1]], dim=1).float()
+            points1 = torch.stack([j_idxes % size1[1],
+                                   j_idxes // size1[1]], dim=1).float()
             scores = score[matching_idxes]
+            result = {"idxes": matching_idxes,
+                      "points0": points0,
+                      "points1": points1,
+                      "scores": scores,
+                      "coarse_cls_idxes": train_idxes}
         else:
             assert False
-
-        b_idxes, i_idxes, j_idxes = matching_idxes
-        points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
-        points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
-
-        result = {"idxes": matching_idxes,
-                  "points0": points0,
-                  "points1": points1,
-                  "scores": scores,
-                  "coarse_cls_idxes": train_idxes}
         return result
 
     def forward(
@@ -159,6 +156,7 @@ class CoarseMatching(nn.Module):
         size1: Tuple[int, int],
         matchability0: Optional[torch.Tensor] = None,
         matchability1: Optional[torch.Tensor] = None,
+        prior_mask: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
@@ -167,46 +165,54 @@ class CoarseMatching(nn.Module):
         n, l, c = x0.shape
         _, s, _ = x1.shape
 
-        x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
-        similarity = torch.einsum("nlc,nsc->nls", x0, x1)
-        similarity /= self.temperature
-        if mask0 is not None and mask1 is not None:
-            mask = (mask0.flatten(start_dim=1)[:, :, None] &
-                    mask1.flatten(start_dim=1)[:, None, :])
-            similarity.masked_fill_(~mask, float("-inf"))
+        with torch.autocast(
+            "cuda",
+            enabled=(torch.is_autocast_enabled() or
+                     (self.type == "bifilter" and not self.training))
+        ):
+            x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
+            similarity = torch.einsum("nlc,nsc->nls", x0, x1)
+            similarity /= self.temperature
+            if mask0 is not None and mask1 is not None:
+                mask = (mask0.flatten(start_dim=1)[:, :, None] &
+                        mask1.flatten(start_dim=1)[:, None, :])
+                similarity.masked_fill_(~mask, float("-inf"))
 
-        confidence0_to_1 = F.softmax(similarity, dim=2)
-        confidence1_to_0 = F.softmax(similarity, dim=1)
+        coarse_cls_heatmap = None
+        if (self.type == "unisoftmax" or self.type == "bisoftmax" or
+            self.training):
+            confidence0_to_1 = F.softmax(similarity, dim=2)
+            confidence1_to_0 = F.softmax(similarity, dim=1)
 
-        if mask0 is not None and mask1 is not None:
-            confidence0_to_1 = confidence0_to_1.nan_to_num()
-            confidence1_to_0 = confidence1_to_0.nan_to_num()
+            if mask0 is not None and mask1 is not None:
+                confidence0_to_1 = confidence0_to_1.nan_to_num()
+                confidence1_to_0 = confidence1_to_0.nan_to_num()
 
-        confidence = confidence0_to_1 * confidence1_to_0
+            coarse_cls_heatmap = confidence = (confidence0_to_1 *
+                                               confidence1_to_0)
+            score = ((confidence0_to_1, confidence1_to_0)
+                     if self.type == "unisoftmax" else confidence)
+            threshold = self.threshold
+            prior_mask = None
 
-        confidence_with_bin = None
-        if self.training and self.use_matchability:
-            if matchability0 is None or matchability1 is None:
-                raise ValueError("")
+            if self.training and self.use_matchability:
+                if matchability0 is None or matchability1 is None:
+                    raise ValueError("")
 
-            confidence *= (matchability0[:, :, None] *
-                           matchability1[:, None, :])
-            confidence_with_bin = F.pad(confidence, [0, 1, 0, 1])
-            confidence_with_bin[:, :-1, -1] = 1 - matchability0
-            confidence_with_bin[:, -1, :-1] = 1 - matchability1
-
-        if self.type == "bidirectional":
-            score = confidence
-        elif self.type == "unidirectional":
-            score = (confidence0_to_1, confidence1_to_0)
+                confidence *= (matchability0[:, :, None] *
+                               matchability1[:, None, :])
+                confidence_with_bin = F.pad(confidence, [0, 1, 0, 1])
+                confidence_with_bin[:, :-1, -1] = 1 - matchability0
+                confidence_with_bin[:, -1, :-1] = 1 - matchability1
+                coarse_cls_heatmap = confidence_with_bin
+        elif self.type == "bifilter" and not self.training:
+            score = similarity
+            threshold = 0.0
+            gt_idxes = None
         else:
             assert False
 
         result = self._create_coarse_matching(
-            score, size0, size1, mask0, mask1, gt_idxes)
-
-        if confidence_with_bin is not None:
-            result["coarse_cls_heatmap"] = confidence_with_bin
-        else:
-            result["coarse_cls_heatmap"] = confidence
+            score, threshold, size0, size1, prior_mask, mask0, mask1, gt_idxes)
+        result["coarse_cls_heatmap"] = coarse_cls_heatmap
         return result

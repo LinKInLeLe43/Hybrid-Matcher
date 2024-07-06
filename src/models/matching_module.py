@@ -76,70 +76,37 @@ class MatchingModule(pl.LightningModule):
         self,
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        supervision = {}
+        supervision = utils.create_coarse_supervision(
+            batch, self.net.scales[0],
+            extra_scale=getattr(self.net, "extra_scale", None),
+            return_coor=True)
+        result = self.net(
+            batch,
+            gt_idxes=supervision[f"coarse_gt_idxes_{self.net.scales[0]}x"])
+
         if self.net.type == "one_stage":
-            supervision.update(utils.create_coarse_supervision(
-                batch, self.net.scales[0],
-                bi_scale=getattr(self.net, "extra_scale"), return_coor=True,
-                return_flow=self.net.use_flow))
-
-            result = self.net(
-                batch,
-                gt_idxes=supervision[f"coarse_gt_idxes_{self.net.scales[0]}x"])
-
-            gt_biases = utils.compute_gt_biases(
-                supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result[f"global_cls_idxes_{self.net.scales[0]}x"],
-                self.net.scales[-1], self.net.reg_window_size)
-            supervision["fine_gt_biases"] = gt_biases
+            pass
         elif self.net.type == "two_stage":
-            supervision.update(utils.create_coarse_supervision(
-                batch, self.net.scales[0],
-                bi_scale=getattr(self.net, "extra_scale"),
-                return_flow=self.net.use_flow))
-
-            result = self.net(
-                batch,
-                gt_idxes=supervision[f"coarse_gt_idxes_{self.net.scales[0]}x"])
             supervision.update(utils.create_fine_supervision(
                 batch, self.net.scales[:2],
                 result[f"global_cls_idxes_{self.net.scales[0]}x"],
                 return_coor=True))
-
-            gt_biases = utils.compute_gt_biases(
-                supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result[f"local_cls_idxes_{self.net.scales[1]}x"],
-                self.net.scales[-1], self.net.reg_window_size)
-            supervision["fine_gt_biases"] = gt_biases
         elif self.net.type == "three_stage":
-            if len(self.net.scales) != 3:
-                raise ValueError("")
-
-            supervision.update(utils.create_coarse_supervision(
-                batch, self.net.scales[0],
-                bi_scale=getattr(self.net, "extra_scale"),
-                return_flow=self.net.use_flow))
-
-            result = self.net(
-                batch,
-                gt_idxes=supervision[f"coarse_gt_idxes_{self.net.scales[0]}x"])
             supervision.update(utils.create_fine_supervision(
                 batch, self.net.scales[:2],
                 result[f"global_cls_idxes_{self.net.scales[0]}x"]))
-
             supervision.update(utils.create_fine_supervision(
-                batch, self.net.scales[1:],
+                batch, self.net.scales[1:3],
                 result[f"global_cls_idxes_{self.net.scales[1]}x"],
                 window_size=self.net.cls_1x_window_size,
                 offset=self.net.scales[1] * 0.5, return_coor=True))
-
-            gt_biases = utils.compute_gt_biases(
-                supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result[f"local_cls_idxes_{self.net.scales[2]}x"],
-                self.net.scales[-1], self.net.reg_window_size)
-            supervision["fine_gt_biases"] = gt_biases
         else:
             assert False
+
+        gt_biases = utils.compute_gt_biases(
+            supervision.pop("points0_to_1"), supervision.pop("points1"),
+            result["reg_idxes"], self.net.scales[-1], self.net.reg_window_size)
+        supervision["fine_gt_biases"] = gt_biases
 
         loss = self.loss(
             **result, **supervision, mask0_8x=batch.get("mask0_8x"),
