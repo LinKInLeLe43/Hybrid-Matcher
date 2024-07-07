@@ -9,7 +9,6 @@ class NewMatcherNet(nn.Module):
     def __init__(
         self,
         backbone: nn.Module,
-        local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
@@ -20,14 +19,13 @@ class NewMatcherNet(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone = backbone
-        self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
         self.fine_matching = fine_matching
 
-        self.scales = backbone.scales
+        self.scales = 8, 2
         self.window_size = fine_preprocess.window_size
 
         self.use_flow = coarse_module.use_flow
@@ -76,11 +74,10 @@ class NewMatcherNet(nn.Module):
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
             data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
-            coarse_features, fine_features = self.backbone(data)
-            centers, coarse_features = self.local_coc(coarse_features)
-            centers0, centers1 = centers.chunk(2)
-            coarse_feature0, coarse_feature1 = coarse_features.chunk(2)
-            fine_feature0, fine_feature1 = fine_features.chunk(2)
+            features = self.backbone(data)
+            centers0, centers1 = features.pop(-1).chunk(2)
+            coarse_feature0, coarse_feature1 = features.pop(-2).chunk(2)
+            fine_feature0, fine_feature1 = features.pop(0).chunk(2)
             if self.use_flow:
                 pos_features = self.positional_encoding.get(
                     coarse_features).repeat(2 * n, 1, 1, 1)
@@ -92,16 +89,17 @@ class NewMatcherNet(nn.Module):
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"],
                               coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature0, fine_feature0 = self.backbone(data)
-            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
+            features0 = self.backbone(data)
 
             n, _, h, w = batch["image1"].shape
             coors = K.create_meshgrid(h, w, device=device)
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image1"],
                               coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature1, fine_feature1 = self.backbone(data)
-            centers1, coarse_feature1 = self.local_coc(coarse_feature1)
+            features1 = self.backbone(data)
+            feature0_32x, feature1_32x = features0.pop(-1), features1.pop(-1)
+            feature0_8x, feature1_8x = features0.pop(-2), features1.pop(-2)
+            feature0_2x, feature1_2x = features0.pop(0), features1.pop(0)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
         coarse_feature0, coarse_feature1, centers0, centers1 = map(
