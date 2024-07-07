@@ -49,11 +49,14 @@ net:
     radius: 8
 
 loss:
-  _target_: src.models.components.losses.LoFTRLoss
-  coarse_type: "${model.net.coarse_matching.type}"
-  coarse_sparse: ${model.net.coarse_matching.sparse}
+  _target_: src.models.components.losses.NewMatcherLoss
+  type: "one_stage"
+  coarse_cls_sparse: ${model.net.coarse_matching.sparse}
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
+  fine_reg_loss_weight: 1.0
   use_flow: ${model.net.coarse_module.use_flow}
-  flow_weight: 0.05
+  flow_loss_weight: 0.05
 
 optimizer: ???
 

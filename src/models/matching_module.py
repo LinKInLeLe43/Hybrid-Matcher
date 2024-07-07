@@ -67,12 +67,11 @@ class MatchingModule(pl.LightningModule):
             self.net.scales[1], self.net.window_size)
 
         loss = self.loss(
-            result["coarse_confidences"], coarse_supervision["gt_mask"],
-            result["fine_biases"], gt_biases,
-            result["fine_stddevs"], flow0_to_1=result.get("flow0_to_1"),
-            flow1_to_0=result.get("flow1_to_0"),
-            gt_coor0_to_1=coarse_supervision.get("gt_coor0_to_1"),
-            gt_coor1_to_0=coarse_supervision.get("gt_coor1_to_0"),
+            coarse_cls_heatmap=result["coarse_confidences"],
+            coarse_gt_mask=coarse_supervision["gt_mask"],
+            fine_reg_biases=result["fine_biases"],
+            fine_gt_biases=gt_biases,
+            fine_reg_stds=result["fine_stddevs"],
             mask0=batch.get("mask0"), mask1=batch.get("mask1"))
         return result, loss
 
