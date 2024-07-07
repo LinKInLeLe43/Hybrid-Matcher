@@ -11,7 +11,7 @@ def _warp_point(
     K1: torch.Tensor,
     T0_to_1: torch.Tensor
 ) -> torch.Tensor:
-    image_grid0 = image_point0.round().long()
+    image_grid0 = image_point0.clamp(min=0).round().long()
     image_depth0 = torch.stack(
         [depth0[b, grid0[:, 1], grid0[:, 0]]
          for b, grid0 in enumerate(image_grid0)])[:, :, None]
@@ -27,13 +27,38 @@ def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
     x[(x[:, :, 0] < 0) | (x[:, :, 0] >= w) |
       (x[:, :, 1] < 0) | (x[:, :, 1] >= h)] = 0.0
 
+@torch.no_grad()
+def compute_gt_biases(
+    points0_to_1: torch.Tensor,
+    points1: torch.Tensor,
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    fine_scale: int,
+    window_size: int
+) -> torch.Tensor:
+    b_idxes, i_idxes, j_idxes = idxes
+
+    gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
+    gt_biases /= fine_scale * (window_size // 2)
+    return gt_biases
+
 
 @torch.no_grad()
 def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
-    use_flow: bool = False
+    offset: float = 0.0,  # TODO: whether need actually
+    bi_scale: Optional[int] = None,
+    return_coor: bool = False,
+    return_flow: bool = False
 ) -> Dict[str, Any]:
+    if bi_scale is not None:
+        if bi_scale >= scale:
+            raise ValueError("")
+
+        stride = scale // bi_scale
+        scale = bi_scale
+        offset = offset - stride // 2 + 0.5
+
     device = batch["image0"].device
     n, _, h0, w0 = batch["image0"].shape
     _, _, h1, w1 = batch["image1"].shape
@@ -42,64 +67,65 @@ def create_coarse_supervision(
     scale0, scale1 = batch.get("scale0"), batch.get("scale1")
     scale0 = scale * scale0[:, None] if scale0 is not None else scale
     scale1 = scale * scale1[:, None] if scale1 is not None else scale
-    mask0, mask1 = batch.get("mask0"), batch.get("mask1")
+    mask0, mask1 = batch.get(f"mask0_{scale}x"), batch.get(f"mask1_{scale}x")
 
-    point0 = K.create_meshgrid(
+    coors0 = K.create_meshgrid(
         h0, w0, normalized_coordinates=False, device=device)
-    point1 = K.create_meshgrid(
+    coors1 = K.create_meshgrid(
         h1, w1, normalized_coordinates=False, device=device)
-    point0 = scale0 * point0.reshape(1, -1, 2).repeat(n, 1, 1)
-    point1 = scale1 * point1.reshape(1, -1, 2).repeat(n, 1, 1)
+    coors0 = coors0.reshape(1, -1, 2).repeat(n, 1, 1)
+    coors1 = coors1.reshape(1, -1, 2).repeat(n, 1, 1)
+    points0 = scale0 * (coors0 + offset)
+    points1 = scale1 * (coors1 + offset)
     if mask0 is not None:
-        point0[~mask0], point1[~mask1] = 0.0, 0.0
+        points0[~mask0.flatten(start_dim=1)] = 0.0
+        points1[~mask1.flatten(start_dim=1)] = 0.0
+    points0_to_1 = _warp_point(
+        points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
+    points1_to_0 = _warp_point(
+        points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
+    flows0 = coors0_to_1 = (points0_to_1 / scale1) - offset
+    flows1 = coors1_to_0 = (points1_to_0 / scale0) - offset
 
-    point0_to_1 = _warp_point(
-        point0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
-    point1_to_0 = _warp_point(
-        point1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
-    coor0_to_1, coor1_to_0 = point0_to_1 / scale1, point1_to_0 / scale0
-    grid0_to_1 = coor0_to_1.round().long()
-    grid1_to_0 = coor1_to_0.round().long()
-    _mask_out_of_bound(grid0_to_1, h1, w1)
-    _mask_out_of_bound(grid1_to_0, h0, w0)
-    idx0_to_1 = w1 * grid0_to_1[:, :, 1] + grid0_to_1[:, :, 0]
-    idx1_to_0 = w0 * grid1_to_0[:, :, 1] + grid1_to_0[:, :, 0]
-
-    biprojection = torch.stack([idx1_to_0[b, idx1]
-                                for b, idx1 in enumerate(idx0_to_1)])
-    mask = biprojection == torch.arange(l0, device=device)
-    mask[:, 0] = False
-    b_idxes, i_idxes = mask.nonzero(as_tuple=True)
-    j_idxes = idx0_to_1[b_idxes, i_idxes]
+    coors0_to_1 = coors0_to_1.round().long()
+    coors1_to_0 = coors1_to_0.round().long()
+    _mask_out_of_bound(coors0_to_1, h1, w1)
+    _mask_out_of_bound(coors1_to_0, h0, w0)
+    idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
+    idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
+    biprojection = torch.stack([idxes1_to_0[b, idx1]
+                                for b, idx1 in enumerate(idxes0_to_1)])
+    biprojection_mask = biprojection == torch.arange(l0, device=device)
+    biprojection_mask[:, 0] = False
+    b_idxes, i_idxes = biprojection_mask.nonzero(as_tuple=True)
+    j_idxes = idxes0_to_1[b_idxes, i_idxes]
+    gt_idxes = ((b_idxes, i_idxes, j_idxes) if len(b_idxes) != 0
+                else 3 * (torch.tensor([0], device=device),))
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
-    if len(b_idxes) == 0:
-        b_idxes = i_idxes = j_idxes = torch.tensor([0], device=device)
-    gt_idxes = b_idxes, i_idxes, j_idxes
-    supervision = {"point0_to_1": point0_to_1,
-                   "point1": point1,
-                   "gt_mask": gt_mask,
-                   "gt_idxes": gt_idxes}
-    if use_flow:
-        supervision["gt_coor0_to_1"] = coor0_to_1[b_idxes, i_idxes]
-        supervision["gt_coor1_to_0"] = coor1_to_0[b_idxes, j_idxes]
-    return supervision
+    supervision = {"gt_idxes": gt_idxes, "gt_mask": gt_mask}
 
+    if bi_scale is not None:
+        fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
+        gt_mask = gt_mask.reshape(
+            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+        gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+        gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+        gt_idxes = (gt_mask.nonzero(as_tuple=True) if gt_mask.any() else
+                    3 * (torch.tensor([0], device=device),))
+        supervision["coarse_extra_gt_idxes"] = supervision["coarse_gt_idxes"]
+        supervision["coarse_extra_gt_mask"] = supervision["coarse_gt_mask"]
+        supervision["coarse_gt_idxes"] = gt_idxes
+        supervision["coarse_gt_mask"] = gt_mask
 
-@torch.no_grad()
-def create_fine_supervision(
-    point0_to_1: torch.Tensor,
-    point1: torch.Tensor,
-    fine_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    fine_scale: int,
-    window_size: int,
-    scale1: Optional[torch.Tensor] = None
-) -> Dict[str, Any]:
-    b_idxes, i_idxes, j_idxes = fine_idxes
+    if return_coor:
+        if "scale1" in batch:
+            points0_to_1 = points0_to_1 / batch["scale1"][:, None]
+            points1 = points1 / batch["scale1"][:, None]
+        supervision["points0_to_1"] = points0_to_1
+        supervision["points1"] = points1
 
-    gt_biases = point0_to_1[b_idxes, i_idxes] - point1[b_idxes, j_idxes]
-    gt_biases /= fine_scale * (window_size // 2)
-    if scale1 is not None:
-        gt_biases /= scale1[b_idxes]
-    supervision = {"gt_biases": gt_biases}
+    if return_flow:
+        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
     return supervision

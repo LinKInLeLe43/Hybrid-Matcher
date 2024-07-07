@@ -57,19 +57,18 @@ class MatchingModule(pl.LightningModule):
         use_flow = getattr(self.net, "use_flow", False)
 
         coarse_supervision = utils.create_coarse_supervision(
-            batch, self.net.scales[0], use_flow=use_flow)
+            batch, self.net.scales[0], return_coor=True, return_flow=use_flow)
 
         result = self.net(batch, gt_idxes=coarse_supervision["gt_idxes"])
 
-        fine_supervision = utils.create_fine_supervision(
-            coarse_supervision.pop("point0_to_1"),
-            coarse_supervision.pop("point1"), result["fine_idxes"],
-            self.net.scales[1], self.net.window_size,
-            scale1=batch.get("scale1"))
+        gt_biases = utils.compute_gt_biases(
+            coarse_supervision.pop("points0_to_1"),
+            coarse_supervision.pop("points1"), result["fine_idxes"],
+            self.net.scales[1], self.net.window_size)
 
         loss = self.loss(
             result["coarse_confidences"], coarse_supervision["gt_mask"],
-            result["fine_biases"], fine_supervision["gt_biases"],
+            result["fine_biases"], gt_biases,
             result["fine_stddevs"], flow0_to_1=result.get("flow0_to_1"),
             flow1_to_0=result.get("flow1_to_0"),
             gt_coor0_to_1=coarse_supervision.get("gt_coor0_to_1"),
