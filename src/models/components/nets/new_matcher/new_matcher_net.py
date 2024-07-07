@@ -30,7 +30,7 @@ class NewMatcherNet(nn.Module):
         self.scales = backbone.scales
         self.window_size = fine_preprocess.window_size
 
-        self.use_flow = coarse_module.use_flow
+        self.use_flow = False
         if self.use_flow:
             if positional_encoding is None or flow_decoder is None:
                 raise ValueError("")
@@ -108,22 +108,12 @@ class NewMatcherNet(nn.Module):
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
             (coarse_feature0, coarse_feature1, centers0, centers1))
 
-        coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
+        coarse_feature0, coarse_feature1 = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
-            center0_mask=center0_mask, center1_mask=center1_mask)
+            mask0_8x=mask0, mask1_8x=mask1, mask0_32x=center0_mask,
+            mask1_32x=center1_mask)
         flow_mask = None
         result = {}
-        if self.use_flow:
-            if flow0 is None or flow1 is None:
-                raise ValueError("")
-            flow0_to_1, flow0_to_1_mask = self.flow_decoder(flow0, size1)
-            flow1_to_0, flow1_to_0_mask = self.flow_decoder(flow1, size0)
-            flow_mask = flow0_to_1_mask | flow1_to_0_mask.transpose(1, 2)
-            if gt_idxes is not None:
-                b_idxes, i_idxes, j_idxes = gt_idxes
-                result["flow0_to_1"] = flow0_to_1[b_idxes, i_idxes]
-                result["flow1_to_0"] = flow1_to_0[b_idxes, j_idxes]
         result.update(self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow_mask=flow_mask,
             mask0=mask0, mask1=mask1, gt_idxes=gt_idxes))
