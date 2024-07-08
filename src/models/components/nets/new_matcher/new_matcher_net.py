@@ -96,35 +96,37 @@ class NewMatcherNet(nn.Module):
             size1_16x, mask0_16x=mask0_16x, mask1_16x=mask1_16x,
             mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
-        result_16x = self.coarse_matching_16x(
-            feature0_16x, feature1_16x, size0_16x, size1_16x,
-            matchability0=matchability0, matchability1=matchability1,
-            mask0=mask0_16x, mask1=mask1_16x)
-        result["coarse_cls_heatmap_16x"] = result_16x.pop("coarse_cls_heatmap")
-        cls_mask_16x = None
-        if not self.training:
-            cls_mask_16x = result_16x.pop("coarse_cls_mask")
-            cls_mask_16x = cls_mask_16x.reshape(-1, *size0_16x, *size1_16x)
-            for i in range(1, 5):
-                cls_mask_16x = cls_mask_16x.repeat_interleave(2, dim=i)
-            cls_mask_16x = (cls_mask_16x.flatten(start_dim=3, end_dim=4)
-                            .flatten(start_dim=1, end_dim=2))
-
         feature0_16x = (feature0_16x.transpose(1, 2).unflatten(2, size0_16x)
                         .contiguous())
         feature1_16x = (feature1_16x.transpose(1, 2).unflatten(2, size1_16x)
                         .contiguous())
+        biupdates = [False, False, True]
         if batch["image0"].shape == batch["image1"].shape:
             features_16x = torch.cat([feature0_16x, feature1_16x])
-            features = self.fusion(features + [features_16x])
+            features = self.fusion(features + [features_16x], biupdates)
             features0, features1 = [], []
             for feature in features:
                 feature0, feature1 = feature.chunk(2)
                 features0.append(feature0)
                 features1.append(feature1)
         else:
-            features0 = self.fusion(features0 + [feature0_16x])
-            features1 = self.fusion(features1 + [feature1_16x])
+            features0 = self.fusion(features0 + [feature0_16x], biupdates)
+            features1 = self.fusion(features1 + [feature1_16x], biupdates)
+
+        cls_mask_16x = None
+        if not self.training:
+            feature0_16x = features0[-1].flatten(start_dim=2).transpose(1, 2)
+            feature1_16x = features1[-1].flatten(start_dim=2).transpose(1, 2)
+            result_16x = self.coarse_matching_16x(
+                feature0_16x, feature1_16x, size0_16x, size1_16x,
+                matchability0=matchability0, matchability1=matchability1,
+                mask0=mask0_16x, mask1=mask1_16x)
+            cls_mask_16x = result_16x.pop("coarse_cls_mask")
+            cls_mask_16x = cls_mask_16x.reshape(-1, *size0_16x, *size1_16x)
+            for i in range(1, 5):
+                cls_mask_16x = cls_mask_16x.repeat_interleave(2, dim=i)
+            cls_mask_16x = (cls_mask_16x.flatten(start_dim=3, end_dim=4)
+                            .flatten(start_dim=1, end_dim=2))
 
         size0_8x, size1_8x = features0[-2].shape[2:], features1[-2].shape[2:]
         feature0_8x = features0[-2].flatten(start_dim=2).transpose(1, 2)

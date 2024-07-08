@@ -113,13 +113,21 @@ class Fusion(nn.Module):
             assert False
         return branch
 
-    def forward(self, xs: List[torch.Tensor]) -> List[torch.Tensor]:
+    def forward(
+        self,
+        xs: List[torch.Tensor],
+        biupdates: List[bool]
+    ) -> List[torch.Tensor]:
         l = len(xs)
         out = (l - 1) * [None] + [self.ups[-1](xs[-1])]
         for i in reversed(range(l - 1)):
             out[i] = self.ups[i](xs[i])
-            out[i] += F.interpolate(
-                out[i + 1], scale_factor=2, mode="bilinear",
-                align_corners=False)
+            x, y = out[i], out[i + 1]
+            out[i] = x + F.interpolate(
+                y, scale_factor=2, mode="bilinear", align_corners=False)
             out[i] = self.downs[i](out[i])
+            if biupdates[i]:
+                out[i + 1] = y + F.interpolate(
+                    x, scale_factor=0.5, mode="bilinear", align_corners=False)
+                out[i + 1] = self.downs[i](out[i + 1])
         return out

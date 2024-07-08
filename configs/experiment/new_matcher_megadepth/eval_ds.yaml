@@ -12,10 +12,7 @@ data:
 
 model:
   loss:
-    coarse_cls_sparse_16x: true
     coarse_cls_sparse_8x: true
-    fine_cls_sparse_2x: true
-    fine_cls_sparse_1x: true
 
 trainer:
   devices: 8

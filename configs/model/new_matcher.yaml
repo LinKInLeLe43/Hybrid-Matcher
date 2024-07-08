@@ -42,12 +42,9 @@ net:
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  coarse_cls_sparse_16x: ???
-  coarse_cls_loss_pos_weight_16x: 0.5
-  coarse_cls_loss_neg_weight_16x: 0.5
   coarse_cls_sparse_8x: ???
-  coarse_cls_loss_pos_weight_8x: 0.5
-  coarse_cls_loss_neg_weight_8x: 0.5
+  coarse_cls_loss_pos_weight_8x: 1.0
+  coarse_cls_loss_neg_weight_8x: 1.0
   fine_reg_loss_weight: 1.0
 
 optimizer: ???

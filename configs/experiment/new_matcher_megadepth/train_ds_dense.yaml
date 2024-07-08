@@ -4,11 +4,11 @@ defaults:
   - new_matcher_megadepth/default
   - _self_
 
-tags: ["train-new_matcher-megadepth-ds-sparse"]
+tags: ["train-new_matcher-megadepth-ds-dense"]
 
 model:
   loss:
-    coarse_cls_sparse_8x: true
+    coarse_cls_sparse_8x: false
 
 trainer:
   devices: 8
