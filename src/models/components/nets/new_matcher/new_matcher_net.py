@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 from torch import nn
+import kornia as K
 
 from .modules.utils import crop_windows
 
@@ -15,6 +16,7 @@ class NewMatcherNet(nn.Module):
         coarse_module: nn.Module,
         coarse_matching_16x: nn.Module,
         coarse_matching_8x: nn.Module,
+        fine_cls_matching_1x: nn.Module,
         fine_module: nn.Module,
         fine_reg_matching: nn.Module
     ) -> None:
@@ -25,13 +27,29 @@ class NewMatcherNet(nn.Module):
         self.coarse_module = coarse_module
         self.coarse_matching_16x = coarse_matching_16x
         self.coarse_matching_8x = coarse_matching_8x
+        self.fine_cls_matching_1x = fine_cls_matching_1x
         self.fine_module = fine_module
         self.fine_reg_matching = fine_reg_matching
 
-        self.scales = 8, 2
+        self.scales = 8, 1
         self.extra_scale = 16
 
         self.reg_window_size = fine_reg_matching.window_size
+        assert fine_cls_matching_1x.window_size == 8
+        assert self.reg_window_size % 2 == 1
+
+        self.p1_1x = self.reg_window_size // 2
+        self.w1_1x = 8 + 2 * self.p1_1x
+        mask1_1x = torch.zeros((self.w1_1x, self.w1_1x), dtype=torch.bool)
+        mask1_1x[self.p1_1x:-self.p1_1x, self.p1_1x:-self.p1_1x] = True
+        mask1_1x = mask1_1x.flatten()
+        self.register_buffer("cls_mask1_1x", mask1_1x, persistent=False)
+
+        delta1_1x = K.create_meshgrid(
+            self.reg_window_size, self.reg_window_size,
+            normalized_coordinates=False, dtype=torch.long)
+        delta1_1x = delta1_1x.reshape(-1, 2)
+        self.register_buffer("cls_delta1_1x", delta1_1x, persistent=False)
 
     def _scale_points(
         self,
@@ -100,7 +118,7 @@ class NewMatcherNet(nn.Module):
                         .contiguous())
         feature1_16x = (feature1_16x.transpose(1, 2).unflatten(2, size1_16x)
                         .contiguous())
-        biupdates = [False, False, True]
+        biupdates = [False, False, False, True]
         if batch["image0"].shape == batch["image1"].shape:
             features_16x = torch.cat([feature0_16x, feature1_16x])
             features = self.fusion(features + [features_16x], biupdates)
@@ -136,16 +154,34 @@ class NewMatcherNet(nn.Module):
             prior_mask=cls_mask_16x, mask0=mask0_8x, mask1=mask1_8x,
             gt_idxes=gt_idxes)
         result["coarse_cls_heatmap_8x"] = result_8x.pop("coarse_cls_heatmap")
-        result["reg_idxes"] = result_8x.pop("coarse_cls_idxes")
+        result["global_cls_idxes_8x"] = result_8x.pop("coarse_cls_idxes")
         result.update(result_8x)
 
-        w = self.reg_window_size
-        b_idxes, i_idxes, j_idxes = result["reg_idxes"]
-        feature0_2x, feature1_2x = features0[0], features1[0]
-        feature0_2x = crop_windows(feature0_2x, w, stride=4, padding=w // 2)
-        feature1_2x = crop_windows(feature1_2x, w, stride=4, padding=w // 2)
-        reg_feature0 = feature0_2x[b_idxes, i_idxes]
-        reg_feature1 = feature1_2x[b_idxes, j_idxes]
+        w = 8
+        b_idxes, i_idxes, j_idxes = result["global_cls_idxes_8x"]
+        feature0_1x, feature1_1x = features0[0], features1[0]
+        feature0_1x = crop_windows(
+            feature0_1x, self.w1_1x, stride=w, padding=self.p1_1x)
+        feature1_1x = crop_windows(
+            feature1_1x, self.w1_1x, stride=w, padding=self.p1_1x)
+        feature0_1x = feature0_1x[b_idxes, i_idxes]
+        feature1_1x = feature1_1x[b_idxes, j_idxes]
+        result_1x = self.fine_cls_matching_1x(
+            feature0_1x[:, self.cls_mask1_1x],
+            feature1_1x[:, self.cls_mask1_1x])
+        result["fine_cls_heatmap_1x"] = result_1x.pop("fine_cls_heatmap")
+        result["reg_idxes"] = result_1x.pop("fine_cls_idxes")
+
+        m_idxes, sub_i_idxes, sub_j_idxes = map(
+            lambda x: x[:, None], result["reg_idxes"])
+        sub_i_idxes = (self.w1_1x *
+                       (sub_i_idxes // w + self.cls_delta1_1x[:, 1]) +
+                       sub_i_idxes % w + self.cls_delta1_1x[:, 0])
+        sub_j_idxes = (self.w1_1x *
+                       (sub_j_idxes // w + self.cls_delta1_1x[:, 1]) +
+                       sub_j_idxes % w + self.cls_delta1_1x[:, 0])
+        reg_feature0 = feature0_1x[m_idxes, sub_i_idxes]
+        reg_feature1 = feature1_1x[m_idxes, sub_j_idxes]
 
         if len(reg_feature0) != 0:
             reg_feature0, reg_feature1 = self.fine_module(
@@ -154,6 +190,9 @@ class NewMatcherNet(nn.Module):
         reg_result = self.fine_reg_matching(reg_feature0, reg_feature1)
         result.update(reg_result)
 
-        result["biases1"] = w // 2 * reg_result["fine_reg_biases"].detach()
+        result["biases0"] = result_1x["fine_cls_biases0"].detach()
+        result["biases1"] = (result_1x["fine_cls_biases1"].detach() +
+                             self.reg_window_size // 2 *
+                             reg_result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

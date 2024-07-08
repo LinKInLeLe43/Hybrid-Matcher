@@ -9,6 +9,7 @@ tags: ["train-new_matcher-megadepth-ds-dense"]
 model:
   loss:
     coarse_cls_sparse_8x: false
+    fine_cls_sparse_1x: false
 
 trainer:
   devices: 8
