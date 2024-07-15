@@ -547,10 +547,14 @@ class GlobalCoC(nn.Module):
 
         mask00 = mask11 = mask01 = mask10 = None
         if x0_mask is not None:
-            mask00 = x0_mask[:, :, None] & center0_mask[:, None, :]
-            mask11 = x1_mask[:, :, None] & center1_mask[:, None, :]
-            mask01 = x0_mask[:, :, None] & center1_mask[:, None, :]
-            mask10 = x1_mask[:, :, None] & center0_mask[:, None, :]
+            mask00 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+                      center0_mask.flatten(start_dim=1)[:, None, :])
+            mask11 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+                      center1_mask.flatten(start_dim=1)[:, None, :])
+            mask01 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+                      center1_mask.flatten(start_dim=1)[:, None, :])
+            mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+                      center0_mask.flatten(start_dim=1)[:, None, :])
 
         for merge_block, global_block, type in zip(
             self.merge_blocks, self.global_blocks, self.types):

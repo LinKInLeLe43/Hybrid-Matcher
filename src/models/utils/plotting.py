@@ -97,7 +97,7 @@ def plot_evaluation_figures(
         image0 = (255 * batch["image0"][b, 0]).round().int().cpu().numpy()
         image1 = (255 * batch["image1"][b, 0]).round().int().cpu().numpy()
 
-        mask = result["b_idxes"] == b
+        mask = result["idxes"][0] == b
         points0 = result["points0"][mask].cpu().numpy()
         points1 = result["points1"][mask].cpu().numpy()
         if batch.get("scale0") is not None:

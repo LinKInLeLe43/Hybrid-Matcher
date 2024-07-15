@@ -65,10 +65,12 @@ canonical_batch_size: ???
 
 canonical_learning_rate: ???
 
-canonical_warmup_steps_count: ???
+canonical_warmup_step_count: ???
 
 warmup_ratio: ???
 
-epipolar_threshold: ???
+end_point_thresholds: ???
+
+epipolar_thresholds: ???
 
 pose_thresholds: ???

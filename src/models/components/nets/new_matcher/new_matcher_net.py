@@ -43,16 +43,18 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
+        b_idxes = result["idxes"][0]
+
         points0 = self.scales[0] * result["points0"]
         if scale0 is not None:
-            points0 *= scale0[result["b_idxes"]]
+            points0 *= scale0[b_idxes]
 
         points1 = self.scales[0] * result["points1"]
         biases = result["fine_biases"][:len(points0)].detach()
         biases = self.scales[1] * (self.window_size // 2) * biases
         if scale1 is not None:
-            points1 *= scale1[result["b_idxes"]]
-            biases *= scale1[result["b_idxes"]]
+            points1 *= scale1[b_idxes]
+            biases *= scale1[b_idxes]
         points1 += biases
         result["points0"], result["points1"] = points0, points1
 
@@ -63,11 +65,8 @@ class NewMatcherNet(nn.Module):
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
         device = batch["image0"].device
-        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
-        center0_mask = batch.get("center0_mask")
-        center1_mask = batch.get("center1_mask")
-        if (mask0 is None) == (mask1 is not None):
-            raise ValueError("")
+        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
+        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
@@ -110,8 +109,8 @@ class NewMatcherNet(nn.Module):
 
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0, x1_mask=mask1,
-            center0_mask=center0_mask, center1_mask=center1_mask)
+            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0_8x,
+            x1_mask=mask1_8x, center0_mask=mask0_32x, center1_mask=mask1_32x)
         flow_mask = None
         result = {}
         if self.use_flow:
@@ -126,7 +125,7 @@ class NewMatcherNet(nn.Module):
                 result["flow1_to_0"] = flow1_to_0[b_idxes, j_idxes]
         result.update(self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow_mask=flow_mask,
-            mask0=mask0, mask1=mask1, gt_idxes=gt_idxes))
+            mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes))
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
             coarse_feature0, coarse_feature1, fine_feature0, fine_feature1,

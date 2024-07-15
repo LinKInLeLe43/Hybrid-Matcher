@@ -4,8 +4,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from src.models.components.nets.new_matcher import optimal_transport
-
 
 class CoarseMatching(nn.Module):
     def __init__(
@@ -122,8 +120,6 @@ class CoarseMatching(nn.Module):
         (h0, w0), (h1, w1) = size0, size1
 
         mask = (confidences > self.threshold).reshape(-1, h0, w0, h1, w1)
-        if mask0 is not None:
-            mask0, mask1 = mask0.reshape(-1, h0, w0), mask1.reshape(-1, h1, w1)
         h0s, w0s, h1s, w1s = self._remove_mask_margin(
             mask, mask0=mask0, mask1=mask1)
         mask = mask.reshape(-1, h0 * w0, h1 * w1)
@@ -144,7 +140,7 @@ class CoarseMatching(nn.Module):
         points0 = torch.stack([i_idxes % w0, i_idxes // w0], dim=1).float()
         points1 = torch.stack([j_idxes % w1, j_idxes // w1], dim=1).float()
         confidences = confidences[matching_idxes]
-        coarse_matching = {"b_idxes": b_idxes,
+        coarse_matching = {"idxes": matching_idxes,
                            "points0": points0,
                            "points1": points1,
                            "confidences": confidences,
@@ -169,7 +165,8 @@ class CoarseMatching(nn.Module):
             "nlc,nsc->nls", feature0 / c ** 0.5, feature1 / c ** 0.5)
         similarities /= self.temp
         if mask0 is not None:
-            mask = mask0[:, :, None] & mask1[:, None, :]
+            mask = (mask0.flatten(start_dim=1)[:, :, None] &
+                    mask1.flatten(start_dim=1)[:, None, :])
             similarities.masked_fill_(~mask, -1e9)
 
         if self.type == "dual_softmax":
@@ -177,14 +174,7 @@ class CoarseMatching(nn.Module):
             idxes1_to_0_confidences = F.softmax(similarities, dim=1)
             confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
         elif self.type == "optimal_transport":
-            confidences_with_bin = optimal_transport.log_optimal_transport(
-                similarities, self.ot_bin_score, self.ot_its_count).exp()
-            confidences = confidences_with_bin[:, :l, :s]
-            if not self.training and self.ot_filter_bin:
-                bin0_mask = confidences_with_bin.argmax(dim=2) == s
-                confidences.masked_fill_(bin0_mask[:, :l, None], 0.0)
-                bin1_mask = confidences_with_bin.argmax(dim=1) == l
-                confidences.masked_fill_(bin1_mask[:, None, :s], 0.0)
+            pass
         else:
             raise ValueError("")
 
@@ -192,7 +182,7 @@ class CoarseMatching(nn.Module):
             confidences, size0, size1, flow_mask=flow_mask, mask0=mask0,
             mask1=mask1, gt_idxes=gt_idxes)
         if self.type == "optimal_transport" and self.sparse:
-            coarse_matching["coarse_confidences"] = confidences_with_bin
+            pass
         else:
             coarse_matching["coarse_confidences"] = confidences
         return coarse_matching

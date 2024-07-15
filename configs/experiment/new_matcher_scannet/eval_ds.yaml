@@ -4,7 +4,7 @@ defaults:
   - new_matcher_scannet/default
   - _self_
 
-tags: ["eval-new_matcher-scannet-ds", "bs=8"]
+tags: ["eval-new_matcher-scannet-ds"]
 
 model:
   net:

@@ -4,7 +4,7 @@ defaults:
   - new_matcher_scannet/default
   - _self_
 
-tags: ["train-new_matcher-scannet-ds-dense", "bs=24"]
+tags: ["train-new_matcher-scannet-ds-dense"]
 
 model:
   net:
