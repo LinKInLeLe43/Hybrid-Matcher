@@ -78,25 +78,24 @@ class MatchingModule(pl.LightningModule):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         use_flow = getattr(self.net, "use_flow", False)
 
-        coarse_supervision = utils.create_coarse_supervision(
-            batch, self.net.scales[0], use_flow=use_flow)
+        supervision = utils.create_coarse_supervision(
+            batch, self.net.scales[0], return_coor=True, return_flow=use_flow)
 
-        result = self.net(batch, gt_idxes=coarse_supervision["gt_idxes"])
+        result = self.net(batch, gt_idxes=supervision["gt_idxes"])
 
-        fine_supervision = utils.create_fine_supervision(
-            coarse_supervision.pop("point0_to_1"),
-            coarse_supervision.pop("point1"), result["fine_idxes"],
-            self.net.scales[1], self.net.window_size,
-            scale1=batch.get("scale1"))
+        gt_biases = utils.compute_gt_biases(
+            supervision.pop("points0_to_1"), supervision.pop("points1"),
+            result["coarse_cls_idxes"], self.net.scales[-1], self.net.window_size)
 
         loss = self.loss(
-            result["coarse_confidences"], coarse_supervision["gt_mask"],
-            result["fine_biases"], fine_supervision["gt_biases"],
-            result["fine_stddevs"], flow0_to_1=result.get("flow0_to_1"),
-            flow1_to_0=result.get("flow1_to_0"),
-            gt_coor0_to_1=coarse_supervision.get("gt_coor0_to_1"),
-            gt_coor1_to_0=coarse_supervision.get("gt_coor1_to_0"),
-            mask0=batch.get("mask0"), mask1=batch.get("mask1"))
+            result["coarse_cls_heatmap"], supervision["gt_mask"],
+            result["fine_biases"], gt_biases, result["fine_stddevs"],
+            flows_with_uncertainties0=result.get("flows_with_uncertainties0"),
+            flows_with_uncertainties1=result.get("flows_with_uncertainties1"),
+            gt_flows0=supervision.get("gt_flows0"),
+            gt_flows1=supervision.get("gt_flows1"),
+            mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
+            mask1=batch.get(f"mask1_{self.net.scales[0]}x"))
         return result, loss
 
     def training_step(

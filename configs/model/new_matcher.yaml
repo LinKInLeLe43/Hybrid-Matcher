@@ -16,6 +16,7 @@ net:
     fold_sizes: [1, 1, 1]
   coarse_module:
     _target_: src.models.components.nets.new_matcher.GlobalCoC
+    scale: 4
     in_depth: ${model.net.local_coc.layer_depths.0}
     hidden_depth: 256
     heads_count: 8
@@ -24,8 +25,6 @@ net:
     flow_depth: 128
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
-    type: ???
-    sparse: ???
     use_flow: ${model.net.coarse_module.use_flow}
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
@@ -50,10 +49,10 @@ net:
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  coarse_type: "${model.net.coarse_matching.type}"
-  coarse_sparse: ${model.net.coarse_matching.sparse}
-  use_flow: ${model.net.coarse_module.use_flow}
-  flow_weight: 0.05
+  coarse_cls_sparse: ???
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
+  fine_reg_loss_weight: 1.0
 
 optimizer: ???
 

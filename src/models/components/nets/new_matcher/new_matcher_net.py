@@ -74,7 +74,7 @@ class NewMatcherNet(nn.Module):
             coors = K.create_meshgrid(h, w, device=device)
             coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
-            data = torch.cat([data, coors.repeat(2 * n, 1, 1, 1)], dim=1)
+            data = torch.cat([data, coors.expand(2 * n, -1, -1, -1)], dim=1)
             coarse_features, fine_features = self.backbone(data)
             centers, coarse_features = self.local_coc(coarse_features)
             centers0, centers1 = centers.chunk(2)
@@ -82,7 +82,7 @@ class NewMatcherNet(nn.Module):
             fine_feature0, fine_feature1 = fine_features.chunk(2)
             if self.use_flow:
                 pos_features = self.positional_encoding.get(
-                    coarse_features).repeat(2 * n, 1, 1, 1)
+                    coarse_features).expand(2 * n, -1, -1, -1)
                 pos_features = pos_features.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_features.chunk(2)
         else:
@@ -121,15 +121,15 @@ class NewMatcherNet(nn.Module):
             flow_mask = flow0_to_1_mask | flow1_to_0_mask.transpose(1, 2)
             if gt_idxes is not None:
                 b_idxes, i_idxes, j_idxes = gt_idxes
-                result["flow0_to_1"] = flow0_to_1[b_idxes, i_idxes]
-                result["flow1_to_0"] = flow1_to_0[b_idxes, j_idxes]
+                result["flows_with_uncertainties0"] = flow0_to_1[b_idxes, i_idxes]
+                result["flows_with_uncertainties1"] = flow1_to_0[b_idxes, j_idxes]
         result.update(self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow_mask=flow_mask,
             mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes))
 
         fine_feature0, fine_feature1 = self.fine_preprocess(
             coarse_feature0, coarse_feature1, fine_feature0, fine_feature1,
-            result["fine_idxes"], self.scales[0] // self.scales[1])
+            result["coarse_cls_idxes"], self.scales[0] // self.scales[1])
         if len(fine_feature0) != 0:
             fine_feature0, fine_feature1 = self.fine_module(
                 fine_feature0, fine_feature1)

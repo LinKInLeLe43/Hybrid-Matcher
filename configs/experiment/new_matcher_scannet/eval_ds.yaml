@@ -9,9 +9,9 @@ tags: ["eval-new_matcher-scannet-ds"]
 model:
   net:
     coarse_matching:
-      type: "dual_softmax"
-      sparse: true  # no effect for evaluation
-      margin_remove: 0
+      border_removal: 0
+  loss:
+    coarse_cls_sparse: true
 
 trainer:
   devices: 8

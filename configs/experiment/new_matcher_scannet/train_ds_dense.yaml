@@ -7,10 +7,8 @@ defaults:
 tags: ["train-new_matcher-scannet-ds-dense"]
 
 model:
-  net:
-    coarse_matching:
-      type: "dual_softmax"
-      sparse: false
+  loss:
+    coarse_cls_sparse: false
 
 trainer:
   devices: 8
