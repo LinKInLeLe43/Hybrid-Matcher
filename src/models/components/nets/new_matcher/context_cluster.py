@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .modules.attention import Attention
 
 class Mlp(nn.Module):
     def __init__(
@@ -186,62 +187,87 @@ class GlobalCluster(nn.Module):
         self.heads_count = heads_count
         self.use_efficient = use_efficient
 
+        self.point_proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
         self.anchor_proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.point_merge = nn.Linear(hidden_depth, in_depth, bias=bias)
         self.anchor_merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+
+        self.attention = Attention()
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(
         self,
+        point0: torch.Tensor,
+        point1: torch.Tensor,
         anchor0: torch.Tensor,
         anchor1: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        anchor_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         fc = self.heads_count
         n, l, c = anchor0.shape
         _, s, _ = anchor1.shape
         m = n * fc
         device = anchor0.device
 
-        anchor0, anchor1 = self.anchor_proj(anchor0), self.anchor_proj(anchor1)
-        anchor0 = einops.rearrange(anchor0, "n l (fc sc) -> (n fc) l sc", fc=fc)
-        anchor1 = einops.rearrange(anchor1, "n s (fc sc) -> (n fc) s sc", fc=fc)
+        anchor = torch.cat([anchor0, anchor1], dim=1)
+        anchor = self.anchor_proj(anchor)
+        anchor = einops.rearrange(anchor, "n k (fc sc) -> (n fc) k sc", fc=fc)
+        anchor0, anchor1 = anchor.split([l, s], dim=1)
         anchor0_sim, anchor0_value = anchor0.chunk(2, dim=2)
         anchor1_sim, anchor1_value = anchor1.chunk(2, dim=2)
 
         norm_anchor0_sim = F.normalize(anchor0_sim, dim=2)
         norm_anchor1_sim = F.normalize(anchor1_sim, dim=2)
-        similarities = torch.einsum(
+        similarity = torch.einsum(
             "mlc,msc->mls", norm_anchor0_sim, norm_anchor1_sim)
-        similarities = self.alpha * similarities + self.beta
-        if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
-        max_sim_values1_to_0, max_sim_idxes1_to_0 = similarities.max(dim=2)
-        max_sim_values0_to_1, max_sim_idxes0_to_1 = similarities.max(dim=1)
+        similarity = self.alpha * similarity + self.beta
+        if anchor_mask is not None:
+            anchor_mask = einops.repeat(
+                anchor_mask, "n l s -> (n fc) l s", fc=fc)
+            similarity.masked_fill_(~anchor_mask, float("-inf"))
+        similarity.sigmoid_()
+        max_sim_value1_to_0, max_sim_idx1_to_0 = similarity.max(dim=2)
+        max_sim_value0_to_1, max_sim_idx0_to_1 = similarity.max(dim=1)
 
         if self.use_efficient:
-            max_sim_values = torch.cat([max_sim_values1_to_0,
-                                        max_sim_values0_to_1])
+            max_sim_value = torch.cat([max_sim_value1_to_0,
+                                       max_sim_value0_to_1])
             range = torch.arange(m, device=device)[:, None]
-            max_sim_idxes = torch.cat([max_sim_idxes1_to_0 + s * range,
-                                       max_sim_idxes0_to_1 + s * m + l * range])
+            max_sim_idx = torch.cat([max_sim_idx1_to_0 + s * range,
+                                     max_sim_idx0_to_1 + s * m + l * range])
             anchor_value = torch.cat([anchor1_value, anchor0_value])
-            max_sim_values, max_sim_idxes, anchor_value = map(
+            max_sim_value, max_sim_idx, anchor_value = map(
                 lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, anchor_value))
+                (max_sim_value, max_sim_idx, anchor_value))
 
-            anchor_message = (max_sim_values[:, None] *
-                              anchor_value.index_select(0, max_sim_idxes))
+            anchor_message = (max_sim_value[:, None] *
+                              anchor_value.index_select(0, max_sim_idx))
             anchor_message = einops.rearrange(
                 anchor_message, "(n fc k) sc -> n k (fc sc)", n=n, fc=fc)
             anchor_message = self.anchor_merge(anchor_message)
+
+            point = torch.cat([point0, point1], dim=1)
+            point = self.point_proj(point)
+            point = einops.rearrange(
+                point, "n k ww (fc sc) -> (n fc k) ww sc", fc=fc)
+            point_q, _ = point.chunk(2, dim=2)
+            point_k, point_v = (torch.cat([point[m * l:], point[:m * l]])
+                                .index_select(0, max_sim_idx).chunk(2, dim=2))
+            point_message = (max_sim_value[:, None, None] *
+                             self.attention(point_q, point_k, point_v))
+            point_message = einops.rearrange(
+                point_message, "(n fc k) ww sc -> n k ww (fc sc)", n=n, fc=fc)
+            point_message = self.point_merge(point_message)
         else:
             raise NotImplementedError("")
-        dispatched1_to_0, dispatched0_to_1 = anchor_message.split([l, s], dim=1)
-        return dispatched1_to_0, dispatched0_to_1
+        anchor_message1_to_0, anchor_message0_to_1 = anchor_message.split(
+            [l, s], dim=1)
+        point_message1_to_0, point_message0_to_1 = point_message.split(
+            [l, s], dim=1)
+        return (point_message1_to_0, point_message0_to_1,
+                anchor_message1_to_0, anchor_message0_to_1)
 
 
 class LocalClusterBlock(nn.Module):
@@ -324,54 +350,64 @@ class GlobalClusterBlock(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        center0: torch.Tensor,
-        center1: torch.Tensor,
+        point0: torch.Tensor,
+        point1: torch.Tensor,
+        anchor0: torch.Tensor,
+        anchor1: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
         flow0: Optional[torch.Tensor] = None,
-        mask: Optional[torch.Tensor] = None
+        anchor_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         new_flow0 = None
         if self.use_flow:
             if flow0 is None:
                 raise ValueError("")
-            c0, c1 = x0.shape[2], flow0.shape[2]
+            c0, c1 = point0.shape[2], flow0.shape[2]
 
-        f_center0, f_center1 = map(
-            lambda x: x.flatten(start_dim=2).transpose(1, 2),
-            (center0, center1))
-        new_x0, new_x1 = self.cluster(f_center0, f_center1, mask=mask)
-        new_x0 = new_x0.transpose(1, 2).unflatten(2, (size0[0] // 4, size0[1] // 4))
-        new_x1 = new_x1.transpose(1, 2).unflatten(2, (size1[0] // 4, size1[1] // 4))
-        new_x0 = F.interpolate(new_x0, scale_factor=4.0, mode="bilinear")
-        new_x1 = F.interpolate(new_x1, scale_factor=4.0, mode="bilinear")
-        new_x0 = new_x0.permute(0, 2, 3, 1)
-        new_x1 = new_x1.permute(0, 2, 3, 1)
-        new_x0 = self.norm0(new_x0)
-        new_x1 = self.norm0(new_x1)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
-        new_x1 = new_x1.permute(0, 3, 1, 2)
+        f_point0 = einops.rearrange(
+            point0, "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c", sh=4, sw=4)
+        f_point1 = einops.rearrange(
+            point1, "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c", sh=4, sw=4)
+        f_anchor0 = anchor0.flatten(start_dim=2).transpose(1, 2)
+        f_anchor1 = anchor1.flatten(start_dim=2).transpose(1, 2)
+        new_point0, new_point1, new_anchor0, new_anchor1 = self.cluster(
+            f_point0, f_point1, f_anchor0, f_anchor1, anchor_mask=anchor_mask)
+        new_point0 = einops.rearrange(
+            new_point0, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)", sh=4, fh=size0[0] // 4)
+        new_point1 = einops.rearrange(
+            new_point1, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)", sh=4, fh=size1[0] // 4)
+        new_anchor0 = new_anchor0.transpose(1, 2).unflatten(2, (size0[0] // 4, size0[1] // 4))
+        new_anchor1 = new_anchor1.transpose(1, 2).unflatten(2, (size1[0] // 4, size1[1] // 4))
+        new_anchor0 = F.interpolate(new_anchor0, scale_factor=4.0, mode="bilinear")
+        new_anchor1 = F.interpolate(new_anchor1, scale_factor=4.0, mode="bilinear")
+        message0 = new_point0 + new_anchor0
+        message1 = new_point1 + new_anchor1
+        message0 = message0.permute(0, 2, 3, 1)
+        message1 = message1.permute(0, 2, 3, 1)
+        message0 = self.norm0(message0)
+        message1 = self.norm0(message1)
+        message0 = message0.permute(0, 3, 1, 2)
+        message1 = message1.permute(0, 3, 1, 2)
 
         if self.use_flow:
-            x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0, new_x0], dim=1)
-        new_x1 = torch.cat([x1, new_x1], dim=1)
-        new_x0 = self.mlp3x3(new_x0)
-        new_x1 = self.mlp3x3(new_x1)
-        new_x0 = new_x0.permute(0, 2, 3, 1)
-        new_x1 = new_x1.permute(0, 2, 3, 1)
-        new_x0 = self.norm1(new_x0)
-        new_x1 = self.norm1(new_x1)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
-        new_x1 = new_x1.permute(0, 3, 1, 2)
+            point0 = torch.cat([point0, flow0], dim=2)
+        message0 = torch.cat([point0, message0], dim=1)
+        message1 = torch.cat([point1, message1], dim=1)
+        message0 = self.mlp3x3(message0)
+        message1 = self.mlp3x3(message1)
+        message0 = message0.permute(0, 2, 3, 1)
+        message1 = message1.permute(0, 2, 3, 1)
+        message0 = self.norm1(message0)
+        message1 = self.norm1(message1)
+        message0 = message0.permute(0, 3, 1, 2)
+        message1 = message1.permute(0, 3, 1, 2)
 
-        new_x0 += x0
-        new_x1 += x1
+        message0 += point0
+        message1 += point1
         if self.use_flow:
-            new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
-        return new_x0, new_x1
+            new_point0, new_flow0 = new_point0.split([c0, c1], dim=2)
+        return message0, message1
 
 
 class LocalCoC(nn.Module):
@@ -607,7 +643,7 @@ class GlobalCoC(nn.Module):
             elif type == "cross":
                 x0, x1 = global_block(
                     x0, x1, center0, center1, size0, size1, flow0=flow0,
-                    mask=mask)
+                    anchor_mask=mask)
                 # x0, flow0 = global_block(
                 #     x0, center1, size0, flow0=flow0, mask=mask01)
                 # x1, flow1 = global_block(
