@@ -537,15 +537,13 @@ class MergeBlock(nn.Module):
         center: torch.Tensor,
         size: torch.Size
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear",
-            align_corners=True)
-        new_x = torch.cat([x, up_center], dim=1)
-        new_x = new_x.permute(0, 2, 3, 1)
-        new_x = self.mlp(new_x)
-        new_x = self.norm(new_x)
-        new_x = new_x.permute(0, 3, 1, 2).contiguous()
-        new_center = self.pooling(new_x)
+        message = torch.cat([self.pooling(x), center], dim=1)
+        message = message.permute(0, 2, 3, 1)
+        message = self.mlp(message)
+        message = self.norm(message)
+        new_center = message.permute(0, 3, 1, 2).contiguous()
+        new_x = F.interpolate(
+            new_center, scale_factor=self.scale, mode="bilinear")
         new_x = x + new_x
         new_center = center + new_center
         return new_x, new_center
@@ -630,7 +628,7 @@ class GlobalCoC(nn.Module):
             mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
                       center0_mask.flatten(start_dim=1)[:, None, :])
             mask = (center0_mask.flatten(start_dim=1)[:, :, None] &
-                      center1_mask.flatten(start_dim=1)[:, None, :])
+                    center1_mask.flatten(start_dim=1)[:, None, :])
 
         for merge_block, global_block, type in zip(
             self.merge_blocks, self.global_blocks, self.types):
