@@ -103,10 +103,6 @@ class NewMatcherNet(nn.Module):
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
-        coarse_feature0, coarse_feature1, centers0, centers1 = map(
-            lambda x: x.flatten(start_dim=2).transpose(1, 2),
-            (coarse_feature0, coarse_feature1, centers0, centers1))
-
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
             pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0_8x,
@@ -123,6 +119,10 @@ class NewMatcherNet(nn.Module):
                 b_idxes, i_idxes, j_idxes = gt_idxes
                 result["flows_with_uncertainties0"] = flow0_to_1[b_idxes, i_idxes]
                 result["flows_with_uncertainties1"] = flow1_to_0[b_idxes, j_idxes]
+
+        coarse_feature0 = coarse_feature0.flatten(start_dim=2).transpose(1, 2)
+        coarse_feature1 = coarse_feature1.flatten(start_dim=2).transpose(1, 2)
+
         result.update(self.coarse_matching(
             coarse_feature0, coarse_feature1, size0, size1, flow_mask=flow_mask,
             mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes))

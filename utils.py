@@ -8,7 +8,8 @@ from torch import nn
 def get_outdoor_hybrid_matcher(overrides: List[str]) -> nn.Module:
     with hydra.initialize(version_base="1.3", config_path="./configs"):
         overrides = overrides + [
-            "experiment=new_matcher_megadepth/eval_ds"]
+            "experiment=new_matcher_megadepth/eval_ds",
+            "model.net.coarse_module.use_flow=false"]
         cfg = hydra.compose(config_name="eval", overrides=overrides)
         net = hydra.utils.instantiate(cfg.model).eval()
         # net.load_state_dict(torch.load("weights/outdoor.ckpt")["state_dict"])
