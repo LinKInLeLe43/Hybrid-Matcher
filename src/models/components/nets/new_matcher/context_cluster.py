@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from .modules.attention import Attention
+from .positional_encoding import RoPESinePositionalEncoding
 
 class Mlp(nn.Module):
     def __init__(
@@ -344,7 +345,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(
+        self.mlp = Mlp(
             in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
@@ -387,17 +388,13 @@ class GlobalClusterBlock(nn.Module):
         message1 = message1.permute(0, 2, 3, 1)
         message0 = self.norm0(message0)
         message1 = self.norm0(message1)
-        message0 = message0.permute(0, 3, 1, 2)
-        message1 = message1.permute(0, 3, 1, 2)
 
         if self.use_flow:
             point0 = torch.cat([point0, flow0], dim=2)
-        message0 = torch.cat([point0, message0], dim=1)
-        message1 = torch.cat([point1, message1], dim=1)
-        message0 = self.mlp3x3(message0)
-        message1 = self.mlp3x3(message1)
-        message0 = message0.permute(0, 2, 3, 1)
-        message1 = message1.permute(0, 2, 3, 1)
+        message0 = torch.cat([point0.permute(0, 2, 3, 1), message0], dim=3)
+        message1 = torch.cat([point1.permute(0, 2, 3, 1), message1], dim=3)
+        message0 = self.mlp(message0)
+        message1 = self.mlp(message1)
         message0 = self.norm1(message0)
         message1 = self.norm1(message1)
         message0 = message0.permute(0, 3, 1, 2)
@@ -521,27 +518,53 @@ class MergeBlock(nn.Module):
         self,
         scale: int,
         depth: int,
+        head_count: int,
         bias: bool = True,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
         self.scale = scale
+        self.head_count = head_count
+
+        self.pooling = nn.AvgPool2d(scale, stride=scale)
+        self.pe = RoPESinePositionalEncoding(depth)
+        self.proj = nn.Linear(depth, 3 * depth, bias=False)
+        self.attention = Attention()
+        self.merge = nn.Linear(depth, depth, bias=False)
+        self.norm0 = nn.LayerNorm(depth)
 
         self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
-        self.norm = nn.LayerNorm(depth)
-        self.pooling = nn.AvgPool2d(scale, stride=scale)
+        self.norm1 = nn.LayerNorm(depth)
 
     def forward(
         self,
         x: torch.Tensor,
         center: torch.Tensor,
-        size: torch.Size
+        size: torch.Size,
+        center_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        message = torch.cat([self.pooling(x), center], dim=1)
-        message = message.permute(0, 2, 3, 1)
+        fc = self.head_count
+
+        point = (self.pooling(x) + center).permute(0, 2, 3, 1)
+        q, k, v = self.proj(point).chunk(3, dim=3)
+        q, k = self.pe(q), self.pe(k)
+        q, k, v = map(
+            lambda x: einops.rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=fc),
+            (q, k, v))
+        mask = None
+        if center_mask is not None:
+            mask = center_mask.flatten(start_dim=1)
+        message = self.attention(q, k, v, q_mask=mask, kv_mask=mask)
+        message = message.transpose(1, 2).flatten(start_dim=2)
+        message = self.merge(message)
+        message = self.norm0(message)
+        message = message.unflatten(
+            1, (size[0] // self.scale, size[1] // self.scale))
+
+        message = torch.cat([point, message], dim=3)
         message = self.mlp(message)
-        message = self.norm(message)
-        new_center = message.permute(0, 3, 1, 2).contiguous()
+        message = self.norm1(message)
+        new_center = message.permute(0, 3, 1, 2)
         new_x = F.interpolate(
             new_center, scale_factor=self.scale, mode="bilinear")
         new_x = x + new_x
@@ -570,7 +593,7 @@ class GlobalCoC(nn.Module):
                 raise ValueError("")
             self.flow_proj = nn.Linear(in_depth, flow_depth)
 
-        merge_block = MergeBlock(scale, in_depth, bias=bias)
+        merge_block = MergeBlock(scale, in_depth, heads_count, bias=bias)
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in types])
 
@@ -632,8 +655,8 @@ class GlobalCoC(nn.Module):
 
         for merge_block, global_block, type in zip(
             self.merge_blocks, self.global_blocks, self.types):
-            x0, center0 = merge_block(x0, center0, size0)
-            x1, center1 = merge_block(x1, center1, size1)
+            x0, center0 = merge_block(x0, center0, size0, center_mask=center0_mask)
+            x1, center1 = merge_block(x1, center1, size1, center_mask=center1_mask)
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)

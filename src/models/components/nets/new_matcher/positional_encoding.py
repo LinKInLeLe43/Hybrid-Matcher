@@ -61,6 +61,41 @@ class SinePositionalEncoding(nn.Module):
         return out, positional_encoding
 
 
+class RoPESinePositionalEncoding(nn.Module):
+    def __init__(self, depth: int) -> None:
+        super().__init__()
+        max_shape = 256, 256
+
+        factor = torch.arange(depth // 4)[None, None, :]
+        factor = (-math.log(10000.0) / (depth // 4) * factor).exp()
+
+        x = factor * torch.ones(max_shape).cumsum(1)[:, :, None]
+        y = factor * torch.ones(max_shape).cumsum(0)[:, :, None]
+
+        sin = torch.zeros((*max_shape, depth // 2))
+        cos = torch.zeros((*max_shape, depth // 2))
+        sin[..., 0::2] = y.sin()
+        sin[..., 1::2] = x.sin()
+        cos[..., 0::2] = y.cos()
+        cos[..., 1::2] = x.cos()
+
+        sin = sin.repeat_interleave(2, dim=2)
+        cos = cos.repeat_interleave(2, dim=2)
+
+        self.register_buffer("sin", sin, persistent=False)
+        self.register_buffer("cos", cos, persistent=False)
+
+    def rotate_half(self, x:torch.Tensor):
+        x = x.unflatten(-1, (-1, 2))
+        x1, x2 = x.unbind(dim=-1)
+        return torch.stack((-x2, x1), dim=-1).flatten(start_dim=-2)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, h, w, _ = x.shape
+        out = self.cos[:h, :w] * x + self.sin[:h, :w] * self.rotate_half(x)
+        return out
+
+
 class LearnableFourierPositionalEncoding(nn.Module):
     def __init__(
         self,

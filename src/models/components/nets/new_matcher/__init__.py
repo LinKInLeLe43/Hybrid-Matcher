@@ -8,5 +8,6 @@ from .fine_preprocess import FinePreprocess
 from .flow_decoder import FlowDecoder
 from .new_matcher_net import NewMatcherNet
 from .positional_encoding import SinePositionalEncoding
+from .positional_encoding import RoPESinePositionalEncoding
 from .positional_encoding import LearnableFourierPositionalEncoding
 from .transformer import LoFTR

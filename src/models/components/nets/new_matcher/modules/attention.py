@@ -55,7 +55,7 @@ class Attention(nn.Module):
             if q_mask is not None and kv_mask is not None:
                 mask = q_mask[:, None, :, None] & kv_mask[:, None, None, :]
                 mask = (torch.zeros_like(mask, dtype=q.dtype)
-                        .masked_fill(~mask, float("-inf")))
+                        .masked_fill(~mask, -1e9))
 
             if attn_mask is not None:
                 mask = attn_mask if mask is None else mask + attn_mask

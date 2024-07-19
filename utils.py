@@ -21,10 +21,10 @@ if __name__ == "__main__":
     data = {
         "image0": torch.rand((1, 1, 480, 640)).cuda(),
         "image1": torch.rand((1, 1, 480, 640)).cuda(),
-        "mask0_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask1_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask0_32x": torch.rand((1, 15, 20)).bool().cuda(),
-        "mask1_32x": torch.rand((1, 15, 20)).bool().cuda()}
+        "mask0_8x": (torch.randn((1, 60, 80)) > 0).cuda(),
+        "mask1_8x": (torch.randn((1, 60, 80)) > 0).cuda(),
+        "mask0_32x": (torch.randn((1, 15, 20)) > 0).cuda(),
+        "mask1_32x": (torch.randn((1, 15, 20)) > 0).cuda()}
     with torch.no_grad():
         r = net(data)
     a = 1
