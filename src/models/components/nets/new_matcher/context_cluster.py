@@ -343,10 +343,10 @@ class GlobalClusterBlock(nn.Module):
 
         self.cluster = GlobalCluster(
             in_depth, hidden_depth, heads_count, bias=bias)
-        self.norm0 = nn.LayerNorm(in_depth)
+        self.norm0 = nn.LayerNorm(2 * in_depth)
 
         self.mlp = Mlp(
-            in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
+            2 * in_depth + out_depth, 2 * in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
     def forward(
@@ -382,8 +382,8 @@ class GlobalClusterBlock(nn.Module):
         new_anchor1 = new_anchor1.transpose(1, 2).unflatten(2, (size1[0] // 4, size1[1] // 4))
         new_anchor0 = F.interpolate(new_anchor0, scale_factor=4.0, mode="bilinear")
         new_anchor1 = F.interpolate(new_anchor1, scale_factor=4.0, mode="bilinear")
-        message0 = new_point0 + new_anchor0
-        message1 = new_point1 + new_anchor1
+        message0 = torch.cat([new_point0, new_anchor0], dim=1)
+        message1 = torch.cat([new_point1, new_anchor1], dim=1)
         message0 = message0.permute(0, 2, 3, 1)
         message1 = message1.permute(0, 2, 3, 1)
         message0 = self.norm0(message0)
