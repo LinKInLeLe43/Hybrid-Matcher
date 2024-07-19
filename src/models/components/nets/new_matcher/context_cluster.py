@@ -397,8 +397,8 @@ class GlobalClusterBlock(nn.Module):
         message1 = self.mlp(message1)
         message0 = self.norm1(message0)
         message1 = self.norm1(message1)
-        message0 = message0.permute(0, 3, 1, 2)
-        message1 = message1.permute(0, 3, 1, 2)
+        message0 = message0.permute(0, 3, 1, 2).contiguous()
+        message1 = message1.permute(0, 3, 1, 2).contiguous()
 
         message0 += point0
         message1 += point1
@@ -526,15 +526,17 @@ class MergeBlock(nn.Module):
         self.scale = scale
         self.head_count = head_count
 
-        self.pooling = nn.AvgPool2d(scale, stride=scale)
+        self.pooling = nn.Conv2d(
+            depth, depth, scale, stride=scale, groups=depth, bias=False)
         self.pe = RoPESinePositionalEncoding(depth)
         self.proj = nn.Linear(depth, 3 * depth, bias=False)
         self.attention = Attention()
         self.merge = nn.Linear(depth, depth, bias=False)
         self.norm0 = nn.LayerNorm(depth)
 
-        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
-        self.norm1 = nn.LayerNorm(depth)
+        self.mlp = Mlp(
+            3 * depth, 3 * depth, 2 * depth, bias=bias, dropout=dropout)
+        self.norm1 = nn.LayerNorm(2 * depth)
 
     def forward(
         self,
@@ -545,8 +547,8 @@ class MergeBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         fc = self.head_count
 
-        point = (self.pooling(x) + center).permute(0, 2, 3, 1)
-        q, k, v = self.proj(point).chunk(3, dim=3)
+        down_x = self.pooling(x).permute(0, 2, 3, 1)
+        q, k, v = self.proj(down_x).chunk(3, dim=3)
         q, k = self.pe(q), self.pe(k)
         q, k, v = map(
             lambda x: einops.rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=fc),
@@ -555,18 +557,17 @@ class MergeBlock(nn.Module):
         if center_mask is not None:
             mask = center_mask.flatten(start_dim=1)
         message = self.attention(q, k, v, q_mask=mask, kv_mask=mask)
-        message = message.transpose(1, 2).flatten(start_dim=2)
+        message = einops.rearrange(
+            message, "n fc (h w) sc -> n h w (fc sc)", h=size[0] // self.scale)
         message = self.merge(message)
         message = self.norm0(message)
-        message = message.unflatten(
-            1, (size[0] // self.scale, size[1] // self.scale))
 
-        message = torch.cat([point, message], dim=3)
+        message = torch.cat([down_x, center.permute(0, 2, 3, 1), message], dim=3)
         message = self.mlp(message)
         message = self.norm1(message)
-        new_center = message.permute(0, 3, 1, 2)
+        new_x, new_center = message.permute(0, 3, 1, 2).chunk(2, dim=1)
         new_x = F.interpolate(
-            new_center, scale_factor=self.scale, mode="bilinear")
+            new_x, scale_factor=self.scale, mode="bilinear")
         new_x = x + new_x
         new_center = center + new_center
         return new_x, new_center
