@@ -186,6 +186,8 @@ class GlobalCluster(nn.Module):
         self.heads_count = heads_count
         self.use_efficient = use_efficient
 
+        self.down0 = nn.Conv2d(
+            in_depth, in_depth, 4, stride=4, groups=in_depth, bias=bias)
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
         self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
         self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
@@ -200,11 +202,12 @@ class GlobalCluster(nn.Module):
         mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         fc = self.heads_count
-        n, l, c = x0.shape
+        n, c, h, w = x0.shape
         _, s, _ = center1.shape
-        m = n * fc
+        m, l = n * fc, s
         device = x0.device
 
+        x0 = self.down0(x0).flatten(start_dim=2).transpose(1, 2)
         x0_point, center1 = self.proj0(x0), self.proj1(center1)
         x0_point = einops.rearrange(
             x0_point, "n l (fc sc) -> (n fc) l sc", fc=fc)
@@ -236,6 +239,9 @@ class GlobalCluster(nn.Module):
             dispatched = self.merge(dispatched)
         else:
             raise NotImplementedError("")
+        dispatched = dispatched.transpose(1, 2).unflatten(2, (h // 4, w // 4))
+        dispatched = F.interpolate(
+            dispatched, scale_factor=4.0, mode="bilinear")
         return dispatched
 
 
@@ -331,18 +337,20 @@ class GlobalClusterBlock(nn.Module):
                 raise ValueError("")
             c0, c1 = x0.shape[2], flow0.shape[2]
 
-        f_x0 = x0.flatten(start_dim=2).transpose(1, 2)
         f_center1 = center1.flatten(start_dim=2).transpose(1, 2)
-        new_x0 = self.cluster(f_x0, f_center1, mask=mask)
+        new_x0 = self.cluster(x0, f_center1, mask=mask)
+        new_x0 = new_x0.permute(0, 2, 3, 1)
         new_x0 = self.norm0(new_x0)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([f_x0, new_x0], dim=2)
+        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 = new_x0.permute(0, 3, 1, 2)
         new_x0 = self.mlp3x3(new_x0, size=size0)
+        new_x0 = new_x0.permute(0, 2, 3, 1)
         new_x0 = self.norm1(new_x0)
 
-        new_x0 = new_x0.transpose(1, 2).unflatten(2, size0)
+        new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
         new_x0 += x0
         if self.use_flow:
             new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
@@ -564,9 +572,9 @@ class GlobalCoC(nn.Module):
                       center0_mask.flatten(start_dim=1)[:, None, :])
             mask11 = (x1_mask.flatten(start_dim=1)[:, :, None] &
                       center1_mask.flatten(start_dim=1)[:, None, :])
-            mask01 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+            mask01 = (center0_mask.flatten(start_dim=1)[:, :, None] &
                       center1_mask.flatten(start_dim=1)[:, None, :])
-            mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+            mask10 = (center1_mask.flatten(start_dim=1)[:, :, None] &
                       center0_mask.flatten(start_dim=1)[:, None, :])
 
         for merge_block, global_block, type in zip(
