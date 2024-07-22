@@ -20,11 +20,7 @@ if __name__ == "__main__":
     net = get_outdoor_hybrid_matcher([]).cuda()
     data = {
         "image0": torch.rand((1, 1, 480, 640)).cuda(),
-        "image1": torch.rand((1, 1, 480, 640)).cuda(),
-        "mask0_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask1_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask0_32x": torch.rand((1, 15, 20)).bool().cuda(),
-        "mask1_32x": torch.rand((1, 15, 20)).bool().cuda()}
+        "image1": torch.rand((1, 1, 480, 640)).cuda()}
     with torch.no_grad():
         r = net(data)
     a = 1
