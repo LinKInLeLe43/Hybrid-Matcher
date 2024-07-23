@@ -188,7 +188,6 @@ class GlobalCluster(nn.Module):
         self.heads_count = heads_count
         self.use_efficient = use_efficient
 
-        self.anchor_down = nn.AdaptiveAvgPool2d((6, 8))
         self.point0_proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
         self.anchor1_proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
 
@@ -216,13 +215,13 @@ class GlobalCluster(nn.Module):
         fc = self.heads_count
         n, c, h0, w0 = point0.shape
         _, _, h1, w1 = point1.shape
-        m, l, s, k = n * fc, h0 * w0, h1 * w1, 6 * 8
+        _, k, _ = anchor1.shape
+        m, l, s = n * fc, h0 * w0, h1 * w1
         device = point0.device
 
         point0_sim = self.point0_proj0(
             point0.flatten(start_dim=2).transpose(1, 2))
-        anchor1 = self.anchor1_proj(
-            self.anchor_down(anchor1).flatten(start_dim=2).transpose(1, 2))
+        anchor1 = self.anchor1_proj(anchor1)
         point0_sim = einops.rearrange(
             point0_sim, "n l (fc sc) -> (n fc) l sc", fc=fc)
         anchor1_sim, anchor1_value = einops.rearrange(
@@ -231,10 +230,10 @@ class GlobalCluster(nn.Module):
         norm_point0_sim = F.normalize(point0_sim, dim=2)
         norm_anchor1_sim = F.normalize(anchor1_sim, dim=2)
         similarity = torch.einsum(
-            "mlc,msc->mls", norm_point0_sim, norm_anchor1_sim)
+            "mlc,mkc->mlk", norm_point0_sim, norm_anchor1_sim)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
-            mask = einops.repeat(mask, "n l k -> (n fc) l k", fc=fc)
+            mask = einops.repeat(mask, "n l -> (n fc) l k", fc=fc, k=k)
             similarity.masked_fill_(~mask, float("-inf"))
         similarity.sigmoid_()
         max_sim_value, max_sim_idx = similarity.max(dim=2)
@@ -495,34 +494,68 @@ class MergeBlock(nn.Module):
         self,
         scale: int,
         depth: int,
+        head_count: int,
         bias: bool = True,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
         self.scale = scale
+        self.head_count = head_count
+        self.center_proj = nn.Linear(depth, 3 * depth, bias=bias)
+        self.anchor_proj = nn.Linear(depth, depth, bias=bias)
+        self.attention = Attention()
+        self.merge = nn.Linear(depth, depth, bias=bias)
+        self.norm0_0 = nn.LayerNorm(depth)
+        self.mlp0 = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
+        self.norm0_1 = nn.LayerNorm(depth)
 
-        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
-        self.norm = nn.LayerNorm(depth)
+        self.mlp1 = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
+        self.norm1 = nn.LayerNorm(depth)
         self.pooling = nn.AvgPool2d(scale, stride=scale)
 
     def forward(
         self,
-        x: torch.Tensor,
+        point: torch.Tensor,
         center: torch.Tensor,
-        size: torch.Size
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear",
-            align_corners=True)
-        new_x = torch.cat([x, up_center], dim=1)
-        new_x = new_x.permute(0, 2, 3, 1)
-        new_x = self.mlp(new_x)
-        new_x = self.norm(new_x)
-        new_x = new_x.permute(0, 3, 1, 2).contiguous()
-        new_center = self.pooling(new_x)
-        new_x = x + new_x
-        new_center = center + new_center
-        return new_x, new_center
+        anchor: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        fc = self.head_count
+        n, _, h, w = center.shape
+        l = h * w
+
+        x_center = center.flatten(start_dim=2).transpose(1, 2)
+        qkv_center = self.center_proj(x_center)
+        q_center, k, v = (qkv_center.unflatten(2, (fc, -1)).transpose(1, 2)
+                          .chunk(3, dim=3))
+
+        x_anchor = anchor[None].expand(n, -1, -1)
+        q_anchor = self.anchor_proj(x_anchor)
+        q_anchor = q_anchor.unflatten(2, (fc, -1)).transpose(1, 2)
+
+        x = torch.cat([x_center, x_anchor], dim=1)
+        q = torch.cat([q_center, q_anchor], dim=2)
+
+        message = self.attention(q, k, v).transpose(1, 2).flatten(start_dim=2)
+        message = self.merge(message)
+        message = self.norm0_0(message)
+
+        message = torch.cat([x, message], dim=2)
+        message = self.mlp0(message)
+        message = self.norm0_1(message)
+        x = x + message
+
+        center, anchor = x[:, :l], x[:, l:]
+        center = center.transpose(1, 2).unflatten(2, (h, w))
+
+        x_center = F.interpolate(
+            center, scale_factor=self.scale, mode="bilinear")
+        message = torch.cat([point, x_center], dim=1).permute(0, 2, 3, 1)
+        message = self.mlp1(message)
+        message = self.norm1(message).permute(0, 3, 1, 2).contiguous()
+
+        point = point + message
+        center = center + self.pooling(message)
+        return point, center, anchor
 
 
 class GlobalCoC(nn.Module):
@@ -546,7 +579,7 @@ class GlobalCoC(nn.Module):
                 raise ValueError("")
             self.flow_proj = nn.Linear(in_depth, flow_depth)
 
-        merge_block = MergeBlock(scale, in_depth, bias=bias)
+        merge_block = MergeBlock(scale, in_depth, heads_count, bias=bias)
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in types])
 
@@ -562,6 +595,8 @@ class GlobalCoC(nn.Module):
         #     layer_scale_value=layer_scale_value, dropout=dropout)
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
+
+        self.anchors = nn.Parameter(torch.randn(32, in_depth) / in_depth ** 0.5)
 
         # TODO: check weight init
         for m in self.modules():
@@ -606,17 +641,17 @@ class GlobalCoC(nn.Module):
 
         for merge_block, global_block, type in zip(
             self.merge_blocks, self.global_blocks, self.types):
-            x0, center0 = merge_block(x0, center0, size0)
-            x1, center1 = merge_block(x1, center1, size1)
+            x0, center0, anchor0 = merge_block(x0, center0, self.anchors)
+            x1, center1, anchor1 = merge_block(x1, center1, self.anchors)
             if type == "self":
                 # x0 = global_block(x0, center0, mask=mask00)
                 # x1 = global_block(x1, center1, mask=mask11)
                 pass
             elif type == "cross":
                 x0, flow0 = global_block(
-                    x0, x1, center1, size0, flow0=flow0, mask=mask01)
+                    x0, x1, anchor1, size0, flow0=flow0, mask=mask01)
                 x1, flow1 = global_block(
-                    x1, x0, center0, size1, flow0=flow1, mask=mask10)
+                    x1, x0, anchor0, size1, flow0=flow1, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
                 # x0 = local_block(x0, mask=x0_mask)

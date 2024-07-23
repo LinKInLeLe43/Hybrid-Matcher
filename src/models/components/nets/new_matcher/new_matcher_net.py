@@ -25,6 +25,7 @@ class NewMatcherNet(nn.Module):
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
+        self.positional_encoding = positional_encoding
         self.fine_matching = fine_matching
 
         self.scales = backbone.scales
@@ -32,9 +33,8 @@ class NewMatcherNet(nn.Module):
 
         self.use_flow = coarse_module.use_flow
         if self.use_flow:
-            if positional_encoding is None or flow_decoder is None:
+            if flow_decoder is None:
                 raise ValueError("")
-            self.positional_encoding = positional_encoding
             self.flow_decoder = flow_decoder
 
     def _scale_points(
@@ -102,6 +102,9 @@ class NewMatcherNet(nn.Module):
             coarse_feature1, fine_feature1 = self.backbone(data)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
+
+        coarse_feature0, _ = self.positional_encoding(coarse_feature0)
+        coarse_feature1, _ = self.positional_encoding(coarse_feature1)
 
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
             coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
