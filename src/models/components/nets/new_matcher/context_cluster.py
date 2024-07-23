@@ -501,17 +501,22 @@ class MergeBlock(nn.Module):
         super().__init__()
         self.scale = scale
         self.head_count = head_count
-        self.center_proj = nn.Linear(depth, 3 * depth, bias=bias)
-        self.anchor_proj = nn.Linear(depth, depth, bias=bias)
+
+        self.pooling = nn.AvgPool2d(scale, stride=scale)
         self.attention = Attention()
-        self.merge = nn.Linear(depth, depth, bias=bias)
+
+        self.point_proj = nn.Linear(depth, 3 * depth, bias=bias)
+        self.merge0 = nn.Linear(depth, depth, bias=bias)
         self.norm0_0 = nn.LayerNorm(depth)
-        self.mlp0 = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
+        self.mlp0 = Mlp(3 * depth, 3 * depth, depth, bias=bias)
         self.norm0_1 = nn.LayerNorm(depth)
 
-        self.mlp1 = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
-        self.norm1 = nn.LayerNorm(depth)
-        self.pooling = nn.AvgPool2d(scale, stride=scale)
+        self.center_proj = nn.Linear(depth, 2 * depth, bias=bias)
+        self.anchor_proj = nn.Linear(depth, depth, bias=bias)
+        self.merge1 = nn.Linear(depth, depth, bias=bias)
+        self.norm1_0 = nn.LayerNorm(depth)
+        self.mlp1 = Mlp(2 * depth, 2 * depth, depth, bias=bias)
+        self.norm1_1 = nn.LayerNorm(depth)
 
     def forward(
         self,
@@ -521,40 +526,40 @@ class MergeBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         fc = self.head_count
         n, _, h, w = center.shape
-        l = h * w
 
-        x_center = center.flatten(start_dim=2).transpose(1, 2)
-        qkv_center = self.center_proj(x_center)
-        q_center, k, v = (qkv_center.unflatten(2, (fc, -1)).transpose(1, 2)
-                          .chunk(3, dim=3))
-
-        x_anchor = anchor[None].expand(n, -1, -1)
-        q_anchor = self.anchor_proj(x_anchor)
-        q_anchor = q_anchor.unflatten(2, (fc, -1)).transpose(1, 2)
-
-        x = torch.cat([x_center, x_anchor], dim=1)
-        q = torch.cat([q_center, q_anchor], dim=2)
+        qkv_point = self.point_proj(
+            self.pooling(point).flatten(start_dim=2).transpose(1, 2))
+        q, k, v = (qkv_point.unflatten(2, (fc, -1)).transpose(1, 2)
+                   .chunk(3, dim=3))
 
         message = self.attention(q, k, v).transpose(1, 2).flatten(start_dim=2)
-        message = self.merge(message)
-        message = self.norm0_0(message)
+        message = self.merge0(message)
+        message = self.norm0_0(message).transpose(1, 2).unflatten(2, (h, w))
+        message = torch.cat([center, message], dim=1)
+        message = F.interpolate(
+            message, scale_factor=self.scale, mode="bilinear")
 
-        message = torch.cat([x, message], dim=2)
+        message = torch.cat([point, message], dim=1).permute(0, 2, 3, 1)
         message = self.mlp0(message)
-        message = self.norm0_1(message)
-        x = x + message
-
-        center, anchor = x[:, :l], x[:, l:]
-        center = center.transpose(1, 2).unflatten(2, (h, w))
-
-        x_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear")
-        message = torch.cat([point, x_center], dim=1).permute(0, 2, 3, 1)
-        message = self.mlp1(message)
-        message = self.norm1(message).permute(0, 3, 1, 2).contiguous()
+        message = self.norm0_1(message).permute(0, 3, 1, 2).contiguous()
 
         point = point + message
         center = center + self.pooling(message)
+
+        anchor = anchor[None].expand(n, -1, -1)
+        q = self.anchor_proj(anchor).unflatten(2, (fc, -1)).transpose(1, 2)
+        kv_center = self.center_proj(
+            center.flatten(start_dim=2).transpose(1, 2))
+        k, v = kv_center.unflatten(2, (fc, -1)).transpose(1, 2).chunk(2, dim=3)
+
+        message = self.attention(q, k, v).transpose(1, 2).flatten(start_dim=2)
+        message = self.merge1(message)
+        message = self.norm1_0(message)
+
+        message = torch.cat([anchor, message], dim=2)
+        message = self.mlp1(message)
+        message = self.norm1_1(message)
+        anchor = anchor + message
         return point, center, anchor
 
 
