@@ -7,9 +7,6 @@ defaults:
 tags: ["eval-new_matcher-scannet-ds"]
 
 model:
-  net:
-    coarse_matching:
-      border_removal: 0
   loss:
     coarse_cls_sparse: true
 

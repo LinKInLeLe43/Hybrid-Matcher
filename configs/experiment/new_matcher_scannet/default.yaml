@@ -12,7 +12,7 @@ data:
 model:
   net:
     coarse_matching:
-      threshold: 0.1
+      border_removal: 0
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true

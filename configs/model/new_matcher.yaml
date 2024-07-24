@@ -4,8 +4,8 @@ net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   backbone:
     _target_: src.models.components.nets.new_matcher.ResNetFpn82
-    initial_depth: 128
-    layer_depths: [128, 196, 256]
+    initial_depth: 64
+    layer_depths: [64, 128, 256]
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     blocks_counts: [2, 2, 2]
@@ -33,7 +33,7 @@ net:
   fine_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     depth: ${model.net.backbone.layer_depths.0}
-    heads_count: 8
+    heads_count: 4
     attention:
       _target_: src.models.components.nets.new_matcher.FullAttention
     types: ["self", "cross"]

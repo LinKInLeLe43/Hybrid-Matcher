@@ -327,7 +327,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(
+        self.mlp = Mlp(
             in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
@@ -347,13 +347,11 @@ class GlobalClusterBlock(nn.Module):
 
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0, new_x0], dim=1)
-        new_x0 = self.mlp3x3(new_x0, size=size0)
-        new_x0 = new_x0.permute(0, 2, 3, 1)
+        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 = self.mlp(new_x0)
         new_x0 = self.norm1(new_x0)
         new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
@@ -535,12 +533,10 @@ class GlobalCoC(nn.Module):
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in types])
 
-        # local_block = LocalClusterBlock(
-        #     in_depth, hidden_depth, heads_count, 8, 1, bias=bias,
-        #     use_layer_scale=use_layer_scale,
-        #     layer_scale_value=layer_scale_value, dropout=dropout)
-        # self.local_blocks = nn.ModuleList(
-        #     [copy.deepcopy(local_block) for _ in types])
+        local_block = LocalClusterBlock(
+            in_depth, hidden_depth, heads_count, 8, 1, bias=bias)
+        self.local_blocks = nn.ModuleList(
+            [copy.deepcopy(local_block) for _ in types])
 
         # TODO: check weight init
         for m in self.modules():
@@ -587,8 +583,8 @@ class GlobalCoC(nn.Module):
             mask10 = torch.cat([x1_mask.flatten(start_dim=1),
                                 center0_mask.flatten(start_dim=1)], dim=1)
 
-        for merge_block, global_block, type in zip(
-            self.merge_blocks, self.global_blocks, self.types):
+        for merge_block, global_block, local_block, type in zip(
+            self.merge_blocks, self.global_blocks, self.local_blocks, self.types):
             x0, center0 = merge_block(x0, center0, size0)
             x1, center1 = merge_block(x1, center1, size1)
             if type == "self":
@@ -602,8 +598,8 @@ class GlobalCoC(nn.Module):
                     x1, center0, size1, flow0=flow1, mask=mask10)
                 # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
                 # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
-                # x0 = local_block(x0, mask=x0_mask)
-                # x1 = local_block(x1, mask=x1_mask)
+                x0 = local_block(x0, mask=x0_mask)
+                x1 = local_block(x1, mask=x1_mask)
                 # x0 = x0.flatten(start_dim=2).transpose(1, 2)
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
             else:

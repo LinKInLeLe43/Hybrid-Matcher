@@ -11,7 +11,7 @@ class CoarseMatching(nn.Module):
         use_flow: bool = False,
         threshold: float = 0.2,
         border_removal: int = 2,
-        temperature: float = 0.1,
+        temperature: float = 10.0,
         train_percent: float = 0.2,
         train_min_gt_count: int = 200
     ) -> None:
@@ -19,7 +19,7 @@ class CoarseMatching(nn.Module):
         self.use_flow = use_flow
         self.threshold = threshold
         self.border_removal = border_removal
-        self.temperature = temperature
+        self.temperature = nn.Parameter(torch.tensor(temperature))
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
 
@@ -147,7 +147,7 @@ class CoarseMatching(nn.Module):
 
         x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", x0, x1)
-        similarity /= self.temperature
+        similarity *= self.temperature
         if mask0 is not None and mask1 is not None:
             mask = (mask0.flatten(start_dim=1)[:, :, None] &
                     mask1.flatten(start_dim=1)[:, None, :])
