@@ -186,8 +186,9 @@ class GlobalCluster(nn.Module):
         self.heads_count = heads_count
         self.use_efficient = use_efficient
 
-        self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.anchor_proposal = nn.AdaptiveAvgPool2d((8, 8))
+        self.proj0 = nn.Conv2d(in_depth, hidden_depth, 1, bias=bias)
+        self.proj1 = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
         self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
@@ -202,37 +203,48 @@ class GlobalCluster(nn.Module):
         fc = self.heads_count
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = center1.shape
-        m, l, s = n * fc, h0 * w0, h1 * w1
+        m, l, s, k = n * fc, h0 * w0, h1 * w1, 8 * 8
         device = x0.device
 
-        x0_point = self.proj0(x0.permute(0, 2, 3, 1))
-        center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = einops.rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
-        center1 = einops.rearrange(
-            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        x0_point, center1 = self.proj0(x0), self.proj1(center1)
+        anchor1 = self.anchor_proposal(center1)
+        x0_point, center1, anchor1 = map(
+            lambda x: einops.rearrange(
+                x, "n (fc sc) h w -> (n fc) (h w) sc", fc=fc),
+            (x0_point, center1, anchor1))
         center1_point, center1_value = center1.chunk(2, dim=2)
+        anchor1_point, anchor1_value = anchor1.chunk(2, dim=2)
 
-        norm_x0_point = F.normalize(x0_point, dim=2)
-        norm_center1_point = F.normalize(center1_point, dim=2)
+        norm_x0_point = F.normalize(
+            torch.cat([x0_point, center1_point], dim=1), dim=2)
+        norm_anchor1_point = F.normalize(anchor1_point, dim=2)
         similarities = torch.einsum(
-            "mlc,msc->mls", norm_x0_point, norm_center1_point)
+            "mlc,mkc->mlk", norm_x0_point, norm_anchor1_point)
         similarities = self.alpha * similarities + self.beta
         if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
+            mask = einops.repeat(mask, "n ls -> (n fc) ls k", fc=fc, k=k)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
         if self.use_efficient:
             max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, center1_value = map(
+                             k * torch.arange(m, device=device)[:, None])
+            max_sim_values, max_sim_idxes, center1_value, anchor1_value = map(
                 lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value))
+                (max_sim_values, max_sim_idxes, center1_value, anchor1_value))
 
-            dispatched = (max_sim_values[:, None] *
-                          center1_value.index_select(0, max_sim_idxes))
+            cat_ones = torch.ones_like(center1_value[:, [0]])
+            cat_center1_value = torch.cat([center1_value, cat_ones], dim=1)
+            cat_ones = torch.ones_like(anchor1_value[:, [0]])
+            cat_anchor1_value = torch.cat([anchor1_value, cat_ones], dim=1)
+            aggregated = cat_anchor1_value.index_add_(
+                0, max_sim_idxes[m * l:],
+                max_sim_values[m * l:, None] * cat_center1_value)
+            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+
+            dispatched = (max_sim_values[:m * l, None] *
+                          aggregated.index_select(0, max_sim_idxes[:m * l]))
             dispatched = einops.rearrange(
                 dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
             dispatched = self.merge(dispatched)
@@ -343,7 +355,7 @@ class GlobalClusterBlock(nn.Module):
         new_x0 = self.mlp3x3(new_x0, size=size0)
         new_x0 = new_x0.permute(0, 2, 3, 1)
         new_x0 = self.norm1(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
+        new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
         new_x0 += x0
         if self.use_flow:
@@ -562,14 +574,18 @@ class GlobalCoC(nn.Module):
 
         mask00 = mask11 = mask01 = mask10 = None
         if x0_mask is not None:
-            mask00 = (x0_mask.flatten(start_dim=1)[:, :, None] &
-                      center0_mask.flatten(start_dim=1)[:, None, :])
-            mask11 = (x1_mask.flatten(start_dim=1)[:, :, None] &
-                      center1_mask.flatten(start_dim=1)[:, None, :])
-            mask01 = (x0_mask.flatten(start_dim=1)[:, :, None] &
-                      center1_mask.flatten(start_dim=1)[:, None, :])
-            mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
-                      center0_mask.flatten(start_dim=1)[:, None, :])
+            # mask00 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+            #           center0_mask.flatten(start_dim=1)[:, None, :])
+            # mask11 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+            #           center1_mask.flatten(start_dim=1)[:, None, :])
+            # mask01 = (x0_mask.flatten(start_dim=1)[:, :, None] &
+            #           center1_mask.flatten(start_dim=1)[:, None, :])
+            # mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
+            #           center0_mask.flatten(start_dim=1)[:, None, :])
+            mask01 = torch.cat([x0_mask.flatten(start_dim=1),
+                                center1_mask.flatten(start_dim=1)], dim=1)
+            mask10 = torch.cat([x1_mask.flatten(start_dim=1),
+                                center0_mask.flatten(start_dim=1)], dim=1)
 
         for merge_block, global_block, type in zip(
             self.merge_blocks, self.global_blocks, self.types):
