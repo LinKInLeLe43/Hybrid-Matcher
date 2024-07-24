@@ -200,15 +200,17 @@ class GlobalCluster(nn.Module):
         mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         fc = self.heads_count
-        n, l, c = x0.shape
-        _, s, _ = center1.shape
-        m = n * fc
+        n, c, h0, w0 = x0.shape
+        _, _, h1, w1 = center1.shape
+        m, l, s = n * fc, h0 * w0, h1 * w1
         device = x0.device
 
-        x0_point, center1 = self.proj0(x0), self.proj1(center1)
+        x0_point = self.proj0(x0.permute(0, 2, 3, 1))
+        center1 = self.proj1(center1.permute(0, 2, 3, 1))
         x0_point = einops.rearrange(
-            x0_point, "n l (fc sc) -> (n fc) l sc", fc=fc)
-        center1 = einops.rearrange(center1, "n s (fc sc) -> (n fc) s sc", fc=fc)
+            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        center1 = einops.rearrange(
+            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
         center1_point, center1_value = center1.chunk(2, dim=2)
 
         norm_x0_point = F.normalize(x0_point, dim=2)
@@ -232,7 +234,7 @@ class GlobalCluster(nn.Module):
             dispatched = (max_sim_values[:, None] *
                           center1_value.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
-                dispatched, "(n fc l) sc -> n l (fc sc)", fc=fc, l=l)
+                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
             dispatched = self.merge(dispatched)
         else:
             raise NotImplementedError("")
@@ -331,18 +333,18 @@ class GlobalClusterBlock(nn.Module):
                 raise ValueError("")
             c0, c1 = x0.shape[2], flow0.shape[2]
 
-        f_x0 = x0.flatten(start_dim=2).transpose(1, 2)
-        f_center1 = center1.flatten(start_dim=2).transpose(1, 2)
-        new_x0 = self.cluster(f_x0, f_center1, mask=mask)
+        new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
+        new_x0 = new_x0.permute(0, 3, 1, 2)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([f_x0, new_x0], dim=2)
+        new_x0 = torch.cat([x0, new_x0], dim=1)
         new_x0 = self.mlp3x3(new_x0, size=size0)
+        new_x0 = new_x0.permute(0, 2, 3, 1)
         new_x0 = self.norm1(new_x0)
+        new_x0 = new_x0.permute(0, 3, 1, 2)
 
-        new_x0 = new_x0.transpose(1, 2).unflatten(2, size0)
         new_x0 += x0
         if self.use_flow:
             new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
