@@ -5,6 +5,7 @@ import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
+import torch_scatter
 
 
 class Mlp(nn.Module):
@@ -87,13 +88,13 @@ class LocalCluster(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        use_efficient: bool = True
+        type: str = "segment_csr"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.center_size = center_size
         self.fold_size = fold_size
-        self.use_efficient = use_efficient
+        self.type = type
 
         self.proj = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
         self.center_proposal = nn.AdaptiveAvgPool2d(center_size)
@@ -136,7 +137,7 @@ class LocalCluster(nn.Module):
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
-        if self.use_efficient:
+        if self.type == "flattened_index":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, x_value, center_value = map(
@@ -156,7 +157,32 @@ class LocalCluster(nn.Module):
                 dispatched,
                 "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
-        else:
+        elif self.type == "segment_csr":
+            max_sim_idxes = (max_sim_idxes +
+                             s * torch.arange(m, device=device)[:, None])
+            max_sim_values, max_sim_idxes, x_value, center_value = map(
+                lambda x: x.flatten(end_dim=1),
+                (max_sim_values, max_sim_idxes, x_value, center_value))
+
+            max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
+
+            cat_ones = torch.ones_like(x_value[:, [0]])
+            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
+            cat_ones = torch.ones_like(center_value[:, [0]])
+            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
+            max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
+                max_sim_idxes, size=m * s)
+            aggregated = cat_center_value + torch_scatter.segment_csr(
+                (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
+                max_sim_idxes_csr)
+            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+            dispatched = (max_sim_values[:, None] *
+                          aggregated.index_select(0, max_sim_idxes))
+            dispatched = einops.rearrange(
+                dispatched,
+                "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                fh=fh, fw=fw, sh=sh, sw=sw)
+        elif self.type == "original":
             mask = torch.zeros_like(similarities)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
             similarities = (mask * similarities)[..., None]
@@ -169,6 +195,8 @@ class LocalCluster(nn.Module):
                 dispatched,
                 "(n fc fh fw) (sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
+        else:
+            raise NotImplementedError("")
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -180,11 +208,11 @@ class GlobalCluster(nn.Module):
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
-        use_efficient: bool = True
+        type: str = "flattened_index"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
-        self.use_efficient = use_efficient
+        self.type = type
 
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
         self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
@@ -224,7 +252,7 @@ class GlobalCluster(nn.Module):
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
-        if self.use_efficient:
+        if self.type == "flattened_index":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, center1_value = map(
