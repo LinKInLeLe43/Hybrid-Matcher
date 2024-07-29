@@ -45,8 +45,11 @@ class Mlp3x3(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.linear = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.conv = nn.Conv2d(hidden_depth, out_depth, 3, padding=1, bias=bias)
+        self.conv0 = nn.Conv2d(in_depth, hidden_depth, 1, bias=bias)
+        self.conv1 = nn.Conv2d(
+            hidden_depth, hidden_depth, 3, padding=1, groups=hidden_depth,
+            bias=bias)
+        self.conv2 = nn.Conv2d(hidden_depth, out_depth, 1, bias=bias)
         self.gelu = nn.GELU()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -55,27 +58,16 @@ class Mlp3x3(nn.Module):
         x: torch.Tensor,
         size: Optional[torch.Size] = None
     ) -> torch.Tensor:
-        if len(x.shape) == 3:
-            if size is None:
-                raise ValueError("")
-            x = x.unflatten(1, size)
-            flatten = True
-        elif len(x.shape) == 4:
-            x = x.permute(0, 2, 3, 1)
-            flatten = False
-        else:
+        if len(x.shape) != 4:
             raise ValueError("")
 
-        x = self.linear(x)
+        x = self.conv0(x)
         x = self.gelu(x)
-        x = self.dropout(x)
 
-        x = x.permute(0, 3, 1, 2)
-        x = self.conv(x)
-        x = self.dropout(x)
+        x = self.conv1(x)
+        x = self.gelu(x)
 
-        if flatten:
-            x = x.flatten(start_dim=2).transpose(1, 2)
+        x = self.conv2(x)
         return x
 
 
