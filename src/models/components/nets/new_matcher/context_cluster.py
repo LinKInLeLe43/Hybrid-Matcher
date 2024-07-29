@@ -208,15 +208,18 @@ class GlobalCluster(nn.Module):
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
-        type: str = "flattened_index"
+        type: str = "segment_csr"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.type = type
 
-        self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
+        self.proj0 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
         self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
-        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+        self.merge = nn.Sequential(
+            nn.Linear(2 * hidden_depth, in_depth, bias=bias),
+            nn.GELU(),
+            nn.Linear(in_depth, in_depth, bias=bias))
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -233,12 +236,12 @@ class GlobalCluster(nn.Module):
         m, l, s = n * fc, h0 * w0, h1 * w1
         device = x0.device
 
-        x0_point = self.proj0(x0.permute(0, 2, 3, 1))
+        x0 = self.proj0(x0.permute(0, 2, 3, 1))
         center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = einops.rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        x0 = einops.rearrange(x0, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
         center1 = einops.rearrange(
             center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        x0_point, x0_value = x0.chunk(2, dim=2)
         center1_point, center1_value = center1.chunk(2, dim=2)
 
         norm_x0_point = F.normalize(x0_point, dim=2)
@@ -255,12 +258,47 @@ class GlobalCluster(nn.Module):
         if self.type == "flattened_index":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, center1_value = map(
+            max_sim_values, max_sim_idxes, x0_value, center1_value = map(
                 lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value))
+                (max_sim_values, max_sim_idxes, x0_value, center1_value))
+
+            cat_ones = torch.ones_like(x0_value[:, [0]])
+            cat_x0_value = torch.cat([x0_value, cat_ones], dim=1)
+            cat_ones = torch.ones_like(center1_value[:, [0]])
+            cat_center1_value = torch.cat([center1_value, cat_ones], dim=1)
+            aggregated = cat_center1_value.index_add_(
+                0, max_sim_idxes, max_sim_values[:, None] * cat_x0_value)
+            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
 
             dispatched = (max_sim_values[:, None] *
-                          center1_value.index_select(0, max_sim_idxes))
+                          (torch.cat([aggregated, center1_value], dim=1)
+                           .index_select(0, max_sim_idxes)))
+            dispatched = einops.rearrange(
+                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
+            dispatched = self.merge(dispatched)
+        elif self.type == "segment_csr":
+            max_sim_idxes = (max_sim_idxes +
+                             s * torch.arange(m, device=device)[:, None])
+            max_sim_values, max_sim_idxes, x0_value, center1_value = map(
+                lambda x: x.flatten(end_dim=1),
+                (max_sim_values, max_sim_idxes, x0_value, center1_value))
+
+            max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
+
+            cat_ones = torch.ones_like(x0_value[:, [0]])
+            cat_x0_value = torch.cat([x0_value, cat_ones], dim=1)
+            cat_ones = torch.ones_like(center1_value[:, [0]])
+            cat_center1_value = torch.cat([center1_value, cat_ones], dim=1)
+            max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
+                max_sim_idxes, size=m * s)
+            aggregated = cat_center1_value + torch_scatter.segment_csr(
+                (max_sim_values[:, None] * cat_x0_value)[sorted_idxes],
+                max_sim_idxes_csr)
+            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+
+            dispatched = (max_sim_values[:, None] *
+                          (torch.cat([aggregated, center1_value], dim=1)
+                           .index_select(0, max_sim_idxes)))
             dispatched = einops.rearrange(
                 dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
             dispatched = self.merge(dispatched)
@@ -343,7 +381,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(
+        self.mlp = Mlp(
             in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
@@ -363,15 +401,13 @@ class GlobalClusterBlock(nn.Module):
 
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0, new_x0], dim=1)
-        new_x0 = self.mlp3x3(new_x0, size=size0)
-        new_x0 = new_x0.permute(0, 2, 3, 1)
+        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 = self.mlp(new_x0)
         new_x0 = self.norm1(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
+        new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
         new_x0 += x0
         if self.use_flow:
