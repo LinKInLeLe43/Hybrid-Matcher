@@ -343,7 +343,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(
+        self.mlp = Mlp(
             in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
@@ -363,15 +363,13 @@ class GlobalClusterBlock(nn.Module):
 
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0, new_x0], dim=1)
-        new_x0 = self.mlp3x3(new_x0, size=size0)
-        new_x0 = new_x0.permute(0, 2, 3, 1)
+        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 = self.mlp(new_x0)
         new_x0 = self.norm1(new_x0)
-        new_x0 = new_x0.permute(0, 3, 1, 2)
+        new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
         new_x0 += x0
         if self.use_flow:
@@ -498,7 +496,7 @@ class MergeBlock(nn.Module):
 
         self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
         self.norm = nn.LayerNorm(depth)
-        self.pooling = nn.AvgPool2d(scale, stride=scale)
+        self.pooling = nn.MaxPool2d(scale, stride=scale)
 
     def forward(
         self,
@@ -507,8 +505,7 @@ class MergeBlock(nn.Module):
         size: torch.Size
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear",
-            align_corners=True)
+            center, scale_factor=self.scale, mode="bilinear")
         new_x = torch.cat([x, up_center], dim=1)
         new_x = new_x.permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
@@ -520,6 +517,64 @@ class MergeBlock(nn.Module):
         return new_x, new_center
 
 
+class AttentionBlock(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        heads_count: int,
+        attention: nn.Module
+    ) -> None:
+        super().__init__()
+        self.heads_count = heads_count
+        self.attention = attention
+
+        self.down_q = nn.Conv2d(depth, depth, 4, stride=4, groups=depth, bias=False)
+        self.down_kv = nn.MaxPool2d(4, stride=4)
+
+        self.q_proj = nn.Linear(depth, depth, bias=False)
+        self.k_proj = nn.Linear(depth, depth, bias=False)
+        self.v_proj = nn.Linear(depth, depth, bias=False)
+
+        self.merge = nn.Linear(depth, depth, bias=False)
+        self.norm1 = nn.LayerNorm(depth)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * depth, depth, bias=False))
+        self.norm2 = nn.LayerNorm(depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        source: torch.Tensor,
+        x_mask: Optional[torch.Tensor] = None,
+        source_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        q = self.down_q(x).flatten(start_dim=2).transpose(1, 2)
+        kv = self.down_kv(source).flatten(start_dim=2).transpose(1, 2)
+
+        q = self.q_proj(q).unflatten(2, (self.heads_count, -1))
+        k = self.k_proj(kv).unflatten(2, (self.heads_count, -1))
+        v = self.v_proj(kv).unflatten(2, (self.heads_count, -1))
+        out = self.attention(
+            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+
+        out = self.merge(out)
+        out = self.norm1(out)
+        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // 4, x.shape[3] // 4))
+        out = F.interpolate(out, scale_factor=4.0, mode="bilinear")
+
+        out = torch.cat([x, out], dim=1)
+        out = out.permute(0, 2, 3, 1)
+        out = self.mlp(out)
+        out = self.norm2(out)
+        out = out.permute(0, 3, 1, 2).contiguous()
+
+        out += x
+        return out
+
+
 class GlobalCoC(nn.Module):
     def __init__(
         self,
@@ -527,6 +582,7 @@ class GlobalCoC(nn.Module):
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
+        attention: nn.Module,
         types: List[str],
         use_flow: bool = False,
         flow_depth: Optional[int] = None,
@@ -557,6 +613,10 @@ class GlobalCoC(nn.Module):
         #     layer_scale_value=layer_scale_value, dropout=dropout)
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
+
+        attention_block = AttentionBlock(in_depth, heads_count, attention)
+        self.self_blocks = nn.ModuleList([copy.deepcopy(attention_block) for _ in types])
+        self.cross_blocks = nn.ModuleList([copy.deepcopy(attention_block) for _ in types])
 
         # TODO: check weight init
         for m in self.modules():
@@ -598,9 +658,11 @@ class GlobalCoC(nn.Module):
                       center1_mask.flatten(start_dim=1)[:, None, :])
             mask10 = (x1_mask.flatten(start_dim=1)[:, :, None] &
                       center0_mask.flatten(start_dim=1)[:, None, :])
+            center0_mask = center0_mask.flatten(start_dim=1)
+            center1_mask = center1_mask.flatten(start_dim=1)
 
-        for merge_block, global_block, type in zip(
-            self.merge_blocks, self.global_blocks, self.types):
+        for merge_block, global_block, self_block, cross_block, type in zip(
+            self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks, self.types):
             x0, center0 = merge_block(x0, center0, size0)
             x1, center1 = merge_block(x1, center1, size1)
             if type == "self":
@@ -618,6 +680,14 @@ class GlobalCoC(nn.Module):
                 # x1 = local_block(x1, mask=x1_mask)
                 # x0 = x0.flatten(start_dim=2).transpose(1, 2)
                 # x1 = x1.flatten(start_dim=2).transpose(1, 2)
+                x0 = self_block(
+                    x0, x0, x_mask=center0_mask, source_mask=center0_mask)
+                x1 = self_block(
+                    x1, x1, x_mask=center1_mask, source_mask=center1_mask)
+                x0 = cross_block(
+                    x0, x1, x_mask=center0_mask, source_mask=center1_mask)
+                x1 = cross_block(
+                    x1, x0, x_mask=center1_mask, source_mask=center0_mask)
             else:
                 raise ValueError("")
         return x0, x1, flow0, flow1

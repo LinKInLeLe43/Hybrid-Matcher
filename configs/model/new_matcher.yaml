@@ -20,6 +20,8 @@ net:
     in_depth: ${model.net.local_coc.layer_depths.0}
     hidden_depth: 256
     heads_count: 8
+    attention:
+      _target_: src.models.components.nets.new_matcher.FullAttention
     types: ["cross", "cross", "cross", "cross"]
     use_flow: true
     flow_depth: 128
