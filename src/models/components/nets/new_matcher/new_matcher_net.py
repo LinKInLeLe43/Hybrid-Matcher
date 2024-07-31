@@ -9,17 +9,18 @@ class NewMatcherNet(nn.Module):
     def __init__(
         self,
         backbone: nn.Module,
+        positional_encoding: nn.Module,
         local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
         fine_matching: nn.Module,
-        positional_encoding: Optional[nn.Module] = None,
         flow_decoder: Optional[nn.Module] = None
     ) -> None:
         super().__init__()
         self.backbone = backbone
+        self.positional_encoding = positional_encoding
         self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
@@ -32,9 +33,8 @@ class NewMatcherNet(nn.Module):
 
         self.use_flow = coarse_module.use_flow
         if self.use_flow:
-            if positional_encoding is None or flow_decoder is None:
+            if flow_decoder is None:
                 raise ValueError("")
-            self.positional_encoding = positional_encoding
             self.flow_decoder = flow_decoder
 
     def _scale_points(
@@ -71,11 +71,9 @@ class NewMatcherNet(nn.Module):
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
             n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
-            data = torch.cat([data, coors.expand(2 * n, -1, -1, -1)], dim=1)
             coarse_features, fine_features = self.backbone(data)
+            coarse_features, _ = self.positional_encoding(coarse_features)
             centers, coarse_features = self.local_coc(coarse_features)
             centers0, centers1 = centers.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_features.chunk(2)
@@ -86,20 +84,12 @@ class NewMatcherNet(nn.Module):
                 pos_features = pos_features.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_features.chunk(2)
         else:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image0"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature0, fine_feature0 = self.backbone(data)
+            coarse_feature0, fine_feature0 = self.backbone(batch["image0"])
+            coarse_feature0, _ = self.positional_encoding(coarse_feature0)
             centers0, coarse_feature0 = self.local_coc(coarse_feature0)
 
-            n, _, h, w = batch["image1"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image1"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature1, fine_feature1 = self.backbone(data)
+            coarse_feature1, fine_feature1 = self.backbone(batch["image1"])
+            coarse_feature1, _ = self.positional_encoding(coarse_feature1)
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
