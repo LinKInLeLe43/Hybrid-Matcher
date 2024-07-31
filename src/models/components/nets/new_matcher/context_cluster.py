@@ -380,12 +380,12 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
-        blocks_counts: Tuple[int, int, int],
-        layer_depths: Tuple[int, int, int],
-        hidden_depths: Tuple[int, int, int],
-        heads_counts: Tuple[int, int, int],
-        center_sizes: Tuple[int, int, int],
-        fold_sizes: Tuple[int, int, int],
+        blocks_counts: int,
+        layer_depths: int,
+        hidden_depths: int,
+        heads_counts: int,
+        center_sizes: int,
+        fold_sizes: int,
         bias: bool = True,
         use_layer_scale: bool = False,
         layer_scale_value: Optional[float] = None,
@@ -393,23 +393,18 @@ class LocalCoC(nn.Module):
     ) -> None:
         super().__init__()
 
-        layers = []
-        for i in range(3):
-            layer = nn.Sequential()
-            for _ in range(blocks_counts[i]):
-                block = LocalClusterBlock(
-                    layer_depths[i], hidden_depths[i], heads_counts[i],
-                    center_sizes[i], fold_sizes[i], bias=bias,
-                    use_layer_scale=use_layer_scale,
-                    layer_scale_value=layer_scale_value, dropout=dropout)
-                layer.append(block)
-            layers.append(layer)
-        self.layer0, self.layer1, self.layer2 = layers
+        self.layer = nn.Sequential()
+        for _ in range(blocks_counts):
+            block = LocalClusterBlock(
+                layer_depths, hidden_depths, heads_counts, center_sizes,
+                fold_sizes, bias=bias, use_layer_scale=use_layer_scale,
+                layer_scale_value=layer_scale_value, dropout=dropout)
+            self.layer.append(block)
 
-        self.point_reducer0 = nn.Conv2d(
-            layer_depths[0], layer_depths[1], 3, stride=2, padding=1)
-        self.point_reducer1 = nn.Conv2d(
-            layer_depths[1], layer_depths[2], 3, stride=2, padding=1)
+        # self.point_reducer0 = nn.Conv2d(
+        #     layer_depths[0], layer_depths[1], 3, stride=2, padding=1)
+        # self.point_reducer1 = nn.Conv2d(
+        #     layer_depths[1], layer_depths[2], 3, stride=2, padding=1)
 
         # TODO: check FPN design
         # self.layer1_out = nn.Sequential(
@@ -457,12 +452,12 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x0 = self.layer0(x)
-        x1 = self.point_reducer0(x0)
-        x1 = self.layer1(x1)
-        x2 = self.point_reducer1(x1)
-        x2 = self.layer2(x2)
-        return x2, x0
+        x0 = self.layer(x)
+        # x1 = self.point_reducer0(x0)
+        # x1 = self.layer1(x1)
+        # x2 = self.point_reducer1(x1)
+        # x2 = self.layer2(x2)
+        return x0
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)

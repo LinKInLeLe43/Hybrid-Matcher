@@ -59,24 +59,32 @@ class ResNetFpn82(nn.Module):
             1, initial_depth, 7, stride=2, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.layer0 = self._make_layer(layer_depths[0])
         self.layer1 = self._make_layer(layer_depths[1], stride=2)
         self.layer2 = self._make_layer(layer_depths[2], stride=2)
+        self.layer3 = self._make_layer(layer_depths[3], stride=2)
 
-        # self.layer2_up = _conv1x1(layer_depths[2], layer_depths[2])
-        # self.layer1_up = _conv1x1(layer_depths[1], layer_depths[2])
-        # self.layer1_out = nn.Sequential(
-        #     _conv3x3(layer_depths[2], layer_depths[2]),
-        #     nn.BatchNorm2d(layer_depths[2]),
-        #     nn.LeakyReLU(inplace=True),
-        #     _conv3x3(layer_depths[2], layer_depths[1]))
-        # self.layer0_up = _conv1x1(layer_depths[0], layer_depths[1])
-        # self.layer0_out = nn.Sequential(
-        #     _conv3x3(layer_depths[1], layer_depths[1]),
-        #     nn.BatchNorm2d(layer_depths[1]),
-        #     nn.LeakyReLU(inplace=True),
-        #     _conv3x3(layer_depths[1], layer_depths[0]))
+        self._conv = nn.Conv2d(
+            1, 128, 7, stride=2, padding=3, bias=False)
+        self._norm = nn.BatchNorm2d(128)
+        self.in_depth = 128
+        self._layer0 = self._make_layer(128)
+
+        self.layer3_up = _conv1x1(layer_depths[3], 256)
+        self.layer2_up = _conv1x1(layer_depths[2], 256)
+        self.layer2_out = nn.Sequential(
+            _conv3x3(256, 256),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(inplace=True),
+            _conv3x3(256, 256))
+        self.layer1_up = _conv1x1(layer_depths[1], 256)
+        self.layer1_out = nn.Sequential(
+            _conv3x3(256, 256),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(inplace=True),
+            _conv3x3(256, 256))
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -94,22 +102,29 @@ class ResNetFpn82(nn.Module):
         return layer
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        y = x
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)
+        x = self.maxpool(x)
 
         x0 = self.layer0(x)
         x1 = self.layer1(x0)
         x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
 
-        # x2_out = self.layer2_up(x2)
-        # x1_out = self.layer1_up(x1)
-        # x1_out += F.interpolate(
-        #     x2_out, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x1_out = self.layer1_out(x1_out)
-        # x0_out = self.layer0_up(x0)
-        # x0_out += F.interpolate(
-        #     x1_out, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x0_out = self.layer0_out(x0_out)
-        # return x2_out, x0_out
-        return x2, x0
+        x3_out = self.layer3_up(x3)
+        x2_out = self.layer2_up(x2)
+        x2_out += F.interpolate(x3_out, scale_factor=2.0, mode="bilinear")
+        x2_out = self.layer2_out(x2_out)
+        x1_out = self.layer1_up(x1)
+        x1_out += F.interpolate(x2_out, scale_factor=2.0, mode="bilinear")
+        x1_out = self.layer1_out(x1_out)
+
+        y = self._conv(y)
+        y = self._norm(y)
+        y = self.relu(y)
+
+        y = self._layer0(y)
+
+        return y, x1_out, x3_out
