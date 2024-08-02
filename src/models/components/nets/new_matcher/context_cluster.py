@@ -278,18 +278,9 @@ class LocalClusterBlock(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        use_layer_scale: bool = False,
-        layer_scale_value: Optional[float] = None,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
-        self.use_layer_scale = use_layer_scale
-
-        if use_layer_scale:
-            if layer_scale_value is None:
-                raise ValueError("")
-            self.layer_scale = nn.Parameter(
-                layer_scale_value * torch.ones((in_depth,)))
 
         self.cluster = LocalCluster(
             in_depth, hidden_depth, heads_count, center_size, fold_size,
@@ -309,13 +300,11 @@ class LocalClusterBlock(nn.Module):
         new_x = self.norm0(new_x)
 
         new_x += x.permute(0, 2, 3, 1)
+        x = new_x
         new_x = self.mlp(new_x)
         new_x = self.norm1(new_x)
-        new_x = new_x.permute(0, 3, 1, 2).contiguous()
-
-        if self.use_layer_scale:
-            new_x *= self.layer_scale[:, None, None]
         new_x += x
+        new_x = new_x.permute(0, 3, 1, 2).contiguous()
         return new_x
 
 
@@ -365,11 +354,12 @@ class GlobalClusterBlock(nn.Module):
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
         new_x0 += x0.permute(0, 2, 3, 1)
+        x0 = new_x0
         new_x0 = self.mlp(new_x0)
         new_x0 = self.norm1(new_x0)
+        new_x0 += x0
         new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
-        new_x0 += x0
         if self.use_flow:
             new_x0, new_flow0 = new_x0.split([c0, c1], dim=2)
         return new_x0, new_flow0
@@ -385,8 +375,6 @@ class LocalCoC(nn.Module):
         center_sizes: Tuple[int, int, int],
         fold_sizes: Tuple[int, int, int],
         bias: bool = True,
-        use_layer_scale: bool = False,
-        layer_scale_value: Optional[float] = None,
         dropout: float = 0.0
     ) -> None:
         super().__init__()
@@ -397,9 +385,7 @@ class LocalCoC(nn.Module):
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
-                    center_sizes[i], fold_sizes[i], bias=bias,
-                    use_layer_scale=use_layer_scale,
-                    layer_scale_value=layer_scale_value, dropout=dropout)
+                    center_sizes[i], fold_sizes[i], bias=bias, dropout=dropout)
                 layer.append(block)
             layers.append(layer)
         self.layer0, self.layer1, self.layer2 = layers
@@ -564,11 +550,11 @@ class AttentionBlock(nn.Module):
 
         out += x
         out = out.permute(0, 2, 3, 1)
+        x = out
         out = self.mlp(out)
         out = self.norm2(out)
-        out = out.permute(0, 3, 1, 2).contiguous()
-
         out += x
+        out = out.permute(0, 3, 1, 2).contiguous()
         return out
 
 
