@@ -216,7 +216,7 @@ class GlobalCluster(nn.Module):
 
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
         self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
-        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+        self.merge = nn.Conv2d(hidden_depth, in_depth, 3, padding=1, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -262,8 +262,8 @@ class GlobalCluster(nn.Module):
             dispatched = (max_sim_values[:, None] *
                           center1_value.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
-                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
-            dispatched = self.merge(dispatched)
+                dispatched, "(n fc h w) sc -> n (fc sc) h w", fc=fc, h=h0, w=w0)
+            dispatched = self.merge(dispatched).permute(0, 2, 3, 1)
         else:
             raise NotImplementedError("")
         return dispatched
