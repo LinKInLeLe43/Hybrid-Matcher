@@ -296,8 +296,7 @@ class LocalClusterBlock(nn.Module):
             bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp = Mlp(
-            2 * in_depth, 2 * in_depth, in_depth, bias=bias, dropout=dropout)
+        self.mlp = Mlp(in_depth, 2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(
@@ -309,7 +308,7 @@ class LocalClusterBlock(nn.Module):
         new_x = new_x.permute(0, 2, 3, 1)
         new_x = self.norm0(new_x)
 
-        new_x = torch.cat([x.permute(0, 2, 3, 1), new_x], dim=3)
+        new_x += x.permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
         new_x = self.norm1(new_x)
         new_x = new_x.permute(0, 3, 1, 2).contiguous()
@@ -343,8 +342,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp = Mlp(
-            in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
+        self.mlp = Mlp(in_depth, 2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
     def forward(
@@ -366,7 +364,7 @@ class GlobalClusterBlock(nn.Module):
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 += x0.permute(0, 2, 3, 1)
         new_x0 = self.mlp(new_x0)
         new_x0 = self.norm1(new_x0)
         new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
@@ -494,7 +492,7 @@ class MergeBlock(nn.Module):
         super().__init__()
         self.scale = scale
 
-        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias, dropout=dropout)
+        self.mlp = Mlp(depth, 2 * depth, depth, bias=bias, dropout=dropout)
         self.norm = nn.LayerNorm(depth)
         self.pooling = nn.MaxPool2d(scale, stride=scale)
 
@@ -506,8 +504,7 @@ class MergeBlock(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         up_center = F.interpolate(
             center, scale_factor=self.scale, mode="bilinear")
-        new_x = torch.cat([x, up_center], dim=1)
-        new_x = new_x.permute(0, 2, 3, 1)
+        new_x = (x + up_center).permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
         new_x = self.norm(new_x)
         new_x = new_x.permute(0, 3, 1, 2).contiguous()
@@ -539,7 +536,7 @@ class AttentionBlock(nn.Module):
         self.norm1 = nn.LayerNorm(depth)
 
         self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.Linear(depth, 2 * depth, bias=False),
             nn.ReLU(inplace=True),
             nn.Linear(2 * depth, depth, bias=False))
         self.norm2 = nn.LayerNorm(depth)
@@ -565,7 +562,7 @@ class AttentionBlock(nn.Module):
         out = out.transpose(1, 2).unflatten(2, (x.shape[2] // 4, x.shape[3] // 4))
         out = F.interpolate(out, scale_factor=4.0, mode="bilinear")
 
-        out = torch.cat([x, out], dim=1)
+        out += x
         out = out.permute(0, 2, 3, 1)
         out = self.mlp(out)
         out = self.norm2(out)
