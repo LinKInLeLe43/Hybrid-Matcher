@@ -1,8 +1,9 @@
-from typing import Tuple
+from typing import List, Tuple
 
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torchvision.models import resnet18, ResNet18_Weights
 
 
 def _conv1x1(in_depth: int, out_depth: int, stride: int = 1) -> nn.Module:
@@ -124,3 +125,68 @@ class ResNetFpn82(nn.Module):
         x1_out = self.layer1_out(x1_out)
 
         return y0, x1_out, x3_out
+
+
+class PretrainedResNet18(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.scales = 8, 2
+
+        self.net = resnet18(weights=ResNet18_Weights.DEFAULT)
+        for p in self.net.parameters():
+            p.requires_grad = False
+
+        self._conv = nn.Conv2d(
+            1, 128, 7, stride=2, padding=3, bias=False)
+        self._norm = nn.BatchNorm2d(128)
+        self._relu = nn.ReLU(inplace=True)
+        self.in_depth = 128
+        self._layer0 = self._make_layer(128)
+        self._layer1 = self._make_layer(128, stride=2)
+        self._layer2 = self._make_layer(128, stride=2)
+
+        self.layer4_up = _conv1x1(512, 256)
+
+        self.layer2_up = _conv1x1(256, 256)
+        self.layer2_out = nn.Sequential(
+            _conv3x3(256, 256),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(inplace=True),
+            _conv3x3(256, 256))
+
+    def _make_layer(self, depth: int, stride: int = 1) -> nn.Module:
+        layer = nn.Sequential(
+            _BasicBlock(self.in_depth, depth, stride=stride),
+            _BasicBlock(depth, depth))
+        self.in_depth = depth
+        return layer
+
+    def forward(
+        self,
+        x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        y = x.mean(dim=1, keepdim=True)
+        x = self.net.conv1(x)
+        x = self.net.bn1(x)
+        x = self.net.relu(x)
+        x = self.net.maxpool(x)
+
+        x1 = self.net.layer1(x)
+        x2 = self.net.layer2(x1)
+        x3 = self.net.layer3(x2)
+        x4 = self.net.layer4(x3)
+
+        y = self._conv(y)
+        y = self._norm(y)
+        y = self._relu(y)
+
+        y0 = self._layer0(y)
+        y1 = self._layer1(y0)
+        y2 = self._layer2(y1)
+
+        x4_out = self.layer4_up(x4)
+        x2_out = self.layer2_up(torch.cat([x2, y2], dim=1))
+        x2_out += F.interpolate(x3, scale_factor=2.0, mode="bilinear")
+        x2_out = self.layer2_out(x2_out)
+
+        return y0, x2_out, x4_out

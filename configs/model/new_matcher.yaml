@@ -3,9 +3,7 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   backbone:
-    _target_: src.models.components.nets.new_matcher.ResNetFpn82
-    initial_depth: 64
-    layer_depths: [64, 128, 256, 512]
+    _target_: src.models.components.nets.new_matcher.PretrainedResNet18
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     blocks_counts: 2

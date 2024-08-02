@@ -1,5 +1,6 @@
 from .attention import FullAttention, LinearAttention
 from .backbone import ResNetFpn82
+from .backbone import PretrainedResNet18
 from .coarse_matching import CoarseMatching
 from .context_cluster import LocalCoC
 from .context_cluster import GlobalCoC
