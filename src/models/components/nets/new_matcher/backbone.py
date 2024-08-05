@@ -146,13 +146,13 @@ class PretrainedResNet18(nn.Module):
         self._layer2 = self._make_layer(128, stride=2)
 
         self.layer4_up = _conv1x1(512, 256)
-
+        self.layer3_up = _conv1x1(256, 256)
         self.layer2_up = _conv1x1(256, 256)
-        self.layer2_out = nn.Sequential(
-            _conv3x3(256, 256),
-            nn.BatchNorm2d(256),
-            nn.LeakyReLU(inplace=True),
-            _conv3x3(256, 256))
+        # self.layer2_out = nn.Sequential(
+        #     _conv3x3(256, 256),
+        #     nn.BatchNorm2d(256),
+        #     nn.LeakyReLU(inplace=True),
+        #     _conv3x3(256, 256))
 
     def _make_layer(self, depth: int, stride: int = 1) -> nn.Module:
         layer = nn.Sequential(
@@ -185,8 +185,7 @@ class PretrainedResNet18(nn.Module):
         y2 = self._layer2(y1)
 
         x4_out = self.layer4_up(x4)
+        x3_out = self.layer3_up(x3)
         x2_out = self.layer2_up(torch.cat([x2, y2], dim=1))
-        x2_out += F.interpolate(x3, scale_factor=2.0, mode="bilinear")
-        x2_out = self.layer2_out(x2_out)
 
-        return y0, x2_out, x4_out
+        return y0, [x2_out, x3_out, x4_out]

@@ -72,9 +72,9 @@ class NewMatcherNet(nn.Module):
         if batch["image0"].shape == batch["image1"].shape:
             n, _, h, w = batch["image0"].shape
             data = torch.cat([batch["image0"], batch["image1"]])
-            fine_features, coarse_features, centers = self.backbone(data)
-            coarse_features, _ = self.positional_encoding(coarse_features)
-            coarse_features = self.local_coc(coarse_features)
+            fine_features, features = self.backbone(data)
+            features[0], _ = self.positional_encoding(features[0])
+            coarse_features, centers = self.local_coc(features)
             centers0, centers1 = centers.chunk(2)
             coarse_feature0, coarse_feature1 = coarse_features.chunk(2)
             fine_feature0, fine_feature1 = fine_features.chunk(2)
@@ -84,13 +84,13 @@ class NewMatcherNet(nn.Module):
                 pos_features = pos_features.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_features.chunk(2)
         else:
-            fine_feature0, coarse_feature0, center0 = self.backbone(batch["image0"])
-            coarse_feature0, _ = self.positional_encoding(coarse_feature0)
-            coarse_feature0 = self.local_coc(coarse_feature0)
+            fine_feature0, features0 = self.backbone(batch["image0"])
+            features0[0], _ = self.positional_encoding(features0[0])
+            coarse_feature0, center0 = self.local_coc(features0)
 
-            fine_feature1, coarse_feature1, center1 = self.backbone(batch["image1"])
-            coarse_feature1, _ = self.positional_encoding(coarse_feature1)
-            coarse_feature1 = self.local_coc(coarse_feature1)
+            fine_feature1, features1 = self.backbone(batch["image1"])
+            features1[0], _ = self.positional_encoding(features1[0])
+            coarse_feature1, center1 = self.local_coc(features1)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
         coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
