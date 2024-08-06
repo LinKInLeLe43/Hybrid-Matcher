@@ -37,8 +37,9 @@ class MegaDepthDataset(data.Dataset):
         self,
         path: str
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        h, w = image.shape
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        h, w = image.shape[:2]
 
         k = self.image_size / max(w, h)
         new_w, new_h = int(round(k * w)), int(round(k * h))
@@ -48,9 +49,10 @@ class MegaDepthDataset(data.Dataset):
         scale = np.array([w / new_w, h / new_h])
 
         length = max(new_w, new_h)
-        padded_image = np.zeros((length, length), dtype=image.dtype)
+        padded_image = np.zeros((length, length, 3), dtype=image.dtype)
         padded_image[:new_h, :new_w] = image
         padded_image = padded_image / 255
+        padded_image = padded_image.transpose(2, 0, 1)
 
         mask = np.zeros((length, length), dtype=np.bool_)
         mask[:new_h, :new_w] = True
@@ -73,7 +75,6 @@ class MegaDepthDataset(data.Dataset):
         image_path1 = path.join(self.data_root, image_name1)
         image0, mask0, scale0 = self._read_image(image_path0)
         image1, mask1, scale1 = self._read_image(image_path1)
-        image0, image1 = image0[None], image1[None]
 
         K0, K1 = self.scene_info["intrinsics"][idxes].copy()
 

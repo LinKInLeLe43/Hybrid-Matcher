@@ -71,10 +71,7 @@ class NewMatcherNet(nn.Module):
         pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
             n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
             data = torch.cat([batch["image0"], batch["image1"]])
-            data = torch.cat([data, coors.expand(2 * n, -1, -1, -1)], dim=1)
             coarse_features, fine_features = self.backbone(data)
             centers, coarse_features = self.local_coc(coarse_features)
             centers0, centers1 = centers.chunk(2)
@@ -86,20 +83,10 @@ class NewMatcherNet(nn.Module):
                 pos_features = pos_features.flatten(start_dim=2).transpose(1, 2)
                 pos_feature0, pos_feature1 = pos_features.chunk(2)
         else:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image0"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature0, fine_feature0 = self.backbone(data)
+            coarse_feature0, fine_feature0 = self.backbone(batch["image0"])
             centers0, coarse_feature0 = self.local_coc(coarse_feature0)
 
-            n, _, h, w = batch["image1"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image1"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature1, fine_feature1 = self.backbone(data)
+            coarse_feature1, fine_feature1 = self.backbone(batch["image1"])
             centers1, coarse_feature1 = self.local_coc(coarse_feature1)
         size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
 
