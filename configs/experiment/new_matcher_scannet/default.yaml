@@ -2,7 +2,7 @@
 
 defaults:
   - override /data: scannet
-  - override /model: hybrid_matcher
+  - override /model: new_matcher
   - override /trainer: ddp
   - _self_
 
@@ -12,7 +12,7 @@ data:
 model:
   net:
     coarse_matching:
-      threshold: 0.1
+      margin_remove: 0
   optimizer:
     _target_: torch.optim.AdamW
     _partial_: true

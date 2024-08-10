@@ -1,16 +1,15 @@
 # @package _global_
 
 defaults:
-  - hybrid_matcher_megadepth/default
+  - new_matcher_megadepth/default
   - _self_
 
-tags: ["train-hybrid_matcher-megadepth-ds-dense", "bs=8-image_size=832"]
+tags: ["train-new_matcher-megadepth-ds-dense"]
 
 model:
-  net:
-    coarse_matching:
-      type: "dual_softmax"
-      sparse: false
+  loss:
+    coarse_cls_sparse: false
+    fine_cls_sparse: false
 
 trainer:
   devices: 8

@@ -4,51 +4,24 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from src.models.components.nets.loftr import optimal_transport
-
 
 class CoarseMatching(nn.Module):  # TODO: change name to first stage
     def __init__(
         self,
-        type: str,
-        sparse: bool,
         use_matchability: bool = False,
-        use_flow: bool = False,
-        flow_decoder: Optional[nn.Module] = None,
         threshold: float = 0.2,
         margin_remove: int = 2,
         train_percent: float = 0.2,
         train_min_gt_count: int = 200,
-        ds_temperature: float = 0.1,
-        ot_filter_bin: bool = True,
-        ot_bin_score: float = 1.0,
-        ot_its_count: int = 3
+        temperature: float = 0.1,
     ) -> None:
         super().__init__()
-        self.type = type
-        self.sparse = sparse
         self.use_matchability = use_matchability
-        self.use_flow = use_flow
         self.threshold = threshold
         self.margin_remove = margin_remove
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
-
-        self.flow_decoder = None
-        if use_flow:
-            if flow_decoder is None:
-                raise ValueError("")
-            self.flow_decoder = flow_decoder
-
-        if type == "dual_softmax":
-            self.temp = ds_temperature
-        elif type == "optimal_transport":
-            self.temp = 1.0
-            self.ot_filter_bin = ot_filter_bin
-            self.ot_bin_score = nn.Parameter(torch.tensor(ot_bin_score))
-            self.ot_its_count = ot_its_count
-        else:
-            raise ValueError("")
+        self.temperature = temperature
 
     def _remove_mask_margin(
         self,
@@ -111,38 +84,18 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
             matching_idxes, gt_idxes))
         return train_idxes, matching_idxes
 
-    def _decode_flow(
-        self,
-        flow0: torch.Tensor,
-        flow1: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size
-    ) -> Dict[str, Any]:
-        flows_with_uncertainties0, flow_mask0 = self.flow_decoder(flow0, size1)
-        flows_with_uncertainties1, flow_mask1 = self.flow_decoder(flow1, size0)
-        flow_mask = flow_mask0 | flow_mask1.transpose(1, 2)
-        flow = {"flows_with_uncertainties0": flows_with_uncertainties0,
-                "flows_with_uncertainties1": flows_with_uncertainties1,
-                "flow_mask": flow_mask}
-        return flow
-
     @torch.no_grad()
     def _create_coarse_matching(
         self,
         confidences: torch.Tensor,
         size0: torch.Size,
         size1: torch.Size,
-        flow: Optional[Dict[str, Any]] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        if flow is not None:
-            if not self.training:
-                confidences.masked_fill_(~flow["flow_mask"], 0.0)
         (h0, w0), (h1, w1) = size0, size1
-
         mask = (confidences > self.threshold).reshape(-1, h0, w0, h1, w1)
         if mask0 is not None:
             mask0, mask1 = mask0.reshape(-1, h0, w0), mask1.reshape(-1, h1, w1)
@@ -171,13 +124,6 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
                            "points1": points1,
                            "confidences": confidences,
                            "first_stage_idxes": train_idxes}
-        if flow is not None:
-            if gt_idxes is not None:
-                b_idxes, i_idxes, j_idxes = gt_idxes
-            coarse_matching["flows_with_uncertainties0"] = (
-                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
-            coarse_matching["flows_with_uncertainties1"] = (
-                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return coarse_matching
 
     def forward(
@@ -188,8 +134,6 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
         size1: torch.Size,
         matchability0: Optional[torch.Tensor] = None,
         matchability1: Optional[torch.Tensor] = None,
-        flow0: Optional[torch.Tensor] = None,
-        flow1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
@@ -197,48 +141,30 @@ class CoarseMatching(nn.Module):  # TODO: change name to first stage
     ) -> Dict[str, Any]:
         l, (s, c) = feature0.shape[1], feature1.shape[1:]
 
-        flow = None
-        if self.use_flow:
-            if flow0 is None or flow1 is None:
-                raise ValueError("")
-            flow = self._decode_flow(flow0, flow1, size0, size1)
-
         similarities = torch.einsum(
             "nlc,nsc->nls", feature0 / c ** 0.5, feature1 / c ** 0.5)
-        similarities /= self.temp
+        similarities /= self.temperature
         if mask0 is not None:
             mask = mask0[:, :, None] & mask1[:, None, :]
             similarities.masked_fill_(~mask, -1e9)
 
         confidences_with_bin = None
-        if self.type == "dual_softmax":
-            idxes0_to_1_confidences = F.softmax(similarities, dim=2)
-            idxes1_to_0_confidences = F.softmax(similarities, dim=1)
-            confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
-            if self.training and self.use_matchability:
-                if matchability0 is None or matchability1 is None:
-                    raise ValueError("")
-                confidences = (matchability0[:, :, None] *
-                               matchability1[:, None, :] * confidences)
-                confidences_with_bin = F.pad(confidences, [0, 1, 0, 1])
-                confidences_with_bin[:, :-1, -1] = 1 - matchability0
-                confidences_with_bin[:, -1, :-1] = 1 - matchability1
-        elif self.type == "optimal_transport":
-            confidences_with_bin = optimal_transport.log_optimal_transport(
-                similarities, self.ot_bin_score, self.ot_its_count).exp()
-            confidences = confidences_with_bin[:, :l, :s]
-            if not self.training and self.ot_filter_bin:
-                bin0_mask = confidences_with_bin.argmax(dim=2) == s
-                confidences.masked_fill_(bin0_mask[:, :l, None], 0.0)
-                bin1_mask = confidences_with_bin.argmax(dim=1) == l
-                confidences.masked_fill_(bin1_mask[:, None, :s], 0.0)
-        else:
-            raise ValueError("")
+        idxes0_to_1_confidences = F.softmax(similarities, dim=2)
+        idxes1_to_0_confidences = F.softmax(similarities, dim=1)
+        confidences = idxes0_to_1_confidences * idxes1_to_0_confidences
+        if self.training and self.use_matchability:
+            if matchability0 is None or matchability1 is None:
+                raise ValueError("")
+            confidences = (matchability0[:, :, None] *
+                           matchability1[:, None, :] * confidences)
+            confidences_with_bin = F.pad(confidences, [0, 1, 0, 1])
+            confidences_with_bin[:, :-1, -1] = 1 - matchability0
+            confidences_with_bin[:, -1, :-1] = 1 - matchability1
 
         coarse_matching = self._create_coarse_matching(
-            confidences, size0, size1, flow=flow, mask0=mask0, mask1=mask1,
+            confidences, size0, size1, mask0=mask0, mask1=mask1,
             gt_idxes=gt_idxes)
-        if confidences_with_bin is not None and self.sparse:
+        if confidences_with_bin is not None:
             coarse_matching["first_stage_cls_heatmap"] = confidences_with_bin
         else:
             coarse_matching["first_stage_cls_heatmap"] = confidences

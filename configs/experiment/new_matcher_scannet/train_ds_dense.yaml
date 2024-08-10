@@ -1,16 +1,15 @@
 # @package _global_
 
 defaults:
-  - hybrid_matcher_scannet/default
+  - new_matcher_scannet/default
   - _self_
 
-tags: ["train-hybrid_matcher-scannet-ds-dense", "bs=24"]
+tags: ["train-new_matcher-scannet-ds-dense"]
 
 model:
-  net:
-    coarse_matching:
-      type: "dual_softmax"
-      sparse: false
+  loss:
+    coarse_cls_sparse: false
+    fine_cls_sparse: false
 
 trainer:
   devices: 8
