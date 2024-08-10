@@ -15,7 +15,8 @@ class NewMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_matching: nn.Module
+        fine_cls_matching: nn.Module,
+        fine_reg_matching: nn.Module
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -25,13 +26,28 @@ class NewMatcherNet(nn.Module):
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
-        self.fine_matching = fine_matching
+        self.fine_cls_matching = fine_cls_matching
+        self.fine_reg_matching = fine_reg_matching
 
-        self.scales = (backbone.scales[0], backbone.scales[1] //
-                       fine_preprocess.scale_before_crop)
-        self.type = fine_matching.type
-        self.cls_window_size = fine_matching.cls_window_size
-        self.reg_window_size = fine_matching.reg_window_size
+        self.scales = (backbone.scales[0],
+                       backbone.scales[1] // fine_preprocess.scale_before_crop)
+        self.cls_w = fine_cls_matching.window_size
+        self.reg_w = fine_reg_matching.window_size
+        self.cls_c = fine_cls_matching.depth
+        self.reg_c = fine_reg_matching.depth
+
+        e = fine_preprocess.right_extra
+        self.fine_w = fine_preprocess.window_size + 2 * e
+        mask = torch.zeros((self.fine_w, self.fine_w), dtype=torch.bool)
+        mask[e:-e, e:-e] = True
+        mask = mask.flatten()
+        self.register_buffer("fine_cls_mask", mask, persistent=False)
+
+        delta = K.create_meshgrid(
+            self.reg_w, self.reg_w, normalized_coordinates=False,
+            dtype=torch.long)
+        delta = delta.reshape(-1, 2)
+        self.register_buffer("fine_reg_delta", delta, persistent=False)
 
     def _scale_points(
         self,
@@ -110,7 +126,26 @@ class NewMatcherNet(nn.Module):
             x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
         if len(x0_1x) != 0:
             x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        result.update(self.fine_matching(x0_1x, x1_1x))
 
+        x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
+        x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
+
+        result.update(self.fine_cls_matching(
+            x0_1x, x1_1x[:, self.fine_cls_mask]))
+
+        m_idxes, sub_i_idxes, sub_j_idxes = map(
+            lambda x: x[:, None], result["fine_cls_idxes"])
+        sub_j_idxes = (self.fine_w *
+                       (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
+                       sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
+        x0_reg = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
+        x1_reg = x1_reg[m_idxes, sub_j_idxes]
+
+        result.update(self.fine_reg_matching(x0_reg, x1_reg))
+
+        result["biases0"] = result.pop("fine_cls_biases0")
+        result["biases1"] = (result.pop("fine_cls_biases1") +
+                             self.reg_w // 2 *
+                             result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

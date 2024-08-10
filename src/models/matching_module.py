@@ -83,16 +83,9 @@ class MatchingModule(pl.LightningModule):
             return_coor=True))
         supervision["fine_gt_biases"] = utils.compute_gt_biases(
             supervision.pop("points0_to_1"), supervision.pop("points1"),
-            result["second_stage_idxes"], self.net.scales[1],
-            self.net.reg_window_size)
+            result["fine_cls_idxes"], self.net.scales[1], self.net.reg_w)
         loss = self.loss(
-            coarse_cls_heatmap=result["coarse_cls_heatmap"],
-            coarse_gt_mask=supervision["coarse_gt_mask"],
-            fine_cls_heatmap=result["second_stage_cls_heatmap"],
-            fine_gt_mask=supervision["fine_gt_mask"],
-            fine_reg_biases=result["reg_biases"],
-            fine_gt_biases=supervision["fine_gt_biases"],
-            mask0=batch.get("mask0_8x"),
+            **result, **supervision, mask0=batch.get("mask0_8x"),
             mask1=batch.get("mask1_8x"))
         return result, loss
 

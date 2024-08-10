@@ -28,6 +28,7 @@ net:
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     use_matchability: ${model.net.coarse_module.use_matchability}
+    temperature: 0.1
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
     type: "eloftr"
@@ -37,9 +38,6 @@ net:
     right_extra: 1
     depths: ${model.net.backbone.layer_depths}
     scale_before_crop: 2
-#    window_size: 5
-#    stride: 4
-#    padding: 2
   fine_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     depth: ${model.net.backbone.layer_depths.0}
@@ -47,17 +45,18 @@ net:
     attention:
       _target_: src.models.components.nets.new_matcher.FullAttention
     types: ["self", "cross"]
-  fine_matching:
+  fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-#    type: "one_stage"
-#    reg_window_size: ${model.net.fine_preprocess.window_size}
-#    reg_with_std: true
-    type: "two_stage"
-    cls_window_size: ${model.net.fine_preprocess.window_size}
-    cls_depth: 112
-    reg_window_size: 3
-    reg_with_std: false
-    reg_temperature: 10.0
+    type: "classification"
+    depth: 112
+    window_size: ${model.net.fine_preprocess.window_size}
+    temperature: 1.0
+  fine_reg_matching:
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "regression_by_expectation"
+    depth: 16
+    window_size: 3
+    temperature: 10.0
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
