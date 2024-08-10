@@ -79,14 +79,14 @@ class MatchingModule(pl.LightningModule):
         supervision = utils.create_coarse_supervision(batch, self.net.scales[0])
         result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
         supervision.update(utils.create_fine_supervision(
-            batch, self.net.scales, result["first_stage_idxes"],
+            batch, self.net.scales, result["coarse_cls_idxes"],
             return_coor=True))
         supervision["fine_gt_biases"] = utils.compute_gt_biases(
             supervision.pop("points0_to_1"), supervision.pop("points1"),
             result["second_stage_idxes"], self.net.scales[1],
             self.net.reg_window_size)
         loss = self.loss(
-            coarse_cls_heatmap=result["first_stage_cls_heatmap"],
+            coarse_cls_heatmap=result["coarse_cls_heatmap"],
             coarse_gt_mask=supervision["coarse_gt_mask"],
             fine_cls_heatmap=result["second_stage_cls_heatmap"],
             fine_gt_mask=supervision["fine_gt_mask"],
@@ -224,7 +224,7 @@ class MatchingModule(pl.LightningModule):
         dump = {}
         if self.hparams.dump_dir is not None:
             dump = error
-            for k in ("points0", "points1", "confidences"):
+            for k in ("points0", "points1", "scores"):
                 dump[k] = result[k].cpu().numpy()
         output = {"error": error, "dump": dump}
         return output

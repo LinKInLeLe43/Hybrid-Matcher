@@ -65,59 +65,51 @@ class NewMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        n = batch["image0"].shape[0]
-        mask0 = batch.get("mask0_8x").flatten(start_dim=1)
-        mask1 = batch.get("mask1_8x").flatten(start_dim=1)
-        center0_mask = batch.get("mask0_32x").flatten(start_dim=1)
-        center1_mask = batch.get("mask1_32x").flatten(start_dim=1)
-        if (mask0 is None) == (mask1 is not None):
-            raise ValueError("")
+        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
+        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
-            data = torch.cat([batch["image0"], batch["image1"]])
-            fine_features, coarse_feature = self.backbone(data)
-            center, coarse_feature = self.local_coc(coarse_feature)
-            centers0, centers1 = center.chunk(2)
-            coarse_feature0, coarse_feature1 = coarse_feature.chunk(2)
-            fine_features0, fine_features1 = [], []
-            for fine_feature in fine_features:
-                fine_feature0, fine_feature1 = fine_feature.chunk(2)
-                fine_features0.append(fine_feature0)
-                fine_features1.append(fine_feature1)
+            x = torch.cat([batch["image0"], batch["image1"]])
+            xs, x_8x = self.backbone(x)
+            x_8x, x_32x = self.local_coc(x_8x)
+
+            x0s, x1s = [], []
+            for x in xs:
+                x0, x1 = x.chunk(2)
+                x0s.append(x0)
+                x1s.append(x1)
+            x0_8x, x1_8x = x_8x.chunk(2)
+            x0_32x, x1_32x = x_32x.chunk(2)
         else:
-            fine_features0, coarse_feature0 = self.backbone(batch["image0"])
-            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
+            x0s, x0_8x = self.backbone(batch["image0"])
+            x0_8x, x0_32x = self.local_coc(x0_8x)
 
-            fine_features1, coarse_feature1 = self.backbone(batch["image1"])
-            centers1, coarse_feature1 = self.local_coc(coarse_feature1)
-        size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
+            x1s, x1_8x = self.backbone(batch["image1"])
+            x1_8x, x1_32x = self.local_coc(x1_8x)
+        size0, size1 = x0_8x.shape[2:], x1_8x.shape[2:]
 
-        coarse_feature0 = self.positional_encoding(coarse_feature0)
-        coarse_feature1 = self.positional_encoding(coarse_feature1)
+        x0_8x = self.positional_encoding(x0_8x)
+        x1_8x = self.positional_encoding(x1_8x)
 
-        coarse_feature0, coarse_feature1, centers0, centers1 = map(
+        x0_8x, x1_8x, x0_32x, x1_32x = map(
             lambda x: x.flatten(start_dim=2).transpose(1, 2),
-            (coarse_feature0, coarse_feature1, centers0, centers1))
+            (x0_8x, x1_8x, x0_32x, x1_32x))
 
-        (coarse_feature0, coarse_feature1, matchability0, matchability1
-         ) = self.coarse_module(
-            coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            x0_mask=mask0, x1_mask=mask1,
-            center0_mask=center0_mask, center1_mask=center1_mask)
+        x0_8x, x1_8x, m0_8x, m1_8x = self.coarse_module(
+            x0_8x, x1_8x, x0_32x, x1_32x, size0, size1,
+            x0_mask=mask0_8x.flatten(start_dim=1), x1_mask=mask1_8x.flatten(start_dim=1),
+            center0_mask=mask0_32x.flatten(start_dim=1), center1_mask=mask1_32x.flatten(start_dim=1))
 
         result = self.coarse_matching(
-            coarse_feature0, coarse_feature1, size0, size1,
-            matchability0=matchability0, matchability1=matchability1,
-            mask0=mask0, mask1=mask1, gt_idxes=gt_idxes)
+            x0_8x, x1_8x, size0, size1, m0=m0_8x, m1=m1_8x, mask0=mask0_8x,
+            mask1=mask1_8x, gt_idxes=gt_idxes)
 
-        fine_feature0, fine_feature1 = self.fine_preprocess(
-            fine_features0 + [coarse_feature0],
-            fine_features1 + [coarse_feature1], size0, size1,
-            result["first_stage_idxes"])
-        if len(fine_feature0) != 0:
-            fine_feature0, fine_feature1 = self.fine_module(
-                fine_feature0, fine_feature1)
-        result.update(self.fine_matching(fine_feature0, fine_feature1))
+        x0_1x, x1_1x = self.fine_preprocess(
+            x0s + [x0_8x], x1s + [x1_8x], size0, size1,
+            result["coarse_cls_idxes"])
+        if len(x0_1x) != 0:
+            x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
+        result.update(self.fine_matching(x0_1x, x1_1x))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

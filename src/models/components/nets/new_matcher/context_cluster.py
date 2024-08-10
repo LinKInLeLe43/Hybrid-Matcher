@@ -394,7 +394,7 @@ class LocalCoC(nn.Module):
         x1 = self.layer1(x1)
         x2 = self.point_reducer1(x1)
         x2 = self.layer2(x2)
-        return x2, x0
+        return x0, x2
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
