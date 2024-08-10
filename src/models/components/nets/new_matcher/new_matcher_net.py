@@ -104,9 +104,10 @@ class NewMatcherNet(nn.Module):
             x0_8x, x1_8x, size0, size1, m0=m0_8x, m1=m1_8x, mask0=mask0_8x,
             mask1=mask1_8x, gt_idxes=gt_idxes)
 
+        x0_8x = x0_8x.transpose(1, 2).unflatten(2, size0)
+        x1_8x = x1_8x.transpose(1, 2).unflatten(2, size1)
         x0_1x, x1_1x = self.fine_preprocess(
-            x0s + [x0_8x], x1s + [x1_8x], size0, size1,
-            result["coarse_cls_idxes"])
+            x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
         if len(x0_1x) != 0:
             x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
         result.update(self.fine_matching(x0_1x, x1_1x))

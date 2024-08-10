@@ -30,16 +30,16 @@ net:
     use_matchability: ${model.net.coarse_module.use_matchability}
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
-    type: "fuse_all_before_crop"
+    type: "eloftr"
     window_size: 8
     stride: 8
     padding: 0
     right_extra: 1
+    depths: ${model.net.backbone.layer_depths}
     scale_before_crop: 2
 #    window_size: 5
 #    stride: 4
 #    padding: 2
-    layer_depths: ${model.net.backbone.layer_depths}
   fine_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     depth: ${model.net.backbone.layer_depths.0}
