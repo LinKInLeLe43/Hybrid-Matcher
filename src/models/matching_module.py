@@ -76,7 +76,8 @@ class MatchingModule(pl.LightningModule):
         self,
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        supervision = utils.create_coarse_supervision(batch, self.net.scales[0])
+        supervision = utils.create_coarse_supervision(
+            batch, self.net.scales[0], return_flow=self.net.use_flow)
         result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
         supervision.update(utils.create_fine_supervision(
             batch, self.net.scales, result["coarse_cls_idxes"],

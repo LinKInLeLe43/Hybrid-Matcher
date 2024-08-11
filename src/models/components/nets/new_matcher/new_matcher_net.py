@@ -29,6 +29,7 @@ class NewMatcherNet(nn.Module):
         self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
 
+        self.use_flow = getattr(coarse_module, "use_flow", False)
         self.scales = (backbone.scales[0],
                        backbone.scales[1] // fine_preprocess.scale_before_crop)
         self.cls_w = fine_cls_matching.window_size
@@ -106,13 +107,13 @@ class NewMatcherNet(nn.Module):
         x0_8x = self.positional_encoding(x0_8x)
         x1_8x = self.positional_encoding(x1_8x)
 
-        x0_8x, x1_8x, m0_8x, m1_8x = self.coarse_module(
+        x0_8x, x1_8x, flow0_8x, flow1_8x, m0_8x, m1_8x = self.coarse_module(
             x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,
             mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
         result = self.coarse_matching(
-            x0_8x, x1_8x, m0_8x, m1_8x, mask0=mask0_8x, mask1=mask1_8x,
-            gt_idxes=gt_idxes)
+            x0_8x, x1_8x, flow0_8x, flow1_8x, m0_8x, m1_8x, mask0=mask0_8x,
+            mask1=mask1_8x, gt_idxes=gt_idxes)
 
         x0_1x, x1_1x = self.fine_preprocess(
             x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])

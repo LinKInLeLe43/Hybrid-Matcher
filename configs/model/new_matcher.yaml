@@ -27,9 +27,15 @@ net:
     layer_count: 4
 #    attention:
 #      _target_: src.models.components.nets.new_matcher.FullAttention
+    use_flow: true
     use_matchability: true
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
+    use_flow: ${model.net.coarse_module.use_flow}
+    flow_decoder:
+      _target_: src.models.components.nets.new_matcher.FlowDecoder
+      depth: ${model.net.local_coc.layer_depths.2}
+      radius: 8
     use_matchability: ${model.net.coarse_module.use_matchability}
     temperature: 0.1
   fine_preprocess:
@@ -70,6 +76,7 @@ loss:
   fine_cls_loss_pos_weight: 1.0
   fine_cls_loss_neg_weight: 1.0
   fine_reg_loss_weight: 1.0
+  flow_loss_weight: 0.05
 
 optimizer: ???
 

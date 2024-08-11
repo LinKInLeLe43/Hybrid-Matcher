@@ -8,6 +8,8 @@ from torch.nn import functional as F
 class CoarseMatching(nn.Module):
     def __init__(
         self,
+        use_flow: bool = False,
+        flow_decoder: Optional[nn.Module] = None,
         use_matchability: bool = False,
         threshold: float = 0.2,
         border_removal: int = 2,
@@ -16,12 +18,20 @@ class CoarseMatching(nn.Module):
         train_min_gt_count: int = 200
     ) -> None:
         super().__init__()
+        self.use_flow = use_flow
         self.use_matchability = use_matchability
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
+
+        self.flow_decoder = None
+        if use_flow:
+            if flow_decoder is None:
+                raise ValueError("")
+
+            self.flow_decoder = flow_decoder
 
     def _remove_border(
         self,
@@ -90,6 +100,24 @@ class CoarseMatching(nn.Module):
             matching_idxes, gt_idxes))
         return train_idxes, matching_idxes
 
+    def _decode_flow(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor
+    ) -> Dict[str, Any]:
+        _, _, h0, w0 = x0.shape
+        _, _, h1, w1 = x1.shape
+
+        x0 = x0.flatten(start_dim=2).transpose(1, 2)
+        x1 = x1.flatten(start_dim=2).transpose(1, 2)
+        out0, mask0 = self.flow_decoder(x0, (h1, w1))
+        out1, mask1 = self.flow_decoder(x1, (h0, w0))
+        mask = mask0 | mask1.transpose(1, 2)
+        flow = {"flows_with_uncertainties0": out0,
+                "flows_with_uncertainties1": out1,
+                "flow_mask": mask}
+        return flow
+
     @torch.no_grad()
     def _create_coarse_matching(
         self,
@@ -127,6 +155,8 @@ class CoarseMatching(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
+        flow0: Optional[torch.Tensor],
+        flow1: Optional[torch.Tensor],
         m0: Optional[torch.Tensor],
         m1: Optional[torch.Tensor],
         mask0: Optional[torch.Tensor] = None,
@@ -136,6 +166,13 @@ class CoarseMatching(nn.Module):
     ) -> Dict[str, Any]:
         _, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
+
+        flow = None
+        if self.use_flow:
+            if flow0 is None or flow1 is None:
+                raise ValueError("")
+
+            flow = self._decode_flow(flow0, flow1)
 
         x0 = x0.flatten(start_dim=2).transpose(1, 2)
         x1 = x1.flatten(start_dim=2).transpose(1, 2)
@@ -164,4 +201,11 @@ class CoarseMatching(nn.Module):
         result = self._create_coarse_matching(
             confidence, (h0, w0), (h1, w1), mask0, mask1, gt_idxes)
         result["coarse_cls_heatmap"] = heatmap
+
+        if flow is not None and gt_idxes is not None:
+            b_idxes, i_idxes, j_idxes = gt_idxes
+            result["flows_with_uncertainties0"] = (
+                flow["flows_with_uncertainties0"][b_idxes, i_idxes])
+            result["flows_with_uncertainties1"] = (
+                flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return result
