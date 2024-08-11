@@ -102,26 +102,18 @@ class NewMatcherNet(nn.Module):
 
             x1s, x1_8x = self.backbone(batch["image1"])
             x1_8x, x1_32x = self.local_coc(x1_8x)
-        size0, size1 = x0_8x.shape[2:], x1_8x.shape[2:]
 
         x0_8x = self.positional_encoding(x0_8x)
         x1_8x = self.positional_encoding(x1_8x)
 
-        x0_8x, x1_8x, x0_32x, x1_32x = map(
-            lambda x: x.flatten(start_dim=2).transpose(1, 2),
-            (x0_8x, x1_8x, x0_32x, x1_32x))
-
         x0_8x, x1_8x, m0_8x, m1_8x = self.coarse_module(
-            x0_8x, x1_8x, x0_32x, x1_32x, size0, size1,
-            x0_mask=mask0_8x.flatten(start_dim=1), x1_mask=mask1_8x.flatten(start_dim=1),
-            center0_mask=mask0_32x.flatten(start_dim=1), center1_mask=mask1_32x.flatten(start_dim=1))
+            x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,
+            mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
         result = self.coarse_matching(
-            x0_8x, x1_8x, size0, size1, m0=m0_8x, m1=m1_8x, mask0=mask0_8x,
-            mask1=mask1_8x, gt_idxes=gt_idxes)
+            x0_8x, x1_8x, m0_8x, m1_8x, mask0=mask0_8x, mask1=mask1_8x,
+            gt_idxes=gt_idxes)
 
-        x0_8x = x0_8x.transpose(1, 2).unflatten(2, size0)
-        x1_8x = x1_8x.transpose(1, 2).unflatten(2, size1)
         x0_1x, x1_1x = self.fine_preprocess(
             x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
         if len(x0_1x) != 0:

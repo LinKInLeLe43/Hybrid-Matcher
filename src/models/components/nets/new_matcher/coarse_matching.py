@@ -127,17 +127,18 @@ class CoarseMatching(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size,
-        m0: Optional[torch.Tensor] = None,
-        m1: Optional[torch.Tensor] = None,
+        m0: Optional[torch.Tensor],
+        m1: Optional[torch.Tensor],
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        l, (s, c) = x0.shape[1], x1.shape[1:]
+        _, c, h0, w0 = x0.shape
+        _, _, h1, w1 = x1.shape
 
+        x0 = x0.flatten(start_dim=2).transpose(1, 2)
+        x1 = x1.flatten(start_dim=2).transpose(1, 2)
         x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", x0, x1)
         similarity /= self.temperature
@@ -161,6 +162,6 @@ class CoarseMatching(nn.Module):
             heatmap[:, -1, :-1] = 1 - m1
 
         result = self._create_coarse_matching(
-            confidence, size0, size1, mask0, mask1, gt_idxes)
+            confidence, (h0, w0), (h1, w1), mask0, mask1, gt_idxes)
         result["coarse_cls_heatmap"] = heatmap
         return result

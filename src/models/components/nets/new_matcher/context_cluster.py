@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import einops
 import torch
@@ -22,19 +22,9 @@ class Mlp(nn.Module):
         self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if len(x.shape) == 3:
-            pass
-        elif len(x.shape) == 4:
-            x = x.permute(0, 2, 3, 1)
-        else:
-            raise ValueError("")
-
         x = self.linear0(x)
         x = self.gelu(x)
         x = self.linear1(x)
-
-        if len(x.shape) == 4:
-            x = x.permute(0, 3, 1, 2).contiguous()
         return x
 
 
@@ -52,29 +42,12 @@ class Mlp3x3(nn.Module):
         self.conv = nn.Conv2d(hidden_depth, out_depth, 3, padding=1, bias=bias)
         self.gelu = nn.GELU()
 
-    def forward(
-        self,
-        x: torch.Tensor,
-        size: Optional[torch.Size] = None
-    ) -> torch.Tensor:
-        if len(x.shape) == 3:
-            if size is None:
-                raise ValueError("")
-            x = x.unflatten(1, size)
-            flatten = True
-        elif len(x.shape) == 4:
-            x = x.permute(0, 2, 3, 1)
-            flatten = False
-        else:
-            raise ValueError("")
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.linear(x)
         x = self.gelu(x)
         x = x.permute(0, 3, 1, 2)
         x = self.conv(x)
-
-        if flatten:
-            x = x.flatten(start_dim=2).transpose(1, 2)
+        x = x.permute(0, 2, 3, 1)
         return x
 
 
@@ -87,13 +60,13 @@ class LocalCluster(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        use_efficient: bool = True
+        type: str = "flattened_index"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.center_size = center_size
         self.fold_size = fold_size
-        self.use_efficient = use_efficient
+        self.type = type
 
         self.proj = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
         self.center_proposal = nn.AdaptiveAvgPool2d(center_size)
@@ -110,7 +83,7 @@ class LocalCluster(nn.Module):
         fc, fh, fw = self.heads_count, self.fold_size, self.fold_size
         n, c, h, w = x.shape
         sh, sw = h // fh, w // fw
-        m, l, s = n * fc * fh * fw, sh * sw, self.center_size ** 2
+        m, s = n * fc * fh * fw, self.center_size ** 2
         device = x.device
 
         x = self.proj(x)
@@ -130,13 +103,13 @@ class LocalCluster(nn.Module):
         similarities = self.alpha * similarities + self.beta
         if mask is not None:
             mask = einops.repeat(
-                mask, "n (fh sh fw sw) -> (n fc fh fw) (sh sw) s", fc=fc, fh=fh,
-                sh=sh, fw=fw, sw=sw, s=s)
+                mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s", fc=fc,
+                fh=fh, fw=fw, s=s)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
-        if self.use_efficient:
+        if self.type == "flattened_index":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, x_value, center_value = map(
@@ -156,7 +129,32 @@ class LocalCluster(nn.Module):
                 dispatched,
                 "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
-        else:
+        elif self.type == "segment_csr":
+            max_sim_idxes = (max_sim_idxes +
+                             s * torch.arange(m, device=device)[:, None])
+            max_sim_values, max_sim_idxes, x_value, center_value = map(
+                lambda x: x.flatten(end_dim=1),
+                (max_sim_values, max_sim_idxes, x_value, center_value))
+
+            max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
+
+            cat_ones = torch.ones_like(x_value[:, [0]])
+            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
+            cat_ones = torch.ones_like(center_value[:, [0]])
+            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
+            max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
+                max_sim_idxes, size=m * s)
+            aggregated = cat_center_value + torch_scatter.segment_csr(
+                (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
+                max_sim_idxes_csr)
+            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+            dispatched = (max_sim_values[:, None] *
+                          aggregated.index_select(0, max_sim_idxes))
+            dispatched = einops.rearrange(
+                dispatched,
+                "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                fh=fh, fw=fw, sh=sh, sw=sw)
+        elif self.type == "original":
             mask = torch.zeros_like(similarities)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
             similarities = (mask * similarities)[..., None]
@@ -169,6 +167,8 @@ class LocalCluster(nn.Module):
                 dispatched,
                 "(n fc fh fw) (sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
+        else:
+            raise NotImplementedError("")
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -180,11 +180,11 @@ class GlobalCluster(nn.Module):
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
-        use_efficient: bool = True
+        type: str = "flattened_index"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
-        self.use_efficient = use_efficient
+        self.type = type
 
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
         self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
@@ -197,19 +197,20 @@ class GlobalCluster(nn.Module):
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         fc = self.heads_count
-        n, l, c = x0.shape
-        _, s, _ = center1.shape
-        m = n * fc
+        n, c, h0, w0 = x0.shape
+        _, _, h1, w1 = center1.shape
+        m, s = n * fc, h1 * w1
         device = x0.device
 
-        x0_point, center1 = self.proj0(x0), self.proj1(center1)
+        x0_point = self.proj0(x0.permute(0, 2, 3, 1))
+        center1 = self.proj1(center1.permute(0, 2, 3, 1))
         x0_point = einops.rearrange(
-            x0_point, "n l (fc sc) -> (n fc) l sc", fc=fc)
-        center1 = einops.rearrange(center1, "n s (fc sc) -> (n fc) s sc", fc=fc)
+            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        center1 = einops.rearrange(
+            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
         center1_point, center1_value = center1.chunk(2, dim=2)
 
         norm_x0_point = F.normalize(x0_point, dim=2)
@@ -217,14 +218,13 @@ class GlobalCluster(nn.Module):
         similarities = torch.einsum(
             "mlc,msc->mls", norm_x0_point, norm_center1_point)
         similarities = self.alpha * similarities + self.beta
-        if x0_mask is not None:
-            mask = x0_mask[:, :, None] & center1_mask[:, None, :]
+        if mask is not None:
             mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
-        if self.use_efficient:
+        if self.type == "flattened_index":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, center1_value = map(
@@ -234,7 +234,7 @@ class GlobalCluster(nn.Module):
             dispatched = (max_sim_values[:, None] *
                           center1_value.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
-                dispatched, "(n fc l) sc -> n l (fc sc)", fc=fc, l=l)
+                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
             dispatched = self.merge(dispatched)
         else:
             raise NotImplementedError("")
@@ -269,8 +269,8 @@ class LocalClusterBlock(nn.Module):
         new_x = self.cluster(x, mask=mask)
         new_x = self.norm0(new_x)
 
-        new_x = torch.cat([x, new_x], dim=1)
-        new_x = self.mlp(new_x)
+        new_x = torch.cat([x, new_x], dim=1).permute(0, 2, 3, 1)
+        new_x = self.mlp(new_x).permute(0, 3, 1, 2).contiguous()
         new_x = self.norm1(new_x)
 
         new_x += x
@@ -298,17 +298,15 @@ class GlobalClusterBlock(nn.Module):
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
-        size0: torch.Size,
-        x0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor]:
-        new_x0 = self.cluster(
-            x0, center1, x0_mask=x0_mask, center1_mask=center1_mask)
+        new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
 
-        new_x0 = torch.cat([x0, new_x0], dim=2)
-        new_x0 = self.mlp3x3(new_x0, size=size0)
+        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
+        new_x0 = self.mlp3x3(new_x0)
         new_x0 = self.norm1(new_x0)
+        new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 
         new_x0 += x0
         return new_x0
@@ -418,10 +416,12 @@ class LocalCoC(nn.Module):
 class MergeBlock(nn.Module):
     def __init__(
         self,
+        scale: int,
         depth: int,
         bias: bool = True
     ) -> None:
         super().__init__()
+        self.scale = scale
 
         self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias)
         self.norm = nn.GroupNorm(1, depth)
@@ -429,22 +429,18 @@ class MergeBlock(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        center: torch.Tensor,
-        size: torch.Size
+        center: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        new_x = x.transpose(1, 2).unflatten(2, (size[0], size[1]))
-        new_center = center.transpose(1, 2).unflatten(
-            2, (size[0] // 4, size[1] // 4))
         up_center = F.interpolate(
-            new_center, scale_factor=4.0, mode="bilinear", align_corners=True)
-        new_x = torch.cat([new_x, up_center], dim=1)
-
+            center, scale_factor=self.scale, mode="bilinear",
+            align_corners=True)
+        new_x = torch.cat([x, up_center], dim=1).permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
+        new_x = new_x.permute(0, 3, 1, 2).contiguous()
         new_x = self.norm(new_x)
         new_center = F.interpolate(
-            new_x, scale_factor=0.25, mode="bilinear", align_corners=True)
-        new_x = new_x.flatten(start_dim=2).transpose(1, 2)
-        new_center = new_center.flatten(start_dim=2).transpose(1, 2)
+            new_x, scale_factor=1 / self.scale, mode="bilinear",
+            align_corners=True)
         new_x += x
         new_center += center
         return new_x, new_center
@@ -453,25 +449,25 @@ class MergeBlock(nn.Module):
 class GlobalCoC(nn.Module):
     def __init__(
         self,
+        scale: int,
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
-        types: List[str],
-        bias: bool = True,
-        use_matchability: bool = False
+        layer_count: int,
+        use_matchability: bool = False,
+        bias: bool = True
     ) -> None:
         super().__init__()
-        self.types = types
         self.use_matchability = use_matchability
 
-        merge_block = MergeBlock(in_depth, bias=bias)
+        merge_block = MergeBlock(scale, in_depth, bias=bias)
         self.merge_blocks = nn.ModuleList(
-            [copy.deepcopy(merge_block) for _ in types])
+            [copy.deepcopy(merge_block) for _ in range(layer_count)])
 
         global_block = GlobalClusterBlock(
             in_depth, hidden_depth, heads_count, bias=bias)
         self.global_blocks = nn.ModuleList(
-            [copy.deepcopy(global_block) for _ in types])
+            [copy.deepcopy(global_block) for _ in range(layer_count)])
 
         # local_block = LocalClusterBlock(
         #     in_depth, hidden_depth, heads_count, 8, 1, bias=bias)
@@ -482,7 +478,7 @@ class GlobalCoC(nn.Module):
         if use_matchability:
             matchability_decoder = Mlp(in_depth, in_depth // 2, 1, bias=bias)
         self.matchability_decoders = nn.ModuleList(
-            [copy.deepcopy(matchability_decoder) for _ in types])
+            [copy.deepcopy(matchability_decoder) for _ in range(layer_count)])
 
         # TODO: check weight init
         for m in self.modules():
@@ -494,58 +490,47 @@ class GlobalCoC(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        center0: torch.Tensor,
-        center1: torch.Tensor,
-        size0: torch.Size,
-        size1: torch.Size,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        center0_mask: Optional[torch.Tensor] = None,
-        center1_mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+        x0_8x: torch.Tensor,
+        x1_8x: torch.Tensor,
+        x0_32x: torch.Tensor,
+        x1_32x: torch.Tensor,
+        mask0_8x: Optional[torch.Tensor] = None,
+        mask1_8x: Optional[torch.Tensor] = None,
+        mask0_32x: Optional[torch.Tensor] = None,
+        mask1_32x: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor,
                Optional[torch.Tensor], Optional[torch.Tensor]]:
-        matchability0 = matchability1 = None
+        m0_8x = m1_8x = None
         if self.use_matchability:
-            matchability0, matchability1 = [], []
+            m0_8x, m1_8x = [], []
 
-        # mask00 = mask11 = mask01 = mask10 = None
-        # if x0_mask is not None:
-        #     mask00 = x0_mask[:, :, None] & center0_mask[:, None, :]
-        #     mask11 = x1_mask[:, :, None] & center1_mask[:, None, :]
-        #     mask01 = x0_mask[:, :, None] & center1_mask[:, None, :]
-        #     mask10 = x1_mask[:, :, None] & center0_mask[:, None, :]
+        mask00 = mask11 = mask01 = mask10 = None
+        if mask0_8x is not None:
+            mask0_8x = mask0_8x.flatten(start_dim=1)
+            mask1_8x = mask1_8x.flatten(start_dim=1)
+            mask0_32x = mask0_32x.flatten(start_dim=1)
+            mask1_32x = mask1_32x.flatten(start_dim=1)
+            mask00 = mask0_8x[:, :, None] & mask0_32x[:, None, :]
+            mask11 = mask1_8x[:, :, None] & mask1_32x[:, None, :]
+            mask01 = mask0_8x[:, :, None] & mask1_32x[:, None, :]
+            mask10 = mask1_8x[:, :, None] & mask0_32x[:, None, :]
 
-        for merge_block, global_block, matchability_decoder, type in zip(
-            self.merge_blocks, self.global_blocks, self.matchability_decoders,
-            self.types):
-            x0, center0 = merge_block(x0, center0, size0)
-            x1, center1 = merge_block(x1, center1, size1)
-            if type == "self":
-                # x0 = global_block(x0, center0, mask=mask00)
-                # x1 = global_block(x1, center1, mask=mask11)
-                pass
-            elif type == "cross":
-                x0 = global_block(
-                    x0, center1, size0, x0_mask=x0_mask,
-                    center1_mask=center1_mask)
-                x1 = global_block(
-                    x1, center0, size1, x0_mask=x1_mask,
-                    center1_mask=center0_mask)
-                # x0 = x0.transpose(1, 2).unflatten(2, (size0[0], size0[1]))
-                # x1 = x1.transpose(1, 2).unflatten(2, (size1[0], size1[1]))
-                # x0 = local_block(x0, mask=x0_mask)
-                # x1 = local_block(x1, mask=x1_mask)
-                # x0 = x0.flatten(start_dim=2).transpose(1, 2)
-                # x1 = x1.flatten(start_dim=2).transpose(1, 2)
+        for merge_block, global_block, matchability_decoder in zip(
+            self.merge_blocks, self.global_blocks, self.matchability_decoders):
+            x0_8x, x0_32x = merge_block(x0_8x, x0_32x)
+            x1_8x, x1_32x = merge_block(x1_8x, x1_32x)
+            # x0 = global_block(x0, center0, mask=mask00)
+            # x1 = global_block(x1, center1, mask=mask11)
+            x0_8x = global_block(x0_8x, x1_32x, mask=mask01)
+            x1_8x = global_block(x1_8x, x0_32x, mask=mask10)
 
-                if self.use_matchability:
-                    matchability0.append(matchability_decoder(x0).sigmoid())
-                    matchability1.append(matchability_decoder(x1).sigmoid())
-            else:
-                raise ValueError("")
+            if self.use_matchability:
+                m0_8x.append(matchability_decoder(
+                    x0_8x.flatten(start_dim=2).transpose(1, 2)).sigmoid())
+                m1_8x.append(matchability_decoder(
+                    x1_8x.flatten(start_dim=2).transpose(1, 2)).sigmoid())
+
         if self.use_matchability:
-            matchability0 = torch.cat(matchability0, dim=2).mean(dim=2)
-            matchability1 = torch.cat(matchability1, dim=2).mean(dim=2)
-        return x0, x1, matchability0, matchability1
+            m0_8x = torch.cat(m0_8x, dim=2).mean(dim=2)
+            m1_8x = torch.cat(m1_8x, dim=2).mean(dim=2)
+        return x0_8x, x1_8x, m0_8x, m1_8x
