@@ -5,6 +5,7 @@ import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
+import torch_scatter
 
 
 class Mlp(nn.Module):
@@ -60,7 +61,7 @@ class LocalCluster(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        type: str = "flattened_index"
+        type: str = "segment_csr"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
@@ -581,22 +582,22 @@ class GlobalCoC(nn.Module):
             mask01 = mask0_8x[:, :, None] & mask1_32x[:, None, :]
             mask10 = mask1_8x[:, :, None] & mask0_32x[:, None, :]
 
-        for merge_block, global_block, matchability_decoder in zip(
-            self.merge_blocks, self.global_blocks, self.matchability_decoders):
+        for merge_block, global_block, self_block, cross_block, matchability_decoder in zip(
+            self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks, self.matchability_decoders):
             x0_8x, x0_32x = merge_block(x0_8x, x0_32x)
             x1_8x, x1_32x = merge_block(x1_8x, x1_32x)
             # x0 = global_block(x0, center0, mask=mask00)
             # x1 = global_block(x1, center1, mask=mask11)
             x0_8x = global_block(x0_8x, x1_32x, mask=mask01)
             x1_8x = global_block(x1_8x, x0_32x, mask=mask10)
-            # x0_8x = self_block(
-            #     x0_8x, x0_8x, x_mask=mask0_32x, source_mask=mask0_32x)
-            # x1_8x = self_block(
-            #     x1_8x, x1_8x, x_mask=mask1_32x, source_mask=mask1_32x)
-            # x0_8x = cross_block(
-            #     x0_8x, x1_8x, x_mask=mask0_32x, source_mask=mask1_32x)
-            # x1_8x = cross_block(
-            #     x1_8x, x0_8x, x_mask=mask1_32x, source_mask=mask0_32x)
+            x0_8x = self_block(
+                x0_8x, x0_8x, x_mask=mask0_32x, source_mask=mask0_32x)
+            x1_8x = self_block(
+                x1_8x, x1_8x, x_mask=mask1_32x, source_mask=mask1_32x)
+            x0_8x = cross_block(
+                x0_8x, x1_8x, x_mask=mask0_32x, source_mask=mask1_32x)
+            x1_8x = cross_block(
+                x1_8x, x0_8x, x_mask=mask1_32x, source_mask=mask0_32x)
 
             if self.use_matchability:
                 m0_8x.append(matchability_decoder(
