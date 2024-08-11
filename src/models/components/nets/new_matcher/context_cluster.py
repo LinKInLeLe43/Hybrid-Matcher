@@ -446,6 +446,64 @@ class MergeBlock(nn.Module):
         return new_x, new_center
 
 
+class AttentionBlock(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        heads_count: int,
+        attention: nn.Module
+    ) -> None:
+        super().__init__()
+        self.heads_count = heads_count
+        self.attention = attention
+
+        self.down_q = nn.Conv2d(depth, depth, 4, stride=4, groups=depth, bias=False)
+        self.down_kv = nn.MaxPool2d(4, stride=4)
+
+        self.q_proj = nn.Linear(depth, depth, bias=False)
+        self.k_proj = nn.Linear(depth, depth, bias=False)
+        self.v_proj = nn.Linear(depth, depth, bias=False)
+
+        self.merge = nn.Linear(depth, depth, bias=False)
+        self.norm1 = nn.LayerNorm(depth)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * depth, depth, bias=False))
+        self.norm2 = nn.LayerNorm(depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        source: torch.Tensor,
+        x_mask: Optional[torch.Tensor] = None,
+        source_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        q = self.down_q(x).flatten(start_dim=2).transpose(1, 2)
+        kv = self.down_kv(source).flatten(start_dim=2).transpose(1, 2)
+
+        q = self.q_proj(q).unflatten(2, (self.heads_count, -1))
+        k = self.k_proj(kv).unflatten(2, (self.heads_count, -1))
+        v = self.v_proj(kv).unflatten(2, (self.heads_count, -1))
+        out = self.attention(
+            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+
+        out = self.merge(out)
+        out = self.norm1(out)
+        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // 4, x.shape[3] // 4))
+        out = F.interpolate(out, scale_factor=4.0, mode="bilinear")
+
+        out = torch.cat([x, out], dim=1)
+        out = out.permute(0, 2, 3, 1)
+        out = self.mlp(out)
+        out = self.norm2(out)
+        out = out.permute(0, 3, 1, 2).contiguous()
+
+        out += x
+        return out
+
+
 class GlobalCoC(nn.Module):
     def __init__(
         self,
@@ -454,6 +512,7 @@ class GlobalCoC(nn.Module):
         hidden_depth: int,
         heads_count: int,
         layer_count: int,
+        attention: Optional[nn.Module] = None,
         use_matchability: bool = False,
         bias: bool = True
     ) -> None:
@@ -473,6 +532,13 @@ class GlobalCoC(nn.Module):
         #     in_depth, hidden_depth, heads_count, 8, 1, bias=bias)
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
+
+        if attention is not None:
+            attention_block = AttentionBlock(in_depth, heads_count, attention)
+            self.self_blocks = nn.ModuleList([copy.deepcopy(attention_block)
+                                              for _ in range(layer_count)])
+            self.cross_blocks = nn.ModuleList([copy.deepcopy(attention_block)
+                                               for _ in range(layer_count)])
 
         matchability_decoder = None
         if use_matchability:
@@ -523,6 +589,14 @@ class GlobalCoC(nn.Module):
             # x1 = global_block(x1, center1, mask=mask11)
             x0_8x = global_block(x0_8x, x1_32x, mask=mask01)
             x1_8x = global_block(x1_8x, x0_32x, mask=mask10)
+            # x0_8x = self_block(
+            #     x0_8x, x0_8x, x_mask=mask0_32x, source_mask=mask0_32x)
+            # x1_8x = self_block(
+            #     x1_8x, x1_8x, x_mask=mask1_32x, source_mask=mask1_32x)
+            # x0_8x = cross_block(
+            #     x0_8x, x1_8x, x_mask=mask0_32x, source_mask=mask1_32x)
+            # x1_8x = cross_block(
+            #     x1_8x, x0_8x, x_mask=mask1_32x, source_mask=mask0_32x)
 
             if self.use_matchability:
                 m0_8x.append(matchability_decoder(

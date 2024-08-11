@@ -11,6 +11,9 @@ data:
 
 model:
   net:
+    positional_encoding:
+      train_size: [480, 640]
+      test_size: [480, 640]
     coarse_matching:
       border_removal: 0
   optimizer:

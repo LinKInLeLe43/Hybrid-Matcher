@@ -116,6 +116,7 @@ class NewMatcherNet(nn.Module):
 
         x0_1x, x1_1x = self.fine_preprocess(
             x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
+
         if len(x0_1x) != 0:
             x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
 

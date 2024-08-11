@@ -9,7 +9,7 @@ net:
   positional_encoding:
     _target_: src.models.components.nets.new_matcher.SinePositionalEncoding
     depth: ${model.net.backbone.layer_depths.2}
-    train_size: [832, 832]
+    train_size: ???
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     blocks_counts: [2, 2, 2]
@@ -25,6 +25,8 @@ net:
     hidden_depth: 256
     heads_count: 8
     layer_count: 4
+#    attention:
+#      _target_: src.models.components.nets.new_matcher.FullAttention
     use_matchability: true
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
