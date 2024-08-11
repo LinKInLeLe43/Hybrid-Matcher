@@ -103,8 +103,8 @@ class NewMatcherNet(nn.Module):
             x1s, x1_8x = self.backbone(batch["image1"])
             x1_8x, x1_32x = self.local_coc(x1_8x)
 
-        x0_8x = self.positional_encoding(x0_8x)
-        x1_8x = self.positional_encoding(x1_8x)
+        # x0_8x = self.positional_encoding(x0_8x)
+        # x1_8x = self.positional_encoding(x1_8x)
 
         x0_8x, x1_8x, m0_8x, m1_8x = self.coarse_module(
             x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,
