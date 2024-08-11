@@ -79,6 +79,7 @@ class MegaDepthDataset(data.Dataset):
 
         T0, T1 = self.scene_info["poses"][idxes]
         T0_to_1, T1_to_0 = T1 @ np.linalg.inv(T0), T0 @ np.linalg.inv(T1)
+        P0, P1 = K0 @ T0[:3], K1 @ T1[:3]
 
         data = {"name0": image_name0,
                 "name1": image_name1,
@@ -90,6 +91,8 @@ class MegaDepthDataset(data.Dataset):
                 "scale1": scale1,
                 "K0": K0,
                 "K1": K1,
+                "P0": P0,
+                "P1": P1,
                 "T0_to_1": T0_to_1,
                 "T1_to_0": T1_to_0}
 

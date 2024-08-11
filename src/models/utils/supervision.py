@@ -1,6 +1,7 @@
 from typing import Any, Dict, Tuple
 
 import kornia as K
+from kornia import geometry
 import torch
 from torch.nn import functional as F
 
@@ -199,3 +200,12 @@ def compute_gt_biases(
     gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
     gt_biases /= fine_scale * (window_size // 2)
     return gt_biases
+
+@torch.no_grad()
+def compute_F_mats(
+    P0: torch.Tensor,
+    P1: torch.Tensor,
+    b_idxes: torch.Tensor
+) -> torch.Tensor:
+    F_mats = geometry.fundamental_from_projections(P0, P1)[b_idxes]
+    return F_mats

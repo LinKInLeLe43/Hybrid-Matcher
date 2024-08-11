@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 
+from kornia import geometry
 import torch
 from torch import nn
 
@@ -101,6 +102,14 @@ def _compute_reg_loss(
         losses *= weight[mask]
     loss = loss_weight * losses.mean()
     return loss
+
+
+def _compute_sym_epipolar_loss(
+    points0: torch.Tensor,
+    points1: torch.Tensor,
+    F_mats: torch.Tensor
+) -> torch.Tensor:
+    geometry.symmetrical_epipolar_distance(points0[None], points1[None], F_mats)
 
 
 def _compute_flow_loss(  # TODO: change name to gaussian NLL
