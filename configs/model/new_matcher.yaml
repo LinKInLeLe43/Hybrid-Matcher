@@ -20,18 +20,19 @@ net:
     in_depth: ${model.net.local_coc.layer_depths.0}
     hidden_depth: 256
     heads_count: 8
+    layer_count: 2
     attention:
       _target_: src.models.components.nets.new_matcher.FullAttention
-    types: ["cross", "cross", "cross", "cross"]
-    use_flow: true
-    flow_depth: 128
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
-    use_flow: ${model.net.coarse_module.use_flow}
+    temperature: 0.1
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
-    coarse_depth: ${model.net.backbone.layer_depths.2}
-    fine_depth: ${model.net.backbone.layer_depths.0}
+    type: "loftr"
+    window_size: 5
+    stride: ${model.net.coarse_module.scale}
+    padding: 2
+    depths: ${model.net.backbone.layer_depths}
   fine_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     depth: ${model.net.backbone.layer_depths.0}
@@ -39,15 +40,13 @@ net:
     attention:
       _target_: src.models.components.nets.new_matcher.FullAttention
     types: ["self", "cross"]
-  fine_matching:
+  fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-  positional_encoding:
-    _target_: src.models.components.nets.new_matcher.SinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
-  flow_decoder:
-    _target_: src.models.components.nets.new_matcher.FlowDecoder
-    depth: 128
-    radius: 8
+    type: "regression_by_expectation"
+    depth: ${model.net.backbone.layer_depths.0}
+    window_size: ${model.net.fine_preprocess.window_size}
+    temperature: 1.0
+    reg_by_exp_with_std: true
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss

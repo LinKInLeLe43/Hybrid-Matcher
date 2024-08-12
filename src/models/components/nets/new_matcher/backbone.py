@@ -1,8 +1,8 @@
-from typing import Tuple
+from typing import List, Tuple
 
+import kornia as K
 import torch
 from torch import nn
-from torch.nn import functional as F
 
 
 def _conv1x1(in_depth: int, out_depth: int, stride: int = 1) -> nn.Module:
@@ -93,7 +93,15 @@ class ResNetFpn82(nn.Module):
         self.in_depth = depth
         return layer
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor
+    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+        n, _, h, w = x.shape
+        coors = K.create_meshgrid(h, w, device=x.device)
+        coors = (coors / 2).permute(0, 3, 1, 2).expand(n, -1, -1, -1)
+        x = torch.cat([x, coors], dim=1)
+
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)
@@ -112,4 +120,4 @@ class ResNetFpn82(nn.Module):
         #     x1_out, scale_factor=2.0, mode="bilinear", align_corners=True)
         # x0_out = self.layer0_out(x0_out)
         # return x2_out, x0_out
-        return x2, x0
+        return [x0, x1], x2

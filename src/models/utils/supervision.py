@@ -1,7 +1,12 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import kornia as K
 import torch
+
+
+def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
+    x[(x[:, :, 0] < 0) | (x[:, :, 0] >= w) |
+      (x[:, :, 1] < 0) | (x[:, :, 1] >= h)] = 0
 
 
 def _warp_point(
@@ -11,7 +16,10 @@ def _warp_point(
     K1: torch.Tensor,
     T0_to_1: torch.Tensor
 ) -> torch.Tensor:
+    _, h, w = depth0.shape
+
     image_grid0 = image_point0.round().long()
+    _mask_out_of_bound(image_grid0, h, w)
     image_depth0 = torch.stack(
         [depth0[b, grid0[:, 1], grid0[:, 0]]
          for b, grid0 in enumerate(image_grid0)])[:, :, None]
@@ -21,26 +29,6 @@ def _warp_point(
     image_point1 = (K1 @ camera_point1).transpose(1, 2)
     image_point1 = image_point1[:, :, :2] / (image_point1[:, :, 2:] + 1e-4)
     return image_point1
-
-
-def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
-    x[(x[:, :, 0] < 0) | (x[:, :, 0] >= w) |
-      (x[:, :, 1] < 0) | (x[:, :, 1] >= h)] = 0.0
-
-
-@torch.no_grad()
-def compute_gt_biases(
-    points0_to_1: torch.Tensor,
-    points1: torch.Tensor,
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    fine_scale: int,
-    window_size: int
-) -> torch.Tensor:
-    b_idxes, i_idxes, j_idxes = idxes
-
-    gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
-    gt_biases /= fine_scale * (window_size // 2)
-    return gt_biases
 
 
 @torch.no_grad()
@@ -71,6 +59,7 @@ def create_coarse_supervision(
     if mask0 is not None:
         points0[~mask0.flatten(start_dim=1)] = 0.0
         points1[~mask1.flatten(start_dim=1)] = 0.0
+
     points0_to_1 = _warp_point(
         points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(
@@ -90,12 +79,11 @@ def create_coarse_supervision(
     biprojection_mask[:, 0] = False
     b_idxes, i_idxes = biprojection_mask.nonzero(as_tuple=True)
     j_idxes = idxes0_to_1[b_idxes, i_idxes]
+    gt_idxes = ((b_idxes, i_idxes, j_idxes) if len(b_idxes) != 0
+                else 3 * (torch.tensor([0], device=device),))
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
-    if len(b_idxes) == 0:
-        b_idxes = i_idxes = j_idxes = torch.tensor([0], device=device)
-    gt_idxes = b_idxes, i_idxes, j_idxes
-    supervision = {"gt_mask": gt_mask, "gt_idxes": gt_idxes}
+    supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
 
     if return_coor:
         if "scale1" in batch:
@@ -105,6 +93,21 @@ def create_coarse_supervision(
         supervision["points1"] = points1
 
     if return_flow:
-        supervision["gt_flows0"] = flows0[b_idxes, i_idxes]
-        supervision["gt_flows1"] = flows1[b_idxes, j_idxes]
+        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
     return supervision
+
+
+@torch.no_grad()
+def compute_gt_biases(
+    points0_to_1: torch.Tensor,
+    points1: torch.Tensor,
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    fine_scale: int,
+    window_size: int
+) -> torch.Tensor:
+    b_idxes, i_idxes, j_idxes = idxes
+
+    gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
+    gt_biases /= fine_scale * (window_size // 2)
+    return gt_biases

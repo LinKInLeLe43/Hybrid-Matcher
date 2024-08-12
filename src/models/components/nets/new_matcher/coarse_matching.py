@@ -8,7 +8,6 @@ from torch.nn import functional as F
 class CoarseMatching(nn.Module):
     def __init__(
         self,
-        use_flow: bool = False,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -16,7 +15,6 @@ class CoarseMatching(nn.Module):
         train_min_gt_count: int = 200
     ) -> None:
         super().__init__()
-        self.use_flow = use_flow
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -96,17 +94,10 @@ class CoarseMatching(nn.Module):
         score: torch.Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        flow_mask: Optional[torch.Tensor],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
-        if self.use_flow:
-            if flow_mask is None:
-                raise ValueError("")
-            if not self.training:
-                score.masked_fill_(~flow_mask, 0.0)
-
         mask, max_count = self._remove_border(
             score > self.threshold, size0, size1, mask0, mask1)
         mask &= ((score == score.amax(dim=2, keepdim=True)) &
@@ -134,17 +125,16 @@ class CoarseMatching(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        size0: Tuple[int, int],
-        size1: Tuple[int, int],
-        flow_mask: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        n, l, c = x0.shape
-        _, s, _ = x1.shape
+        _, c, h0, w0 = x0.shape
+        _, _, h1, w1 = x1.shape
 
+        x0 = x0.flatten(start_dim=2).transpose(1, 2)
+        x1 = x1.flatten(start_dim=2).transpose(1, 2)
         x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", x0, x1)
         similarity /= self.temperature
@@ -158,6 +148,6 @@ class CoarseMatching(nn.Module):
         confidence = confidence0_to_1 * confidence1_to_0
 
         result = self._create_coarse_matching(
-            confidence, size0, size1, flow_mask, mask0, mask1, gt_idxes)
+            confidence, (h0, w0), (h1, w1), mask0, mask1, gt_idxes)
         result["coarse_cls_heatmap"] = confidence
         return result

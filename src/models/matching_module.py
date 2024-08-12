@@ -76,26 +76,15 @@ class MatchingModule(pl.LightningModule):
         self,
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        use_flow = getattr(self.net, "use_flow", False)
-
         supervision = utils.create_coarse_supervision(
-            batch, self.net.scales[0], return_coor=True, return_flow=use_flow)
-
-        result = self.net(batch, gt_idxes=supervision["gt_idxes"])
-
-        gt_biases = utils.compute_gt_biases(
+            batch, self.net.scales[0], return_coor=True)
+        result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
+        supervision["fine_gt_biases"] = utils.compute_gt_biases(
             supervision.pop("points0_to_1"), supervision.pop("points1"),
-            result["coarse_cls_idxes"], self.net.scales[-1], self.net.window_size)
-
+            result["coarse_cls_idxes"], self.net.scales[1], self.net.reg_w)
         loss = self.loss(
-            result["coarse_cls_heatmap"], supervision["gt_mask"],
-            result["fine_biases"], gt_biases, result["fine_stddevs"],
-            flows_with_uncertainties0=result.get("flows_with_uncertainties0"),
-            flows_with_uncertainties1=result.get("flows_with_uncertainties1"),
-            gt_flows0=supervision.get("gt_flows0"),
-            gt_flows1=supervision.get("gt_flows1"),
-            mask0=batch.get(f"mask0_{self.net.scales[0]}x"),
-            mask1=batch.get(f"mask1_{self.net.scales[0]}x"))
+            **result, **supervision, mask0=batch.get("mask0_8x"),
+            mask1=batch.get("mask1_8x"))
         return result, loss
 
     def training_step(

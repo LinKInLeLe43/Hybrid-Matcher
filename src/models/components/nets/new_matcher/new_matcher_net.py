@@ -1,6 +1,5 @@
 from typing import Any, Dict, Optional, Tuple
 
-import kornia as K
 import torch
 from torch import nn
 
@@ -14,9 +13,7 @@ class NewMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_matching: nn.Module,
-        positional_encoding: Optional[nn.Module] = None,
-        flow_decoder: Optional[nn.Module] = None
+        fine_reg_matching: nn.Module
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -25,17 +22,11 @@ class NewMatcherNet(nn.Module):
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
-        self.fine_matching = fine_matching
+        self.fine_reg_matching = fine_reg_matching
 
-        self.scales = backbone.scales
-        self.window_size = fine_preprocess.window_size
-
-        self.use_flow = coarse_module.use_flow
-        if self.use_flow:
-            if positional_encoding is None or flow_decoder is None:
-                raise ValueError("")
-            self.positional_encoding = positional_encoding
-            self.flow_decoder = flow_decoder
+        self.scales = (backbone.scales[0],
+                       backbone.scales[1] // fine_preprocess.scale_before_crop)
+        self.reg_w = fine_reg_matching.window_size
 
     def _scale_points(
         self,
@@ -43,20 +34,19 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
+        m = len(result["points0"])
         b_idxes = result["idxes"][0]
 
-        points0 = self.scales[0] * result["points0"]
+        result["points0"] *= self.scales[0]
+        result["points1"] *= self.scales[0]
+        if "biases0" in result:
+            result["points0"] += self.scales[1] * result["biases0"][:m]
+        if "biases1" in result:
+            result["points1"] += self.scales[1] * result["biases1"][:m]
         if scale0 is not None:
-            points0 *= scale0[b_idxes]
-
-        points1 = self.scales[0] * result["points1"]
-        biases = result["fine_biases"][:len(points0)].detach()
-        biases = self.scales[1] * (self.window_size // 2) * biases
+            result["points0"] *= scale0[b_idxes]
         if scale1 is not None:
-            points1 *= scale1[b_idxes]
-            biases *= scale1[b_idxes]
-        points1 += biases
-        result["points0"], result["points1"] = points0, points1
+            result["points1"] *= scale1[b_idxes]
 
     def forward(
         self,
@@ -64,76 +54,44 @@ class NewMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        device = batch["image0"].device
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
-        pos_feature0 = pos_feature1 = None
         if batch["image0"].shape == batch["image1"].shape:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image0"], batch["image1"]])
-            data = torch.cat([data, coors.expand(2 * n, -1, -1, -1)], dim=1)
-            coarse_features, fine_features = self.backbone(data)
-            centers, coarse_features = self.local_coc(coarse_features)
-            centers0, centers1 = centers.chunk(2)
-            coarse_feature0, coarse_feature1 = coarse_features.chunk(2)
-            fine_feature0, fine_feature1 = fine_features.chunk(2)
-            if self.use_flow:
-                pos_features = self.positional_encoding.get(
-                    coarse_features).expand(2 * n, -1, -1, -1)
-                pos_features = pos_features.flatten(start_dim=2).transpose(1, 2)
-                pos_feature0, pos_feature1 = pos_features.chunk(2)
+            x = torch.cat([batch["image0"], batch["image1"]])
+            xs, x_8x = self.backbone(x)
+            x_8x, x_32x = self.local_coc(x_8x)
+
+            x0s, x1s = [], []
+            for x in xs:
+                x0, x1 = x.chunk(2)
+                x0s.append(x0)
+                x1s.append(x1)
+            x0_8x, x1_8x = x_8x.chunk(2)
+            x0_32x, x1_32x = x_32x.chunk(2)
         else:
-            n, _, h, w = batch["image0"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image0"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature0, fine_feature0 = self.backbone(data)
-            centers0, coarse_feature0 = self.local_coc(coarse_feature0)
+            x0s, x0_8x = self.backbone(batch["image0"])
+            x0_8x, x0_32x = self.local_coc(x0_8x)
 
-            n, _, h, w = batch["image1"].shape
-            coors = K.create_meshgrid(h, w, device=device)
-            coors = (coors / 2).permute(0, 3, 1, 2)
-            data = torch.cat([batch["image1"],
-                              coors.expand(n, -1, -1, -1)], dim=1)
-            coarse_feature1, fine_feature1 = self.backbone(data)
-            centers1, coarse_feature1 = self.local_coc(coarse_feature1)
-        size0, size1 = coarse_feature0.shape[2:], coarse_feature1.shape[2:]
+            x1s, x1_8x = self.backbone(batch["image1"])
+            x1_8x, x1_32x = self.local_coc(x1_8x)
 
-        coarse_feature0, coarse_feature1, flow0, flow1 = self.coarse_module(
-            coarse_feature0, coarse_feature1, centers0, centers1, size0, size1,
-            pos0=pos_feature0, pos1=pos_feature1, x0_mask=mask0_8x,
-            x1_mask=mask1_8x, center0_mask=mask0_32x, center1_mask=mask1_32x)
-        flow_mask = None
-        result = {}
-        if self.use_flow:
-            if flow0 is None or flow1 is None:
-                raise ValueError("")
-            flow0_to_1, flow0_to_1_mask = self.flow_decoder(flow0, size1)
-            flow1_to_0, flow1_to_0_mask = self.flow_decoder(flow1, size0)
-            flow_mask = flow0_to_1_mask | flow1_to_0_mask.transpose(1, 2)
-            if gt_idxes is not None:
-                b_idxes, i_idxes, j_idxes = gt_idxes
-                result["flows_with_uncertainties0"] = flow0_to_1[b_idxes, i_idxes]
-                result["flows_with_uncertainties1"] = flow1_to_0[b_idxes, j_idxes]
+        x0_8x, x1_8x = self.coarse_module(
+            x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,
+            mask0_32x=mask0_32x, mask1_32x=mask1_32x)
 
-        coarse_feature0 = coarse_feature0.flatten(start_dim=2).transpose(1, 2)
-        coarse_feature1 = coarse_feature1.flatten(start_dim=2).transpose(1, 2)
+        result = self.coarse_matching(
+            x0_8x, x1_8x, mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes)
 
-        result.update(self.coarse_matching(
-            coarse_feature0, coarse_feature1, size0, size1, flow_mask=flow_mask,
-            mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes))
+        x0_1x, x1_1x = self.fine_preprocess(
+            x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
 
-        fine_feature0, fine_feature1 = self.fine_preprocess(
-            coarse_feature0, coarse_feature1, fine_feature0, fine_feature1,
-            result["coarse_cls_idxes"], self.scales[0] // self.scales[1])
-        if len(fine_feature0) != 0:
-            fine_feature0, fine_feature1 = self.fine_module(
-                fine_feature0, fine_feature1)
-        result.update(self.fine_matching(fine_feature0, fine_feature1))
+        if len(x0_1x) != 0:
+            x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
 
+        result.update(self.fine_reg_matching(x0_1x, x1_1x))
+
+        result["biases1"] = (self.reg_w // 2 *
+                             result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

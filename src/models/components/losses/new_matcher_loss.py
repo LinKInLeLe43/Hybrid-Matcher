@@ -23,6 +23,11 @@ def _compute_cls_loss(
     mask0: Optional[torch.Tensor] = None,
     mask1: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
+    m = len(heatmap)
+
+    if m == 0:
+        return heatmap.new_tensor(1.0)
+
     weight = None
     if mask0 is not None:
         weight = (mask0.flatten(start_dim=1)[:, :, None] &
@@ -58,21 +63,26 @@ def _compute_cls_loss(
 def _compute_reg_loss(
     reg_biases: torch.Tensor,
     gt_biases: torch.Tensor,
-    reg_stds: torch.Tensor,
+    reg_stds: Optional[torch.Tensor],
     loss_weight: float = 1.0
 ) -> torch.Tensor:
-    if len(reg_biases) == 0:
-        return loss_weight * reg_biases.new_tensor(1.0)
+    m = len(reg_biases)
 
+    if m == 0:
+        return reg_biases.new_tensor(1.0)
+
+    weight = None
+    if reg_stds is not None:
+        weight = 1.0 / reg_stds.clamp(min=1e-10)
+        weight /= weight.mean()
     mask = gt_biases.abs().amax(dim=1) < 1.0
-    weight = 1.0 / reg_stds.clamp(min=1e-10)
-    weight /= weight.mean()
     if not mask.any():
         mask[0] = True
-        weight[0] = 0.0
+        loss_weight = 0.0
 
-    losses = (weight[mask] *
-              ((reg_biases[mask] - gt_biases[mask]) ** 2).sum(dim=1))
+    losses = ((reg_biases - gt_biases)[mask] ** 2).sum(dim=1)
+    if weight is not None:
+        losses *= weight[mask]
     loss = loss_weight * losses.mean()
     return loss
 
@@ -82,7 +92,9 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
     gt_flows: torch.Tensor,
     loss_weight: float = 1.0
 ) -> torch.Tensor:
-    if len(flows_with_uncertainties) == 1:
+    m = len(flows_with_uncertainties)
+
+    if m <= 1:
         loss_weight = 0.0
 
     flows, log_stds_mul_2 = flows_with_uncertainties.chunk(2, dim=1)
@@ -120,7 +132,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         gt_flows0: Optional[torch.Tensor] = None,
         gt_flows1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None
+        mask1: Optional[torch.Tensor] = None,
+        **kwargs
     ) -> Dict[str, Any]:
         total_loss = 0.0
         loss = {"scalar": {}}
@@ -140,9 +153,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
             loss["scalar"]["coarse_cls_loss"] = coarse_cls_loss.detach().cpu()
 
         if self.fine_reg_loss_weight is not None:
-            if (fine_reg_biases is None or
-                fine_gt_biases is None or
-                fine_reg_stds is None):
+            if fine_reg_biases is None or fine_gt_biases is None:
                 raise ValueError("")
 
             fine_reg_loss = _compute_reg_loss(

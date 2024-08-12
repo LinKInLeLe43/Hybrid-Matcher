@@ -48,7 +48,6 @@ test_dataset:
   image_size: ???
   image_factor: ${data.train_dataset.image_factor}
   mask_factors: ${data.train_dataset.mask_factors}
-  load_depth: false
 
 test_sampler:
   _target_: torch.utils.data.DistributedSampler
