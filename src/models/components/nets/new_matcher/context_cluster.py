@@ -243,18 +243,26 @@ class GlobalCluster(nn.Module):
 
         norm_x0_point = F.normalize(x0_point, dim=2)
         norm_center1_point = F.normalize(center1_point, dim=2)
-        similarities = torch.einsum(
-            "mlc,msc->mls", norm_x0_point, norm_center1_point)
-        similarities = self.alpha * similarities + self.beta
-        if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
-        max_sim_values, max_sim_idxes = similarities.max(dim=2)
+        enable_fp16 = torch.is_autocast_enabled() or not self.training
+        with torch.autocast("cuda", enabled=enable_fp16):
+            similarities = torch.einsum(
+                "mlc,msc->mls", norm_x0_point, norm_center1_point)
+            similarities = self.alpha * similarities + self.beta
+            if mask is not None:
+                mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
+                similarities.masked_fill_(~mask, float("-inf"))
+            similarities.sigmoid_()
+        range = torch.arange(m, device=device)[:, None]
+        if enable_fp16:
+            max_sim_idxes = similarities.argmax(dim=2)
+            max_sim_values = torch.einsum(
+                "mlc,mlc->ml", norm_x0_point,
+                norm_center1_point[range, max_sim_idxes])
+        else:
+            max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
         if self.type == "flattened_index":
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
+            max_sim_idxes = max_sim_idxes + s * range
             max_sim_values, max_sim_idxes, center1_value = map(
                 lambda x: x.flatten(end_dim=1),
                 (max_sim_values, max_sim_idxes, center1_value))
