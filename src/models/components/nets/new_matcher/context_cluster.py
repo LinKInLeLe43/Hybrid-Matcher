@@ -343,7 +343,7 @@ class GlobalClusterBlock(nn.Module):
             in_depth, hidden_depth, heads_count, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp = Mlp(
+        self.mlp3x3 = Mlp3x3(
             in_depth + out_depth, in_depth + out_depth, out_depth, bias=bias)
         self.norm1 = nn.LayerNorm(out_depth)
 
@@ -363,11 +363,12 @@ class GlobalClusterBlock(nn.Module):
 
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
+        new_x0 = new_x0.permute(0, 3, 1, 2)
 
         if self.use_flow:
             x0 = torch.cat([x0, flow0], dim=2)
-        new_x0 = torch.cat([x0.permute(0, 2, 3, 1), new_x0], dim=3)
-        new_x0 = self.mlp(new_x0)
+        new_x0 = torch.cat([x0, new_x0], dim=1)
+        new_x0 = self.mlp3x3(new_x0).permute(0, 2, 3, 1)
         new_x0 = self.norm1(new_x0)
         new_x0 = new_x0.permute(0, 3, 1, 2).contiguous()
 

@@ -22,7 +22,7 @@ net:
     heads_count: 8
     attention:
       _target_: src.models.components.nets.new_matcher.FullAttention
-    types: ["cross", "cross", "cross", "cross"]
+    types: ["cross", "cross"]
     use_flow: true
     flow_depth: 128
   coarse_matching:
