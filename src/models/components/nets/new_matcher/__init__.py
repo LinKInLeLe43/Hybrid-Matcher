@@ -7,4 +7,4 @@ from .fine_matching import FineMatching
 from .fine_preprocess import FinePreprocess
 from .new_matcher_net import NewMatcherNet
 from .positional_encoding import SinePositionalEncoding
-from .transformer import LoFTR
+from .transformer import TransformerEncoder, AggregatedEncoder, LoFTR

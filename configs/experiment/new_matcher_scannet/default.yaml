@@ -2,7 +2,6 @@
 
 defaults:
   - override /data: scannet
-  - override /model: new_matcher
   - override /trainer: ddp
   - _self_
 

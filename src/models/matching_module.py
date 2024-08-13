@@ -76,12 +76,25 @@ class MatchingModule(pl.LightningModule):
         self,
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        supervision = utils.create_coarse_supervision(
-            batch, self.net.scales[0], return_coor=True)
-        result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
-        supervision["fine_gt_biases"] = utils.compute_gt_biases(
-            supervision.pop("points0_to_1"), supervision.pop("points1"),
-            result["coarse_cls_idxes"], self.net.scales[1], self.net.reg_w)
+        if self.net.type == "one_stage":
+            supervision = utils.create_coarse_supervision(
+                batch, self.net.scales[0], return_coor=True)
+            result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
+            supervision["fine_gt_biases"] = utils.compute_gt_biases(
+                supervision.pop("points0_to_1"), supervision.pop("points1"),
+                result["coarse_cls_idxes"], self.net.scales[1], self.net.reg_w)
+        elif self.net.type == "two_stage":
+            supervision = utils.create_coarse_supervision(
+                batch, self.net.scales[0])
+            result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
+            supervision.update(utils.create_fine_supervision(
+                batch, self.net.scales, result["coarse_cls_idxes"],
+                return_coor=True))
+            supervision["fine_gt_biases"] = utils.compute_gt_biases(
+                supervision.pop("points0_to_1"), supervision.pop("points1"),
+                result["fine_cls_idxes"], self.net.scales[1], self.net.reg_w)
+        else:
+            assert False
         loss = self.loss(
             **result, **supervision, mask0=batch.get("mask0_8x"),
             mask1=batch.get("mask1_8x"))

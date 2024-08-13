@@ -2,13 +2,15 @@
 
 defaults:
   - new_matcher_scannet/default
+  - override /model: new_matcher_two_stage
   - _self_
 
-tags: ["train-new_matcher-scannet-ds-sparse"]
+tags: ["eval-new_matcher_two_stage-scannet"]
 
 model:
   loss:
     coarse_cls_sparse: true
+    fine_cls_sparse: true
 
 trainer:
   devices: 8

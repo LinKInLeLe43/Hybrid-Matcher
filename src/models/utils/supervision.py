@@ -2,6 +2,7 @@ from typing import Any, Dict, Tuple
 
 import kornia as K
 import torch
+from torch.nn import functional as F
 
 
 def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
@@ -95,6 +96,93 @@ def create_coarse_supervision(
     if return_flow:
         supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
         supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
+    return supervision
+
+
+@torch.no_grad()
+def create_fine_supervision(
+    batch: Dict[str, Any],
+    scales: Tuple[int, int],
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    offset: float = 0.5,
+    return_coor: bool = False
+) -> Dict[str, Any]:
+    m, w, scale = len(idxes[0]), scales[0] // scales[1], scales[1]
+    ww, x, device = w ** 2, batch["image0"], batch["image0"].device
+    b_idxes, i_idxes, j_idxes = idxes
+
+    if m == 0:
+        supervision = {
+            "fine_gt_mask": x.new_empty((0, ww, ww), dtype=torch.bool)}
+
+        if return_coor:
+            supervision["points0_to_1"] = x.new_empty((0, ww, 2))
+            supervision["points1"] = x.new_empty((0, ww, 2))
+        return supervision
+
+    n, _, h0, w0 = batch["image0"].shape
+    _, _, h1, w1 = batch["image1"].shape
+    h0, w0, h1, w1 = map(lambda x: x // scale, (h0, w0, h1, w1))
+    scale0, scale1 = batch.get("scale0"), batch.get("scale1")
+    scale0 = scale * scale0[b_idxes, None] if scale0 is not None else scale
+    scale1 = scale * scale1[b_idxes, None] if scale1 is not None else scale
+
+    coors0 = K.create_meshgrid(
+        h0, w0, normalized_coordinates=False, device=device)
+    coors1 = K.create_meshgrid(
+        h1, w1, normalized_coordinates=False, device=device)
+    coors0 = coors0.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
+    coors1 = coors1.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
+    coors0 = F.pad(coors0, (w // 2, 0, w // 2, 0))
+    coors1 = F.pad(coors1, (w // 2, 0, w // 2, 0))
+    coors0 = F.unfold(coors0, w, stride=w)[b_idxes, :, i_idxes]
+    coors1 = F.unfold(coors1, w, stride=w)[b_idxes, :, j_idxes]
+    coors0 = coors0.unflatten(1, (2, ww)).transpose(1, 2)
+    coors1 = coors1.unflatten(1, (2, ww)).transpose(1, 2)
+    idxes0 = w0 * coors0[:, :, 1] + coors0[:, :, 0]
+    idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
+    idxes0 = torch.where(idxes0 == 0, -100, idxes0 + h0 * w0 * b_idxes[:, None])
+    idxes1 = torch.where(idxes1 == 0, -100, idxes1 + h1 * w1 * b_idxes[:, None])
+    points0 = scale0 * (coors0 + offset)
+    points1 = scale1 * (coors1 + offset)
+
+    points0_to_1 = torch.zeros_like(points0)
+    points1_to_0 = torch.zeros_like(points1)
+    for b in range(n):
+        b_mask = b_idxes == b
+        b_points0 = points0[b_mask].reshape(1, -1, 2)
+        b_points1 = points1[b_mask].reshape(1, -1, 2)
+        b_points0_to_1 = _warp_point(
+            b_points0, batch["depth0"][[b]], batch["K0"][[b]], batch["K1"][[b]],
+            batch["T0_to_1"][[b]])
+        b_points1_to_0 = _warp_point(
+            b_points1, batch["depth1"][[b]], batch["K1"][[b]], batch["K0"][[b]],
+            batch["T1_to_0"][[b]])
+        points0_to_1[b_mask] = b_points0_to_1.reshape(-1, ww, 2)
+        points1_to_0[b_mask] = b_points1_to_0.reshape(-1, ww, 2)
+    coors0_to_1 = points0_to_1 / scale1
+    coors1_to_0 = points1_to_0 / scale0
+
+    coors0_to_1 = (coors0_to_1 - offset).round().long()
+    coors1_to_0 = (coors1_to_0 - offset).round().long()
+    _mask_out_of_bound(coors0_to_1, h1, w1)
+    _mask_out_of_bound(coors1_to_0, h0, w0)
+    idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
+    idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
+    idxes0_to_1 = torch.where(
+        idxes0_to_1 == 0, -200, idxes0_to_1 + h1 * w1 * b_idxes[:, None])
+    idxes1_to_0 = torch.where(
+        idxes1_to_0 == 0, -200, idxes1_to_0 + h0 * w0 * b_idxes[:, None])
+    gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
+               (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
+    supervision = {"fine_gt_mask": gt_mask}
+
+    if return_coor:
+        if "scale1" in batch:
+            points0_to_1 = points0_to_1 / batch["scale1"][b_idxes, None]
+            points1 = points1 / batch["scale1"][b_idxes, None]
+        supervision["points0_to_1"] = points0_to_1
+        supervision["points1"] = points1
     return supervision
 
 

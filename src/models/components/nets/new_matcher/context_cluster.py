@@ -318,18 +318,18 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
-        blocks_counts: Tuple[int, int, int],
-        layer_depths: Tuple[int, int, int],
-        hidden_depths: Tuple[int, int, int],
-        heads_counts: Tuple[int, int, int],
-        center_sizes: Tuple[int, int, int],
-        fold_sizes: Tuple[int, int, int],
+        blocks_counts: Tuple[int, int],
+        layer_depths: Tuple[int, int],
+        hidden_depths: Tuple[int, int],
+        heads_counts: Tuple[int, int],
+        center_sizes: Tuple[int, int],
+        fold_sizes: Tuple[int, int],
         bias: bool = True
     ) -> None:
         super().__init__()
 
         layers = []
-        for i in range(3):
+        for i in range(2):
             layer = nn.Sequential()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
@@ -337,12 +337,10 @@ class LocalCoC(nn.Module):
                     center_sizes[i], fold_sizes[i], bias=bias)
                 layer.append(block)
             layers.append(layer)
-        self.layer0, self.layer1, self.layer2 = layers
+        self.layer0, self.layer1 = layers
 
         self.point_reducer0 = nn.Conv2d(
-            layer_depths[0], layer_depths[1], 3, stride=2, padding=1)
-        self.point_reducer1 = nn.Conv2d(
-            layer_depths[1], layer_depths[2], 3, stride=2, padding=1)
+            layer_depths[0], layer_depths[1], 4, stride=4)
 
         # TODO: check FPN design
         # self.layer1_out = nn.Sequential(
@@ -393,9 +391,7 @@ class LocalCoC(nn.Module):
         x0 = self.layer0(x)
         x1 = self.point_reducer0(x0)
         x1 = self.layer1(x1)
-        x2 = self.point_reducer1(x1)
-        x2 = self.layer2(x2)
-        return x0, x2
+        return x0, x1
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
@@ -448,64 +444,6 @@ class MergeBlock(nn.Module):
         return new_x, new_center
 
 
-class AttentionBlock(nn.Module):
-    def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-        attention: nn.Module
-    ) -> None:
-        super().__init__()
-        self.heads_count = heads_count
-        self.attention = attention
-
-        self.down_q = nn.Conv2d(depth, depth, 4, stride=4, groups=depth, bias=False)
-        self.down_kv = nn.MaxPool2d(4, stride=4)
-
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
-
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
-
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        source: torch.Tensor,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        q = self.down_q(x).flatten(start_dim=2).transpose(1, 2)
-        kv = self.down_kv(source).flatten(start_dim=2).transpose(1, 2)
-
-        q = self.q_proj(q).unflatten(2, (self.heads_count, -1))
-        k = self.k_proj(kv).unflatten(2, (self.heads_count, -1))
-        v = self.v_proj(kv).unflatten(2, (self.heads_count, -1))
-        out = self.attention(
-            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
-
-        out = self.merge(out)
-        out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // 4, x.shape[3] // 4))
-        out = F.interpolate(out, scale_factor=4.0, mode="bilinear")
-
-        out = torch.cat([x, out], dim=1)
-        out = out.permute(0, 2, 3, 1)
-        out = self.mlp(out)
-        out = self.norm2(out)
-        out = out.permute(0, 3, 1, 2).contiguous()
-
-        out += x
-        return out
-
-
 class GlobalCoC(nn.Module):
     def __init__(
         self,
@@ -514,7 +452,7 @@ class GlobalCoC(nn.Module):
         hidden_depth: int,
         heads_count: int,
         layer_count: int,
-        attention: nn.Module,
+        attention_block: nn.Module,
         bias: bool = True
     ) -> None:
         super().__init__()
@@ -533,7 +471,6 @@ class GlobalCoC(nn.Module):
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
 
-        attention_block = AttentionBlock(in_depth, heads_count, attention)
         self.self_blocks = nn.ModuleList([copy.deepcopy(attention_block)
                                           for _ in range(layer_count)])
         self.cross_blocks = nn.ModuleList([copy.deepcopy(attention_block)

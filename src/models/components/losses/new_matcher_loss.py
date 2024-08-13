@@ -110,6 +110,9 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         coarse_cls_sparse: Optional[bool] = None,
         coarse_cls_loss_pos_weight: Optional[float] = None,
         coarse_cls_loss_neg_weight: Optional[float] = None,
+        fine_cls_sparse: Optional[bool] = None,
+        fine_cls_loss_pos_weight: Optional[float] = None,
+        fine_cls_loss_neg_weight: Optional[float] = None,
         fine_reg_loss_weight: Optional[float] = None,
         flow_loss_weight: Optional[float] = None
     ) -> None:
@@ -117,6 +120,9 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self.coarse_cls_sparse = coarse_cls_sparse
         self.coarse_cls_loss_pos_weight = coarse_cls_loss_pos_weight
         self.coarse_cls_loss_neg_weight = coarse_cls_loss_neg_weight
+        self.fine_cls_sparse = fine_cls_sparse
+        self.fine_cls_loss_pos_weight = fine_cls_loss_pos_weight
+        self.fine_cls_loss_neg_weight = fine_cls_loss_neg_weight
         self.fine_reg_loss_weight = fine_reg_loss_weight
         self.flow_loss_weight = flow_loss_weight
 
@@ -124,6 +130,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self,
         coarse_cls_heatmap: Optional[torch.Tensor] = None,
         coarse_gt_mask: Optional[torch.Tensor] = None,
+        fine_cls_heatmap: Optional[torch.Tensor] = None,
+        fine_gt_mask: Optional[torch.Tensor] = None,
         fine_reg_biases: Optional[torch.Tensor] = None,
         fine_gt_biases: Optional[torch.Tensor] = None,
         fine_reg_stds: Optional[torch.Tensor] = None,
@@ -151,6 +159,19 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 mask0=mask0, mask1=mask1)
             total_loss += coarse_cls_loss
             loss["scalar"]["coarse_cls_loss"] = coarse_cls_loss.detach().cpu()
+
+        if (self.fine_cls_sparse is not None and
+            self.fine_cls_loss_pos_weight is not None and
+            self.fine_cls_loss_neg_weight is not None):
+            if fine_cls_heatmap is None or fine_gt_mask is None:
+                raise ValueError("")
+
+            fine_cls_loss = _compute_cls_loss(
+                self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
+                loss_pos_weight=self.fine_cls_loss_pos_weight,
+                loss_neg_weight=self.fine_cls_loss_neg_weight)
+            total_loss += fine_cls_loss
+            loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
 
         if self.fine_reg_loss_weight is not None:
             if fine_reg_biases is None or fine_gt_biases is None:
