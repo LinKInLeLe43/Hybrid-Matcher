@@ -34,19 +34,20 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
-        m = len(result["points0"])
         b_idxes = result["idxes"][0]
 
-        result["points0"] *= self.scales[0]
-        result["points1"] *= self.scales[0]
-        if "biases0" in result:
-            result["points0"] += self.scales[1] * result["biases0"][:m]
-        if "biases1" in result:
-            result["points1"] += self.scales[1] * result["biases1"][:m]
+        points0 = self.scales[0] * result["points0"]
         if scale0 is not None:
-            result["points0"] *= scale0[b_idxes]
+            points0 *= scale0[b_idxes]
+
+        points1 = self.scales[0] * result["points1"]
+        biases = result["fine_reg_biases"][:len(points0)].detach()
+        biases = self.scales[1] * (self.reg_w // 2) * biases
         if scale1 is not None:
-            result["points1"] *= scale1[b_idxes]
+            points1 *= scale1[b_idxes]
+            biases *= scale1[b_idxes]
+        points1 += biases
+        result["points0"], result["points1"] = points0, points1
 
     def forward(
         self,
@@ -91,7 +92,5 @@ class NewMatcherNet(nn.Module):
 
         result.update(self.fine_reg_matching(x0_1x, x1_1x))
 
-        result["biases1"] = (self.reg_w // 2 *
-                             result["fine_reg_biases"].detach())
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
