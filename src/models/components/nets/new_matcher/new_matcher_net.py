@@ -91,8 +91,8 @@ class NewMatcherNet(nn.Module):
 
         if batch["image0"].shape == batch["image1"].shape:
             x = torch.cat([batch["image0"], batch["image1"]])
-            xs, x_8x = self.backbone(x)
-            x_8x, x_32x = self.local_coc(x_8x)
+            xs, x_8x, x_32x = self.backbone(x)
+            x_8x, x_32x = self.local_coc(x_8x, x_32x)
 
             x0s, x1s = [], []
             for x in xs:
@@ -102,11 +102,11 @@ class NewMatcherNet(nn.Module):
             x0_8x, x1_8x = x_8x.chunk(2)
             x0_32x, x1_32x = x_32x.chunk(2)
         else:
-            x0s, x0_8x = self.backbone(batch["image0"])
-            x0_8x, x0_32x = self.local_coc(x0_8x)
+            x0s, x0_8x, x0_32x = self.backbone(batch["image0"])
+            x0_8x, x0_32x = self.local_coc(x0_8x, x0_32x)
 
-            x1s, x1_8x = self.backbone(batch["image1"])
-            x1_8x, x1_32x = self.local_coc(x1_8x)
+            x1s, x1_8x, x1_32x = self.backbone(batch["image1"])
+            x1_8x, x1_32x = self.local_coc(x1_8x, x1_32x)
 
         x0_8x, x1_8x = self.coarse_module(
             x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,

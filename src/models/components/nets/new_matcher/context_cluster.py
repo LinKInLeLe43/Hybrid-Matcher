@@ -318,18 +318,18 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
-        blocks_counts: Tuple[int, int, int],
-        layer_depths: Tuple[int, int, int],
-        hidden_depths: Tuple[int, int, int],
-        heads_counts: Tuple[int, int, int],
-        center_sizes: Tuple[int, int, int],
-        fold_sizes: Tuple[int, int, int],
+        blocks_counts: Tuple[int, int],
+        layer_depths: Tuple[int, int],
+        hidden_depths: Tuple[int, int],
+        heads_counts: Tuple[int, int],
+        center_sizes: Tuple[int, int],
+        fold_sizes: Tuple[int, int],
         bias: bool = True
     ) -> None:
         super().__init__()
 
         layers = []
-        for i in range(3):
+        for i in range(2):
             layer = nn.Sequential()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
@@ -337,12 +337,10 @@ class LocalCoC(nn.Module):
                     center_sizes[i], fold_sizes[i], bias=bias)
                 layer.append(block)
             layers.append(layer)
-        self.layer0, self.layer1, self.layer2 = layers
+        self.layer0, self.layer1 = layers
 
         self.point_reducer0 = nn.Conv2d(
-            layer_depths[0], layer_depths[1], 3, stride=2, padding=1)
-        self.point_reducer1 = nn.Conv2d(
-            layer_depths[1], layer_depths[2], 3, stride=2, padding=1)
+            layer_depths[0], layer_depths[1], 4, stride=4)
 
         # TODO: check FPN design
         # self.layer1_out = nn.Sequential(
@@ -389,13 +387,11 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x0 = self.layer0(x)
         x1 = self.point_reducer0(x0)
-        x1 = self.layer1(x1)
-        x2 = self.point_reducer1(x1)
-        x2 = self.layer2(x2)
-        return x0, x2
+        x1 = self.layer1(x1 + y)
+        return x0, x1
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)

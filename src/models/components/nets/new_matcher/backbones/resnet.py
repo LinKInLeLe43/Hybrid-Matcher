@@ -46,23 +46,22 @@ class _BasicBlock(nn.Module):
 
 
 class ResNetFpn82(nn.Module):
-    def __init__(
-        self,
-        initial_depth: int,
-        layer_depths: Tuple[int, int, int]
-    ) -> None:
+    def __init__(self) -> None:
         super().__init__()
+        initial_depth = 64
+        layer_depths = [64, 128, 192, 256]
         self.in_depth = initial_depth
-        self.scales = 8, 2
 
         self.conv = nn.Conv2d(
             3, initial_depth, 7, stride=2, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.layer0 = self._make_layer(layer_depths[0])
         self.layer1 = self._make_layer(layer_depths[1], stride=2)
         self.layer2 = self._make_layer(layer_depths[2], stride=2)
+        self.layer3 = self._make_layer(layer_depths[3], stride=2)
 
         # self.layer2_up = _conv1x1(layer_depths[2], layer_depths[2])
         # self.layer1_up = _conv1x1(layer_depths[1], layer_depths[2])
@@ -96,7 +95,7 @@ class ResNetFpn82(nn.Module):
     def forward(
         self,
         x: torch.Tensor
-    ) -> Tuple[List[torch.Tensor], torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         n, _, h, w = x.shape
         coors = K.create_meshgrid(h, w, device=x.device)
         coors = (coors / 2).permute(0, 3, 1, 2).expand(n, -1, -1, -1)
@@ -105,10 +104,12 @@ class ResNetFpn82(nn.Module):
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)
+        x = self.maxpool(x)
 
         x0 = self.layer0(x)
         x1 = self.layer1(x0)
         x2 = self.layer2(x1)
+        x3 = self.layer3(x2)
 
         # x2_out = self.layer2_up(x2)
         # x1_out = self.layer1_up(x1)
@@ -120,4 +121,4 @@ class ResNetFpn82(nn.Module):
         #     x1_out, scale_factor=2.0, mode="bilinear", align_corners=True)
         # x0_out = self.layer0_out(x0_out)
         # return x2_out, x0_out
-        return [x0, x1], x2
+        return x1, x3
