@@ -24,4 +24,5 @@ class SeperatedBackbone(nn.Module):
         x1_2x, x1_4x = self.repvgg(x)
 
         x_8x = torch.cat([x0_8x, self.maxpool(x1_4x)], dim=1)
+        x_8x = self.repvgg.layer3(x_8x)
         return [x1_2x, x1_4x], x_8x, x0_32x

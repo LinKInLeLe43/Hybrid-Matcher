@@ -116,8 +116,8 @@ class RepVgg82(nn.Module):
     def __init__(self, deploy: bool = False
 ) -> None:
         super().__init__()
-        block_counts = [2, 4]
-        layer_depths = [64, 128]
+        block_counts = [2, 4, 4]
+        layer_depths = [64, 128, 256]
         self.deploy = deploy
         self.in_depth = layer_depths[0]
         self.scales = (8, 2)
@@ -128,6 +128,8 @@ class RepVgg82(nn.Module):
             layer_depths[0], block_counts[0])
         self.layer2 = self._make_layer(  # 1/4
             layer_depths[1], block_counts[1], stride=2)
+        self.in_depth = layer_depths[2]
+        self.layer3 = self._make_layer(layer_depths[2], block_counts[2])
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
