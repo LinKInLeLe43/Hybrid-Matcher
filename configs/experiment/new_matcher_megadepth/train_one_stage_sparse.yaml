@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - new_matcher_megadepth/default
+  - override /model: new_matcher_one_stage
+  - _self_
+
+tags: ["train-new_matcher_one_stage-megadepth-sparse"]
+
+model:
+  loss:
+    coarse_cls_sparse: true
+
+trainer:
+  devices: 8

@@ -1,0 +1,27 @@
+defaults:
+  - default
+  - _self_
+
+net:
+  type: "one_stage"
+  fine_preprocess:
+    _target_: src.models.components.nets.new_matcher.FinePreprocess
+    type: "loftr"
+    window_size: 5
+    stride: ${model.net.coarse_module.scale}
+    padding: 2
+    depths: ${model.net.backbone.layer_depths}
+  fine_reg_matching:
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "regression_by_expectation"
+    depth: ${model.net.backbone.layer_depths.0}
+    window_size: ${model.net.fine_preprocess.window_size}
+    temperature: 1.0
+    reg_by_exp_with_std: true
+
+loss:
+  _target_: src.models.components.losses.NewMatcherLoss
+  coarse_cls_sparse: ???
+  coarse_cls_loss_pos_weight: 1.0
+  coarse_cls_loss_neg_weight: 1.0
+  fine_reg_loss_weight: 1.0

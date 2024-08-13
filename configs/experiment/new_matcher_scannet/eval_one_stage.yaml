@@ -2,9 +2,10 @@
 
 defaults:
   - new_matcher_scannet/default
+  - override /model: new_matcher_one_stage
   - _self_
 
-tags: ["eval-new_matcher-scannet-ds"]
+tags: ["eval-new_matcher_one_stage-scannet"]
 
 model:
   loss:
