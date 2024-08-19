@@ -15,8 +15,8 @@ class NewMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
-        fine_cls_matching: Optional[nn.Module],
-        fine_reg_matching: nn.Module
+        fine_reg_matching: nn.Module,
+        fine_cls_matching: Optional[nn.Module] = None
     ) -> None:
         super().__init__()
         self.type = type
@@ -26,8 +26,8 @@ class NewMatcherNet(nn.Module):
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
-        self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
+        self.fine_cls_matching = fine_cls_matching
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1] // fine_preprocess.scale_before_crop)
@@ -63,23 +63,26 @@ class NewMatcherNet(nn.Module):
         m = len(result["points0"])
         b_idxes = result["idxes"][0]
 
-        points0 = self.scales[0] * result["points0"]
-        result["coarse_points0"] = points0.clone()
+        coarse_points0 = self.scales[0] * result["points0"]
+        coarse_points1 = self.scales[0] * result["points1"]
 
-        points1 = self.scales[0] * result["points1"]
-        biases = result["fine_reg_biases"][:m].detach()
-        biases = self.scales[1] * (self.reg_w // 2) * biases
-        points1 += biases
-
+        biases0 = 0
+        biases1 = (self.reg_w // 2) * result["fine_reg_biases"][:m].detach()
         if self.type == "two_stage":
-            points0 += self.scales[1] * result.pop("fine_cls_biases0")[:m]
-            points1 += self.scales[1] * result.pop("fine_cls_biases1")[:m]
+            biases0 += result.pop("fine_cls_biases0")[:m]
+            biases1 += result.pop("fine_cls_biases1")[:m]
+        biases0 *= self.scales[1]
+        biases1 *= self.scales[1]
 
-        if scale0 is not None:
-            points0 *= scale0[b_idxes]
-        if scale1 is not None:
-            points1 *= scale1[b_idxes]
-        result["points0"], result["points1"] = points0, points1
+        fine_points0 = coarse_points0 + biases0
+        fine_points1 = coarse_points1 + biases1
+
+        if scale0 is not None and scale1 is not None:
+            coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
+            fine_points1 *= scale1[b_idxes]
+        result["coarse_points0"] = coarse_points0
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -92,8 +95,11 @@ class NewMatcherNet(nn.Module):
 
         if batch["image0"].shape == batch["image1"].shape:
             x = torch.cat([batch["image0"], batch["image1"]])
-            xs, x_8x = self.backbone(x)
-            x_8x, x_32x = self.local_coc(x_8x)
+            xs = self.backbone(x)
+            x_8x, x_32x = self.local_coc(xs[-1])
+
+            if self.local_coc.scales[0] == 1:
+                xs.pop(-1)
 
             x0s, x1s = [], []
             for x in xs:
@@ -103,15 +109,19 @@ class NewMatcherNet(nn.Module):
             x0_8x, x1_8x = x_8x.chunk(2)
             x0_32x, x1_32x = x_32x.chunk(2)
         else:
-            x0s, x0_8x = self.backbone(batch["image0"])
-            x0_8x, x0_32x = self.local_coc(x0_8x)
+            x0s = self.backbone(batch["image0"])
+            x0_8x, x0_32x = self.local_coc(x0s[-1])
 
-            x1s, x1_8x = self.backbone(batch["image1"])
-            x1_8x, x1_32x = self.local_coc(x1_8x)
+            x1s = self.backbone(batch["image1"])
+            x1_8x, x1_32x = self.local_coc(x1s[-1])
+
+            if self.local_coc.scales[0] == 1:
+                x0s.pop(-1)
+                x1s.pop(-1)
 
         x0_8x, x1_8x = self.coarse_module(
-            x0_8x, x1_8x, x0_32x, x1_32x, mask0_8x=mask0_8x, mask1_8x=mask1_8x,
-            mask0_32x=mask0_32x, mask1_32x=mask1_32x)
+            x0_8x, x1_8x, x0_32x, x1_32x, x0_mask=mask0_8x, x1_mask=mask1_8x,
+            y0_mask=mask0_32x, y1_mask=mask1_32x)
 
         result = self.coarse_matching(
             x0_8x, x1_8x, mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes)

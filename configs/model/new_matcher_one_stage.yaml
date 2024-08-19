@@ -30,7 +30,7 @@ net:
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  coarse_cls_sparse: ???
+  coarse_cls_sparse: true
   coarse_cls_loss_pos_weight: 1.0
   coarse_cls_loss_neg_weight: 1.0
   fine_reg_loss_weight: 1.0

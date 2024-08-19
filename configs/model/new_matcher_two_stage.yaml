@@ -26,22 +26,23 @@ net:
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "classification"
-    depth: 112
+    depth: 56
     window_size: ${model.net.fine_preprocess.window_size}
     temperature: 1.0
+    cls_offset: 0.5
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "regression_by_expectation"
-    depth: 16
+    depth: 8
     window_size: 3
     temperature: 10.0
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
-  coarse_cls_sparse: ???
+  coarse_cls_sparse: true
   coarse_cls_loss_pos_weight: 1.0
   coarse_cls_loss_neg_weight: 1.0
-  fine_cls_sparse: ???
+  fine_cls_sparse: true
   fine_cls_loss_pos_weight: 0.25
   fine_cls_loss_neg_weight: 0.25
   fine_reg_loss_weight: 0.25

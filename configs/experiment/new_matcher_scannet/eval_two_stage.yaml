@@ -6,11 +6,3 @@ defaults:
   - _self_
 
 tags: ["eval-new_matcher_two_stage-scannet"]
-
-model:
-  loss:
-    coarse_cls_sparse: true
-    fine_cls_sparse: true
-
-trainer:
-  devices: 8

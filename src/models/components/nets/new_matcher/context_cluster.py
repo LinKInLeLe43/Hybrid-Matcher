@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import einops
 import torch
@@ -318,29 +318,38 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
-        blocks_counts: Tuple[int, int],
-        layer_depths: Tuple[int, int],
-        hidden_depths: Tuple[int, int],
-        heads_counts: Tuple[int, int],
-        center_sizes: Tuple[int, int],
-        fold_sizes: Tuple[int, int],
+        scales: List[int],
+        blocks_counts: List[int],
+        layer_depths: List[int],
+        hidden_depths: List[int],
+        heads_counts: List[int],
+        center_sizes: List[int],
+        fold_sizes: List[int],
         bias: bool = True
     ) -> None:
         super().__init__()
+        self.scales = scales
 
-        layers = []
-        for i in range(2):
+        initial_depth = layer_depths[0]
+        self.point_reducers, self.layers = nn.ModuleList(), nn.ModuleList()
+        for i in range(len(scales)):
+            if scales[i] > 1:
+                point_reducer = nn.Conv2d(
+                    initial_depth, layer_depths[i], scales[i] + 1,
+                    stride=scales[i], padding=1)
+            else:
+                point_reducer = nn.Identity()
+            self.point_reducers.append(point_reducer)
+
             layer = nn.Sequential()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
                     center_sizes[i], fold_sizes[i], bias=bias)
                 layer.append(block)
-            layers.append(layer)
-        self.layer0, self.layer1 = layers
+            self.layers.append(layer)
 
-        self.point_reducer0 = nn.Conv2d(
-            layer_depths[0], layer_depths[1], 4, stride=4)
+            initial_depth = layer_depths[i]
 
         # TODO: check FPN design
         # self.layer1_out = nn.Sequential(
@@ -388,10 +397,12 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x0 = self.layer0(x)
-        x1 = self.point_reducer0(x0)
-        x1 = self.layer1(x1)
-        return x0, x1
+        outs = []
+        for point_reducer, layer in zip(self.point_reducers, self.layers):
+            x = point_reducer(x)
+            x = layer(x)
+            outs.append(x)
+        return outs[0], outs[-1]
 
         # x1 = x1 + F.interpolate(
         #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
@@ -486,40 +497,36 @@ class GlobalCoC(nn.Module):
 
     def forward(
         self,
-        x0_8x: torch.Tensor,
-        x1_8x: torch.Tensor,
-        x0_32x: torch.Tensor,
-        x1_32x: torch.Tensor,
-        mask0_8x: Optional[torch.Tensor] = None,
-        mask1_8x: Optional[torch.Tensor] = None,
-        mask0_32x: Optional[torch.Tensor] = None,
-        mask1_32x: Optional[torch.Tensor] = None
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        y0: torch.Tensor,
+        y1: torch.Tensor,
+        x0_mask: Optional[torch.Tensor] = None,
+        x1_mask: Optional[torch.Tensor] = None,
+        y0_mask: Optional[torch.Tensor] = None,
+        y1_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         mask00 = mask11 = mask01 = mask10 = None
-        if mask0_8x is not None:
-            mask0_8x = mask0_8x.flatten(start_dim=1)
-            mask1_8x = mask1_8x.flatten(start_dim=1)
-            mask0_32x = mask0_32x.flatten(start_dim=1)
-            mask1_32x = mask1_32x.flatten(start_dim=1)
-            mask00 = mask0_8x[:, :, None] & mask0_32x[:, None, :]
-            mask11 = mask1_8x[:, :, None] & mask1_32x[:, None, :]
-            mask01 = mask0_8x[:, :, None] & mask1_32x[:, None, :]
-            mask10 = mask1_8x[:, :, None] & mask0_32x[:, None, :]
+        if x0_mask is not None:
+            x0_mask = x0_mask.flatten(start_dim=1)
+            x1_mask = x1_mask.flatten(start_dim=1)
+            y0_mask = y0_mask.flatten(start_dim=1)
+            y1_mask = y1_mask.flatten(start_dim=1)
+            mask00 = x0_mask[:, :, None] & y0_mask[:, None, :]
+            mask11 = x1_mask[:, :, None] & y1_mask[:, None, :]
+            mask01 = x0_mask[:, :, None] & y1_mask[:, None, :]
+            mask10 = x1_mask[:, :, None] & y0_mask[:, None, :]
 
         for merge_block, global_block, self_block, cross_block in zip(
             self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks):
-            x0_8x, x0_32x = merge_block(x0_8x, x0_32x)
-            x1_8x, x1_32x = merge_block(x1_8x, x1_32x)
+            x0, y0 = merge_block(x0, y0)
+            x1, y1 = merge_block(x1, y1)
             # x0 = global_block(x0, center0, mask=mask00)
             # x1 = global_block(x1, center1, mask=mask11)
-            x0_8x = global_block(x0_8x, x1_32x, mask=mask01)
-            x1_8x = global_block(x1_8x, x0_32x, mask=mask10)
-            x0_8x = self_block(
-                x0_8x, x0_8x, x_mask=mask0_32x, source_mask=mask0_32x)
-            x1_8x = self_block(
-                x1_8x, x1_8x, x_mask=mask1_32x, source_mask=mask1_32x)
-            x0_8x = cross_block(
-                x0_8x, x1_8x, x_mask=mask0_32x, source_mask=mask1_32x)
-            x1_8x = cross_block(
-                x1_8x, x0_8x, x_mask=mask1_32x, source_mask=mask0_32x)
-        return x0_8x, x1_8x
+            x0 = global_block(x0, y1, mask=mask01)
+            x1 = global_block(x1, y0, mask=mask10)
+            x0 = self_block(x0, x0, x_mask=y0_mask, source_mask=y0_mask)
+            x1 = self_block(x1, x1, x_mask=y1_mask, source_mask=y1_mask)
+            x0 = cross_block(x0, x1, x_mask=y0_mask, source_mask=y1_mask)
+            x1 = cross_block(x1, x0, x_mask=y1_mask, source_mask=y0_mask)
+        return x0, x1

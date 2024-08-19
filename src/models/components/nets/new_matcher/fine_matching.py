@@ -14,6 +14,7 @@ class FineMatching(nn.Module):
         depth: int,
         window_size: int,
         temperature: float = 1.0,
+        cls_offset: float = 0.5,
         reg_by_exp_with_std: bool = False
     ) -> None:
         super().__init__()
@@ -21,11 +22,12 @@ class FineMatching(nn.Module):
         self.depth = depth
         self.window_size = window_size
         self.temperature = temperature
+        self.cls_offset = cls_offset
 
         w = window_size
         if type == "classification":
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
-            delta = (grid - w / 2 + 0.5).reshape(-1, 2)
+            delta = (grid - w / 2 + cls_offset).reshape(-1, 2)
             self.register_buffer("cls_delta", delta, persistent=False)
         elif type == "regression_by_expectation":
             self.reg_by_exp_with_std = reg_by_exp_with_std

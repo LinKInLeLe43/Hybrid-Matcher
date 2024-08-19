@@ -5,10 +5,11 @@ net:
   type: ???
   backbone:
     _target_: src.models.components.nets.new_matcher.ResNetFpn82
-    initial_depth: 128
-    layer_depths: [128, 196, 256]
+    initial_depth: 64
+    layer_depths: [64, 128, 256]
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
+    scales: [1, 4]
     blocks_counts: [2, 2]
     layer_depths: [256, 256]
     hidden_depths: [256, 256]
@@ -19,13 +20,13 @@ net:
     _target_: src.models.components.nets.new_matcher.GlobalCoC
     scale: 4
     in_depth: ${model.net.local_coc.layer_depths.0}
-    hidden_depth: 256
+    hidden_depth: ${model.net.coarse_module.in_depth}
     heads_count: 8
     layer_count: 2
     attention_block:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
-      depth: ${model.net.local_coc.layer_depths.0}
-      heads_count: 8
+      depth: ${model.net.coarse_module.in_depth}
+      heads_count: ${model.net.coarse_module.heads_count}
       scale: ${model.net.coarse_module.scale}
       attention:
         _target_: src.models.components.nets.new_matcher.FullAttention

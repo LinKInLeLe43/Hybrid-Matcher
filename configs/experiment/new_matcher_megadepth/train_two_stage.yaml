@@ -2,14 +2,11 @@
 
 defaults:
   - new_matcher_megadepth/default
-  - override /model: new_matcher_one_stage
+  - override /model: new_matcher_two_stage
   - _self_
 
-tags: ["train-new_matcher_one_stage-megadepth-dense"]
+tags: ["train-new_matcher_two_stage-megadepth"]
 
 model:
   loss:
     coarse_cls_sparse: false
-
-trainer:
-  devices: 8

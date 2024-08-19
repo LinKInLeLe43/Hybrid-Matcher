@@ -10,10 +10,3 @@ tags: ["eval-new_matcher_one_stage-megadepth"]
 data:
   test_dataset:
     image_size: 1216
-
-model:
-  loss:
-    coarse_cls_sparse: true
-
-trainer:
-  devices: 8
