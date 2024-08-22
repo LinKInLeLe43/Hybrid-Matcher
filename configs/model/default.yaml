@@ -5,8 +5,8 @@ net:
   type: ???
   backbone:
     _target_: src.models.components.nets.new_matcher.ResNetFpn82
-    initial_depth: 64
-    layer_depths: [64, 128, 256]
+    initial_depth: 128
+    layer_depths: [128, 128, 256]
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     scales: [2, 2]
@@ -47,7 +47,7 @@ net:
       layer_count: 2
     temperature: 0.1
   fine_preprocess: ???
-  fine_module: ???
+#  fine_module: ???
   fine_reg_matching: ???
   extra_scale: 16
 
