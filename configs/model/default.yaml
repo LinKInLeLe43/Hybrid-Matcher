@@ -39,8 +39,7 @@ net:
         - ${model.net.backbone.layer_depths.2}
         - ${model.net.local_coc.layer_depths.0}
       encoder:
-        _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
-        scale: ${model.net.coarse_matching.fused_selective_module.scale}
+        _target_: src.models.components.nets.new_matcher.TransformerEncoder
         depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
         heads_count: 8
         attention:
