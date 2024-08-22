@@ -8,6 +8,7 @@ from torch.nn import functional as F
 class CoarseMatching(nn.Module):
     def __init__(
         self,
+        fused_selective_module: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -15,6 +16,7 @@ class CoarseMatching(nn.Module):
         train_min_gt_count: int = 200
     ) -> None:
         super().__init__()
+        self.fused_selective_module = fused_selective_module
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -125,29 +127,79 @@ class CoarseMatching(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None,
-        gt_idxes:
+        y0: torch.Tensor,
+        y1: torch.Tensor,
+        x0_mask: Optional[torch.Tensor] = None,
+        x1_mask: Optional[torch.Tensor] = None,
+        y0_mask: Optional[torch.Tensor] = None,
+        y1_mask: Optional[torch.Tensor] = None,
+        x_gt_idxes:
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        y_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        _, c, h0, w0 = x0.shape
+        n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
 
-        x0 = x0.flatten(start_dim=2).transpose(1, 2)
-        x1 = x1.flatten(start_dim=2).transpose(1, 2)
-        x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
-        similarity = torch.einsum("nlc,nsc->nls", x0, x1)
+        _y0 = y0.flatten(start_dim=2).transpose(1, 2)
+        _y1 = y1.flatten(start_dim=2).transpose(1, 2)
+        _y0, _y1 = _y0 / c ** 0.5, _y1 / c ** 0.5
+        similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
         similarity /= self.temperature
-        if mask0 is not None and mask1 is not None:
-            mask = (mask0.flatten(start_dim=1)[:, :, None] &
-                    mask1.flatten(start_dim=1)[:, None, :])
+        if y0_mask is not None and y1_mask is not None:
+            mask = (y0_mask.flatten(start_dim=1)[:, :, None] &
+                    y1_mask.flatten(start_dim=1)[:, None, :])
             similarity.masked_fill_(~mask, -1e9)
 
-        confidence0_to_1 = F.softmax(similarity, dim=2)
-        confidence1_to_0 = F.softmax(similarity, dim=1)
-        confidence = confidence0_to_1 * confidence1_to_0
+        topk = 8
+        result = {}
+        if self.training:
+            confidence0_to_1 = F.softmax(similarity, dim=2)
+            confidence1_to_0 = F.softmax(similarity, dim=1)
+            confidence = confidence0_to_1 * confidence1_to_0
+            result["extra_coarse_cls_heatmap"] = confidence
+            _similarity = similarity.clone()
+            _similarity[y_gt_idxes] = 1e9
+        else:
+            _similarity = similarity
 
-        result = self._create_coarse_matching(
-            confidence, (h0, w0), (h1, w1), mask0, mask1, gt_idxes)
+        _, idxes0_to_1 = _similarity.topk(topk, dim=2)
+        _, idxes1_to_0 = _similarity.topk(topk, dim=1)
+
+        (x0, x1, selective0, selective1,
+         idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
+            x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
+        _x0, _x1 = x0 / c ** 0.5, x1 / c ** 0.5
+        _selective0 = selective0 / c ** 0.5
+        _selective1 = selective1 / c ** 0.5
+
+        if self.training:
+            similarity = torch.einsum("nlc,nsc->nls", _x0, _x1)
+            similarity /= self.temperature
+            if x0_mask is not None and x1_mask is not None:
+                mask = (x0_mask.flatten(start_dim=1)[:, :, None] &
+                        x1_mask.flatten(start_dim=1)[:, None, :])
+                similarity.masked_fill_(~mask, -1e9)
+
+            confidence0_to_1 = F.softmax(similarity, dim=2)
+            confidence1_to_0 = F.softmax(similarity, dim=1)
+            confidence = confidence0_to_1 * confidence1_to_0
+        else:
+            similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
+            similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
+            similarity0_to_1 /= self.temperature
+            similarity1_to_0 /= self.temperature
+            confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
+            confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
+            confidence0_to_1 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
+                2, idxes0_to_1, confidence0_to_1)
+            confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
+                1, idxes1_to_0, confidence1_to_0)
+            confidence = confidence0_to_1 * confidence1_to_0
+
+        result.update(self._create_coarse_matching(
+            confidence, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
+        result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
+                          x1.transpose(1, 2).unflatten(2, (h1, w1)))
         result["coarse_cls_heatmap"] = confidence
         return result

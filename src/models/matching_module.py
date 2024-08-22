@@ -76,28 +76,35 @@ class MatchingModule(pl.LightningModule):
         self,
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        s0, s1 = self.net.scales
+        s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
             supervision = utils.create_coarse_supervision(
-                batch, s0, return_coor=True)
-            result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
+                batch, s1, extra_scale=s0, return_coor=True)
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
             supervision["fine_gt_biases"] = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["coarse_cls_idxes"], s1, self.net.reg_w)
+                result["coarse_cls_idxes"], s2, self.net.reg_w)
         elif self.net.type == "two_stage":
-            supervision = utils.create_coarse_supervision(batch, s0)
-            result = self.net(batch, gt_idxes=supervision["coarse_gt_idxes"])
+            supervision = utils.create_coarse_supervision(
+                batch, s1, extra_scale=s0)
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
             supervision.update(utils.create_fine_supervision(
-                batch, (s0, s1), result["coarse_cls_idxes"],
+                batch, (s1, s2), result["coarse_cls_idxes"],
                 offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
             supervision["fine_gt_biases"] = utils.compute_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["fine_cls_idxes"], s1, self.net.reg_w)
+                result["fine_cls_idxes"], s2, self.net.reg_w)
         else:
             assert False
         loss = self.loss(
-            **result, **supervision, mask0=batch.get(f"mask0_{s0}x"),
-            mask1=batch.get(f"mask1_{s0}x"))
+            **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
+            mask1=batch.get(f"mask1_{s1}x"),
+            extra_mask0=batch.get(f"mask0_{s0}x"),
+            extra_mask1=batch.get(f"mask1_{s0}x"))
         return result, loss
 
     def training_step(

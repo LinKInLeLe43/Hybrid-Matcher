@@ -16,6 +16,7 @@ class NewMatcherNet(nn.Module):
         fine_preprocess: nn.Module,
         fine_module: nn.Module,
         fine_reg_matching: nn.Module,
+        extra_scale: Optional[int] = None,
         fine_cls_matching: Optional[nn.Module] = None
     ) -> None:
         super().__init__()
@@ -27,6 +28,7 @@ class NewMatcherNet(nn.Module):
         self.fine_preprocess = fine_preprocess
         self.fine_module = fine_module
         self.fine_reg_matching = fine_reg_matching
+        self.extra_scale = extra_scale
         self.fine_cls_matching = fine_cls_matching
 
         self.scales = (backbone.scales[0],
@@ -88,15 +90,18 @@ class NewMatcherNet(nn.Module):
         self,
         batch: Dict[str, Any],
         gt_idxes:
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
+        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
             x = torch.cat([batch["image0"], batch["image1"]])
             xs = self.backbone(x)
-            x_8x, x_32x = self.local_coc(xs[-1])
+            x_16x, x_32x = self.local_coc(xs[-1])
 
             if self.local_coc.scales[0] == 1:
                 xs.pop(-1)
@@ -106,28 +111,31 @@ class NewMatcherNet(nn.Module):
                 x0, x1 = x.chunk(2)
                 x0s.append(x0)
                 x1s.append(x1)
-            x0_8x, x1_8x = x_8x.chunk(2)
+            x0_16x, x1_16x = x_16x.chunk(2)
             x0_32x, x1_32x = x_32x.chunk(2)
         else:
             x0s = self.backbone(batch["image0"])
-            x0_8x, x0_32x = self.local_coc(x0s[-1])
+            x0_16x, x0_32x = self.local_coc(x0s[-1])
 
             x1s = self.backbone(batch["image1"])
-            x1_8x, x1_32x = self.local_coc(x1s[-1])
+            x1_16x, x1_32x = self.local_coc(x1s[-1])
 
             if self.local_coc.scales[0] == 1:
                 x0s.pop(-1)
                 x1s.pop(-1)
 
-        x0_8x, x1_8x = self.coarse_module(
-            x0_8x, x1_8x, x0_32x, x1_32x, x0_mask=mask0_8x, x1_mask=mask1_8x,
-            y0_mask=mask0_32x, y1_mask=mask1_32x)
+        x0_16x, x1_16x = self.coarse_module(
+            x0_16x, x1_16x, x0_32x, x1_32x, x0_mask=mask0_16x,
+            x1_mask=mask1_16x, y0_mask=mask0_32x, y1_mask=mask1_32x)
 
         result = self.coarse_matching(
-            x0_8x, x1_8x, mask0=mask0_8x, mask1=mask1_8x, gt_idxes=gt_idxes)
+            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
+            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
+        x0s[-1], x1s[-1] = result.pop("x_8x")
 
         x0_1x, x1_1x = self.fine_preprocess(
-            x0s + [x0_8x], x1s + [x1_8x], result["coarse_cls_idxes"])
+            x0s, x1s, result["coarse_cls_idxes"])
 
         if self.type == "one_stage":
             if len(x0_1x) != 0:

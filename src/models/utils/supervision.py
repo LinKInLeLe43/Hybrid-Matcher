@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import kornia as K
 import torch
@@ -36,6 +36,7 @@ def _warp_point(
 def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
+    extra_scale: Optional[int] = None,
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -85,6 +86,20 @@ def create_coarse_supervision(
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
     supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
+
+    if extra_scale is not None:
+        if extra_scale <= scale:
+            raise ValueError("")
+
+        stride = extra_scale // scale
+        fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
+        gt_mask = gt_mask.reshape(
+            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+        gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+        gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+        gt_idxes = gt_mask.nonzero(as_tuple=True)
+        supervision["extra_coarse_gt_mask"] = gt_mask
+        supervision["extra_coarse_gt_idxes"] = gt_idxes
 
     if return_coor:
         if "scale1" in batch:
