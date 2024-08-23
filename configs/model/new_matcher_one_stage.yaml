@@ -15,7 +15,7 @@ net:
     _target_: src.models.components.nets.new_matcher.LoFTR
     encoder:
       _target_: src.models.components.nets.new_matcher.TransformerEncoder
-      depth: ${model.net.backbone.layer_depths.0}
+      depth: ${model.net.fine_preprocess.depths.0}
       heads_count: 8
       attention:
         _target_: src.models.components.nets.new_matcher.FullAttention
@@ -23,7 +23,7 @@ net:
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "regression_by_expectation"
-    depth: ${model.net.backbone.layer_depths.0}
+    depth: ${model.net.fine_preprocess.depths.0}
     window_size: ${model.net.fine_preprocess.window_size}
     temperature: 1.0
     reg_by_exp_with_std: true
@@ -31,6 +31,9 @@ net:
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
   coarse_cls_sparse: true
-  coarse_cls_loss_pos_weight: 1.0
-  coarse_cls_loss_neg_weight: 1.0
+  coarse_cls_loss_pos_weight: 0.5
+  coarse_cls_loss_neg_weight: 0.5
+  extra_coarse_cls_sparse: true
+  extra_coarse_cls_loss_pos_weight: 0.5
+  extra_coarse_cls_loss_neg_weight: 0.5
   fine_reg_loss_weight: 1.0
