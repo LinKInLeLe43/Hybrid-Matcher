@@ -82,8 +82,10 @@ class NewMatcherNet(nn.Module):
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
             fine_points0 *= scale0[b_idxes]
+            coarse_points1 *= scale1[b_idxes]
             fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
+        result["coarse_points1"] = coarse_points1
         result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
