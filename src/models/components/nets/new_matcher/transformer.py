@@ -56,6 +56,66 @@ class TransformerEncoder(nn.Module):
         return out
 
 
+class ConvTransformerEncoder(nn.Module):
+    def __init__(
+        self,
+        scale: int,
+        depth: int,
+        heads_count: int,
+        attention: nn.Module
+    ) -> None:
+        super().__init__()
+        self.scale = scale
+        self.heads_count = heads_count
+        self.attention = attention
+        self.nchw = False
+
+        self.q_proj = nn.Linear(depth, depth, bias=False)
+        self.k_proj = nn.Linear(depth, depth, bias=False)
+        self.v_proj = nn.Linear(depth, depth, bias=False)
+
+        self.merge = nn.Linear(depth, depth, bias=False)
+        self.norm1 = nn.LayerNorm(depth)
+
+        self.mlp = nn.Sequential(
+            nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False))
+        self.norm2 = nn.LayerNorm(depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        source: torch.Tensor,
+        size: Tuple[int, int],
+        x_mask: Optional[torch.Tensor] = None,
+        source_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        sh = sw = self.scale
+        fh, fw = size[0] // sh, size[1] // sw
+
+        q = self.q_proj(x).unflatten(2, (self.heads_count, -1))
+        k = self.k_proj(source).unflatten(2, (self.heads_count, -1))
+        v = self.v_proj(source).unflatten(2, (self.heads_count, -1))
+        out = self.attention(
+            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+
+        out = self.merge(out)
+        out = self.norm1(out)
+
+        out = torch.cat([x, out], dim=2)
+        out = einops.rearrange(
+            out, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", fh=fh, sh=sh,
+            fw=fw, sw=sw)
+        out = self.mlp(out)
+        out = einops.rearrange(
+            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw)
+        out = self.norm2(out)
+
+        out += x
+        return out
+
+
 class AggregatedEncoder(nn.Module):
     def __init__(
         self,
@@ -225,8 +285,10 @@ class FusedSelectiveTransformer(nn.Module):
         _idxes1_to_0 = (idxes1_to_0 + h0 * w0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
-            x0 = layer(x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2))
-            x1 = layer(x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2))
+            x0 = layer(
+                x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0))
+            x1 = layer(
+                x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1))
 
         out0 = einops.rearrange(
             x0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh0, sh=sh,
