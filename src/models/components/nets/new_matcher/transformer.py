@@ -39,11 +39,18 @@ class TransformerEncoder(nn.Module):
         x_mask: Optional[torch.Tensor] = None,
         source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        q = self.q_proj(x).unflatten(2, (self.heads_count, -1))
-        k = self.k_proj(source).unflatten(2, (self.heads_count, -1))
-        v = self.v_proj(source).unflatten(2, (self.heads_count, -1))
-        out = self.attention(
-            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+        fc = self.heads_count
+
+        if x_mask is not None and source_mask is not None:
+            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+
+        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
+        k = einops.rearrange(
+            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+        v = einops.rearrange(
+            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
         out = self.norm1(out)
@@ -91,14 +98,19 @@ class ConvTransformerEncoder(nn.Module):
         x_mask: Optional[torch.Tensor] = None,
         source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        sh = sw = self.scale
+        sh, sw, fc = self.scale, self.scale, self.heads_count
         fh, fw = size[0] // sh, size[1] // sw
 
-        q = self.q_proj(x).unflatten(2, (self.heads_count, -1))
-        k = self.k_proj(source).unflatten(2, (self.heads_count, -1))
-        v = self.v_proj(source).unflatten(2, (self.heads_count, -1))
-        out = self.attention(
-            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+        if x_mask is not None and source_mask is not None:
+            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+
+        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
+        k = einops.rearrange(
+            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+        v = einops.rearrange(
+            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
         out = self.norm1(out)
@@ -154,16 +166,19 @@ class AggregatedEncoder(nn.Module):
         x_mask: Optional[torch.Tensor] = None,
         source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        s = self.scale
+        s, fc = self.scale, self.heads_count
 
         q = self.down_q(x).flatten(start_dim=2).transpose(1, 2)
         kv = self.down_kv(source).flatten(start_dim=2).transpose(1, 2)
 
-        q = self.q_proj(q).unflatten(2, (self.heads_count, -1))
-        k = self.k_proj(kv).unflatten(2, (self.heads_count, -1))
-        v = self.v_proj(kv).unflatten(2, (self.heads_count, -1))
-        out = self.attention(
-            q, k, v, q_mask=x_mask, kv_mask=source_mask).flatten(start_dim=2)
+        if x_mask is not None and source_mask is not None:
+            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+
+        q = einops.rearrange(self.q_proj(q), "n l (fc sc) -> n fc l sc", fc=fc)
+        k = einops.rearrange(self.k_proj(kv), "n s (fc sc) -> n fc s sc", fc=fc)
+        v = einops.rearrange(self.v_proj(kv), "n s (fc sc) -> n fc s sc", fc=fc)
+        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
         out = self.norm1(out)

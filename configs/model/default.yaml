@@ -29,7 +29,7 @@ net:
       heads_count: ${model.net.coarse_module.heads_count}
       scale: ${model.net.coarse_module.scale}
       attention:
-        _target_: src.models.components.nets.new_matcher.FullAttention
+        _target_: src.models.components.nets.new_matcher.Attention
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     fused_selective_module:
@@ -44,7 +44,7 @@ net:
         depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
         heads_count: 8
         attention:
-          _target_: src.models.components.nets.new_matcher.FullAttention
+          _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
     temperature: 0.1
   fine_preprocess: ???

@@ -21,7 +21,7 @@ net:
       heads_count: 8
       scale: 2
       attention:
-        _target_: src.models.components.nets.new_matcher.FullAttention
+        _target_: src.models.components.nets.new_matcher.Attention
     types: ["self", "cross"]
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching

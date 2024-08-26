@@ -18,7 +18,7 @@ net:
       depth: ${model.net.fine_preprocess.depths.0}
       heads_count: 8
       attention:
-        _target_: src.models.components.nets.new_matcher.FullAttention
+        _target_: src.models.components.nets.new_matcher.Attention
     types: ["self", "cross"]
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
