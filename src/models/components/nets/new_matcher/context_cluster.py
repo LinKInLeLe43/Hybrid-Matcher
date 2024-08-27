@@ -136,15 +136,14 @@ class LocalCluster(nn.Module):
             max_sim_values, max_sim_idxes, x_value, center_value = map(
                 lambda x: x.flatten(end_dim=1),
                 (max_sim_values, max_sim_idxes, x_value, center_value))
-
-            max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
+            _max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
 
             cat_ones = torch.ones_like(x_value[:, [0]])
             cat_x_value = torch.cat([x_value, cat_ones], dim=1)
             cat_ones = torch.ones_like(center_value[:, [0]])
             cat_center_value = torch.cat([center_value, cat_ones], dim=1)
             max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
-                max_sim_idxes, size=m * s)
+                _max_sim_idxes, size=m * s)
             aggregated = cat_center_value + torch_scatter.segment_csr(
                 (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
                 max_sim_idxes_csr)
