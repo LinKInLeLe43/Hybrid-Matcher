@@ -45,7 +45,7 @@ class _BasicBlock(nn.Module):
         return out
 
 
-class ResNetFpn82(nn.Module):
+class ResNet82(nn.Module):
     def __init__(
         self,
         initial_depth: int,

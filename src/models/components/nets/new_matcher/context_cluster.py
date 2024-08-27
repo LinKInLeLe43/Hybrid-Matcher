@@ -69,9 +69,9 @@ class LocalCluster(nn.Module):
         self.fold_size = fold_size
         self.type = type
 
-        self.proj = nn.Conv2d(in_depth, 2 * hidden_depth, 1, bias=bias)
+        self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
         self.center_proposal = nn.AdaptiveAvgPool2d(center_size)
-        self.merge = nn.Conv2d(hidden_depth, in_depth, 1, bias=bias)
+        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -87,9 +87,9 @@ class LocalCluster(nn.Module):
         m, s = n * fc * fh * fw, self.center_size ** 2
         device = x.device
 
-        x = self.proj(x)
+        x = self.proj(x.permute(0, 2, 3, 1))
         x = einops.rearrange(
-            x, "n (fc sc) (fh sh) (fw sw) -> (n fc fh fw) sc sh sw", fc=fc,
+            x, "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw", fc=fc,
             fh=fh, fw=fw)
         center = self.center_proposal(x)
         x = x.flatten(start_dim=2).transpose(1, 2)
@@ -128,7 +128,7 @@ class LocalCluster(nn.Module):
                           aggregated.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
                 dispatched,
-                "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
         elif self.type == "segment_csr":
             max_sim_idxes = (max_sim_idxes +
@@ -152,7 +152,7 @@ class LocalCluster(nn.Module):
                           aggregated.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
                 dispatched,
-                "(n fc fh fw sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
         elif self.type == "original":
             mask = torch.zeros_like(similarities)
@@ -165,7 +165,7 @@ class LocalCluster(nn.Module):
             dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
             dispatched = einops.rearrange(
                 dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fc sc) (fh sh) (fw sw)", fc=fc,
+                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
         else:
             raise NotImplementedError("")
@@ -236,6 +236,16 @@ class GlobalCluster(nn.Module):
             dispatched = einops.rearrange(
                 dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
             dispatched = self.merge(dispatched)
+        elif self.type == "original":
+            mask = torch.zeros_like(similarities)
+            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
+            similarities = (mask * similarities)[..., None]
+
+            dispatched = (similarities *
+                          center1_value[:, None, :, :]).sum(dim=2)
+            dispatched = einops.rearrange(
+                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
+                w=w0)
         else:
             raise NotImplementedError("")
         return dispatched
@@ -267,7 +277,6 @@ class LocalClusterBlock(nn.Module):
         mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         new_x = self.cluster(x, mask=mask)
-        new_x = new_x.permute(0, 2, 3, 1)
         new_x = self.norm0(new_x)
 
         new_x = torch.cat([x.permute(0, 2, 3, 1), new_x], dim=3)

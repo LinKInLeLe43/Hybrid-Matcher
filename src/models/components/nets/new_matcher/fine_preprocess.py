@@ -14,7 +14,8 @@ class FinePreprocess(nn.Module):
         padding: int,
         depths: List[int],
         right_extra: int = 0,
-        scale_before_crop: int = 1
+        scale_before_crop: int = 1,
+        norm_before_fuse: bool = False
     ) -> None:
         super().__init__()
         self.type = type
@@ -24,6 +25,7 @@ class FinePreprocess(nn.Module):
         self.depths = depths
         self.right_extra = right_extra
         self.scale_before_crop = scale_before_crop
+        self.norm_before_fuse = norm_before_fuse
 
         if type == "loftr":
             self.proj = nn.Linear(depths[-1], depths[0])
@@ -135,6 +137,10 @@ class FinePreprocess(nn.Module):
             out0 = x0s[0].new_empty((0, ww0, c))
             out1 = x1s[0].new_empty((0, ww1, c))
             return out0, out1
+
+        if self.norm_before_fuse:
+            x0s[-1] = x0s[-1] / self.depths[-1] ** 0.5
+            x1s[-1] = x1s[-1] / self.depths[-1] ** 0.5
 
         if self.type == "loftr":
             out0, out1 = self._fuse_loftr(x0s, x1s, idxes)

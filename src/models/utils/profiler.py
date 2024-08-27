@@ -1,10 +1,10 @@
 import contextlib
-from pytorch_lightning import profiler
+from pytorch_lightning import profilers
 from pytorch_lightning import utilities
 import torch
 
 
-class InferenceProfiler(profiler.SimpleProfiler):
+class InferenceProfiler(profilers.SimpleProfiler):
     def __init__(self):
         super().__init__()
 

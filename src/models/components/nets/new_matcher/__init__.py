@@ -1,5 +1,4 @@
 from .attention import Attention
-from .backbone import ResNetFpn82
 from .coarse_matching import CoarseMatching
 from .context_cluster import LocalCoC
 from .context_cluster import GlobalCoC
