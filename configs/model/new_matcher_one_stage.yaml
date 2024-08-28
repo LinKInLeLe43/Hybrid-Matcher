@@ -6,27 +6,22 @@ net:
   type: "one_stage"
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
-    type: "loftr"
-    window_size: 5
+    type: "eloftr"
+    window_size: 9
     stride: 4
-    padding: 2
+    padding: 4
     depths: ${model.net.backbone.layer_depths}
-  fine_module:
-    _target_: src.models.components.nets.new_matcher.LoFTR
-    encoder:
-      _target_: src.models.components.nets.new_matcher.TransformerEncoder
-      depth: ${model.net.fine_preprocess.depths.0}
-      heads_count: 8
-      attention:
-        _target_: src.models.components.nets.new_matcher.Attention
-    types: ["self", "cross"]
+#  fine_module:
+#    _target_: src.models.components.nets.new_matcher.LoFTR
+#    encoder:
+#      _target_: src.models.components.nets.new_matcher.TransformerEncoder
+#      depth: ${model.net.backbone.layer_depths.0}
+#      heads_count: 8
+#      attention:
+#        _target_: src.models.components.nets.new_matcher.FullAttention
+#    types: ["self", "cross"]
   fine_reg_matching:
-    _target_: src.models.components.nets.new_matcher.FineMatching
-    type: "regression_by_expectation"
-    depth: ${model.net.fine_preprocess.depths.0}
-    window_size: ${model.net.fine_preprocess.window_size}
-    temperature: 1.0
-    reg_by_exp_with_std: true
+    _target_: src.models.components.nets.new_matcher.homo.FineHomo
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
@@ -37,3 +32,4 @@ loss:
   extra_coarse_cls_loss_pos_weight: 0.5
   extra_coarse_cls_loss_neg_weight: 0.5
   fine_reg_loss_weight: 1.0
+  dense_reg_loss_weight: 1.0

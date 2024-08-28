@@ -75,7 +75,8 @@ def _compute_reg_loss(
     if reg_stds is not None:
         weight = 1.0 / reg_stds.clamp(min=1e-10)
         weight /= weight.mean()
-    mask = gt_biases.abs().amax(dim=1) < 1.0
+    mask = ((reg_biases.abs().amax(dim=1) < 1.0) &
+            (gt_biases.abs().amax(dim=1) < 1.0))
     if not mask.any():
         mask[0] = True
         loss_weight = 0.0
@@ -83,6 +84,28 @@ def _compute_reg_loss(
     losses = ((reg_biases - gt_biases)[mask] ** 2).sum(dim=1)
     if weight is not None:
         losses *= weight[mask]
+    loss = loss_weight * losses.mean()
+    return loss
+
+
+def _compute_dense_loss(
+    reg_biases: torch.Tensor,
+    gt_biases: torch.Tensor,
+    valid_mask: torch.Tensor,
+    loss_weight: float = 1.0
+) -> torch.Tensor:
+    m = len(reg_biases)
+
+    if m == 0:
+        return reg_biases.new_tensor(1.0)
+
+    mask = ((reg_biases.abs().amax(dim=1) < 1.0) &
+            (gt_biases.abs().amax(dim=1) < 1.0) & valid_mask)
+    if not mask.any():
+        mask[0] = True
+        loss_weight = 0.0
+
+    losses = ((reg_biases - gt_biases)[mask] ** 2).sum(dim=1)
     loss = loss_weight * losses.mean()
     return loss
 
@@ -117,6 +140,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         fine_cls_loss_pos_weight: Optional[float] = None,
         fine_cls_loss_neg_weight: Optional[float] = None,
         fine_reg_loss_weight: Optional[float] = None,
+        dense_reg_loss_weight: Optional[float] = None,
         flow_loss_weight: Optional[float] = None
     ) -> None:
         super().__init__()
@@ -130,6 +154,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self.fine_cls_loss_pos_weight = fine_cls_loss_pos_weight
         self.fine_cls_loss_neg_weight = fine_cls_loss_neg_weight
         self.fine_reg_loss_weight = fine_reg_loss_weight
+        self.dense_reg_loss_weight = dense_reg_loss_weight
         self.flow_loss_weight = flow_loss_weight
 
     def forward(
@@ -143,6 +168,9 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         fine_reg_biases: Optional[torch.Tensor] = None,
         fine_gt_biases: Optional[torch.Tensor] = None,
         fine_reg_stds: Optional[torch.Tensor] = None,
+        dense_reg_biases: Optional[torch.Tensor] = None,
+        dense_gt_biases: Optional[torch.Tensor] = None,
+        dense_valid_mask: Optional[torch.Tensor] = None,
         flows_with_uncertainties0: Optional[torch.Tensor] = None,
         flows_with_uncertainties1: Optional[torch.Tensor] = None,
         gt_flows0: Optional[torch.Tensor] = None,
@@ -202,6 +230,16 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                     loss_weight=self.fine_reg_loss_weight)
                 total_loss += fine_reg_loss
                 loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
+
+        if self.dense_reg_loss_weight is not None:
+            if (dense_reg_biases is not None and
+                dense_gt_biases is not None and
+                dense_valid_mask is not None):
+                dense_reg_loss = _compute_dense_loss(
+                    dense_reg_biases, dense_gt_biases, dense_valid_mask,
+                    loss_weight=self.dense_reg_loss_weight)
+                total_loss += dense_reg_loss
+                loss["scalar"]["dense_reg_loss"] = dense_reg_loss.detach().cpu()
 
         if self.flow_loss_weight is not None:
             if (flows_with_uncertainties0 is not None and

@@ -104,7 +104,9 @@ class FinePreprocess(nn.Module):
         xs[-1] = self.ups[-1](xs[-1])
         for i in reversed(range(len(xs[:-1]))):
             xs[i] = self.ups[i](xs[i])
-            xs[i] += F.interpolate(xs[i + 1], scale_factor=2.0, mode="bilinear")
+            xs[i] += F.interpolate(
+                xs[i + 1], scale_factor=2.0, mode="bilinear",
+                align_corners=True)
             xs[i] = self.downs[i](xs[i])
         return xs[0]
 

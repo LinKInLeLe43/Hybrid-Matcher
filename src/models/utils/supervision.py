@@ -2,7 +2,10 @@ from typing import Any, Dict, Optional, Tuple
 
 import kornia as K
 import torch
+from torch import nn
 from torch.nn import functional as F
+
+from src.models.utils.metrics import _warp_point as _warp_point1
 
 
 def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
@@ -202,7 +205,7 @@ def create_fine_supervision(
 
 
 @torch.no_grad()
-def compute_gt_biases(
+def compute_reg_gt_biases(
     points0_to_1: torch.Tensor,
     points1: torch.Tensor,
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
@@ -214,3 +217,57 @@ def compute_gt_biases(
     gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
     gt_biases /= fine_scale * (window_size // 2)
     return gt_biases
+
+
+def compute_dense_gt_biases(
+    batch: Dict[str, Any],
+    result: Dict[str, Any],
+    dense_matcher: nn.Module,
+    points1: torch.Tensor,
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    fine_scale: int,
+    window_size: int
+) -> Dict[str, Any]:
+    b_idxes, i_idxes, j_idxes = idxes
+
+    dense_num = 2 * 1 + 1
+    data = {"flow_predictions": result.pop("flow_predictions"),
+            "mkpts0_c": result["coarse_points0"],
+            "mkpts1_c": result["coarse_points1"],
+            "b_ids": b_idxes,
+            "i_ids": i_idxes,
+            "j_ids": j_idxes}
+    if "scale0" in batch:
+        data["scale0"] = batch["scale0"]
+        data["scale1"] = batch["scale1"]
+    dense_matcher.get_fine_match_dense(
+        data, dense_num=dense_num, update_fmatch=False)
+    mkpts0_f_dense = data["mkpts0_f_dense"]
+    mkpts1_f_dense = data["mkpts1_f_dense"]
+
+    n = len(batch["image0"])
+    dense_b_idxes = b_idxes.repeat_interleave(dense_num ** 2, dim=0)
+    points0_to_1 = torch.zeros_like(mkpts0_f_dense)
+    valid_mask0_to_1 = torch.zeros_like(mkpts0_f_dense[:, 0], dtype=torch.bool)
+    for b in range(n):
+        b_mask = dense_b_idxes == b
+        b_points0_to_1, b_valid_mask0_to_1 = _warp_point1(
+            mkpts0_f_dense[b_mask][None], batch["depth0"][[b]],
+            batch["depth1"][[b]], batch["K0"][[b]], batch["K1"][[b]],
+            batch["T0_to_1"][[b]], use_bilinear=True, return_mask=True,
+            consistent_depth_ratio=0.05)
+        points0_to_1[b_mask] = b_points0_to_1[0]
+        valid_mask0_to_1[b_mask] = b_valid_mask0_to_1[0]
+
+    if "scale1" in batch:
+        mkpts1_f_dense = mkpts1_f_dense / batch["scale1"][dense_b_idxes]
+        points0_to_1 = points0_to_1 / batch["scale1"][dense_b_idxes]
+
+    points1 = points1[b_idxes, j_idxes].repeat_interleave(dense_num ** 2, dim=0)
+    reg_biases = (mkpts1_f_dense - points1) / (fine_scale * (window_size // 2))
+    gt_biases = (points0_to_1 - points1) / (fine_scale * (window_size // 2))
+
+    supervision = {"dense_reg_biases": reg_biases,
+                   "dense_gt_biases": gt_biases,
+                   "dense_valid_mask": valid_mask0_to_1}
+    return supervision

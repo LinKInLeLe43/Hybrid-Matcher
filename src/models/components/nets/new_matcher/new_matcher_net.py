@@ -14,7 +14,7 @@ class NewMatcherNet(nn.Module):
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
-        fine_module: nn.Module,
+        # fine_module: nn.Module,
         fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
         fine_cls_matching: Optional[nn.Module] = None
@@ -26,7 +26,7 @@ class NewMatcherNet(nn.Module):
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
-        self.fine_module = fine_module
+        # self.fine_module = fine_module
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
         self.fine_cls_matching = fine_cls_matching
@@ -82,8 +82,10 @@ class NewMatcherNet(nn.Module):
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
             fine_points0 *= scale0[b_idxes]
+            coarse_points1 *= scale1[b_idxes]
             fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
+        result["coarse_points1"] = coarse_points1
         result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
@@ -137,33 +139,33 @@ class NewMatcherNet(nn.Module):
         x0_1x, x1_1x = self.fine_preprocess(
             x0s, x1s, result["coarse_cls_idxes"])
 
-        if self.type == "one_stage":
-            if len(x0_1x) != 0:
-                x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        elif self.type == "two_stage":
-            if len(x0_1x) != 0:
-                w0, w1 = self.cls_w, self.fine_w
-                x0_1x, x1_1x = self.fine_module(
-                    x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
+        # if self.type == "one_stage":
+        #     if len(x0_1x) != 0:
+        #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
+        # elif self.type == "two_stage":
+        #     if len(x0_1x) != 0:
+        #         w0, w1 = self.cls_w, self.fine_w
+        #         x0_1x, x1_1x = self.fine_module(
+        #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
+        #
+        #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
+        #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
+        #
+        #     result.update(self.fine_cls_matching(
+        #         x0_1x, x1_1x[:, self.fine_cls_mask]))
+        #
+        #     m_idxes, sub_i_idxes, sub_j_idxes = map(
+        #         lambda x: x[:, None], result["fine_cls_idxes"])
+        #     sub_j_idxes = (
+        #         self.fine_w *
+        #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
+        #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
+        #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
+        #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
+        # else:
+        #     assert False
 
-            x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
-            x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
-
-            result.update(self.fine_cls_matching(
-                x0_1x, x1_1x[:, self.fine_cls_mask]))
-
-            m_idxes, sub_i_idxes, sub_j_idxes = map(
-                lambda x: x[:, None], result["fine_cls_idxes"])
-            sub_j_idxes = (
-                self.fine_w *
-                (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
-                sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
-            x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
-            x1_1x = x1_reg[m_idxes, sub_j_idxes]
-        else:
-            assert False
-
-        result.update(self.fine_reg_matching(x0_1x, x1_1x))
+        result.update(self.fine_reg_matching(x0_1x, x1_1x, 3))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

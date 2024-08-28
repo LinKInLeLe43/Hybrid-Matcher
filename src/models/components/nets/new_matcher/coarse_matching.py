@@ -135,8 +135,8 @@ class CoarseMatching(nn.Module):
                      (score == score.amax(dim=1, keepdim=True)))
             train_idxes, matching_idxes = self._sample_for_train(
                 max_count, mask.nonzero(as_tuple=True), gt_idxes)
-            b_idxes, i_idxes, j_idxes = matching_idxes
-            scores = score[matching_idxes]
+            b_idxes, i_idxes, j_idxes = train_idxes
+            scores = score[train_idxes]
         else:
             score, idxes0_to_1, idxes1_to_0 = score
             n, l0, l1 = score.shape
@@ -168,7 +168,7 @@ class CoarseMatching(nn.Module):
                                i_idxes // size0[1]], dim=1).float()
         points1 = torch.stack([j_idxes % size1[1],
                                j_idxes // size1[1]], dim=1).float()
-        result = {"idxes": matching_idxes,
+        result = {"idxes": train_idxes,
                   "points0": points0,
                   "points1": points1,
                   "scores": scores,
