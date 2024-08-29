@@ -296,8 +296,8 @@ class FusedSelectiveTransformer(nn.Module):
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
         range = torch.arange(n, device=x0.device)[:, None, None]
-        _idxes0_to_1 = (idxes0_to_1 + h1 * w1 * range).flatten(end_dim=1)
-        _idxes1_to_0 = (idxes1_to_0 + h0 * w0 * range).flatten(end_dim=1)
+        _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
+        _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
             x0 = layer(
