@@ -165,7 +165,7 @@ class NewMatcherNet(nn.Module):
         # else:
         #     assert False
 
-        result.update(self.fine_reg_matching(x0_1x, x1_1x, 3))
+        result.update(self.fine_reg_matching(x0_1x, x1_1x, 1))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result

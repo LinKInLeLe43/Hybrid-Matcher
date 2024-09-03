@@ -7,9 +7,9 @@ net:
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
     type: "eloftr"
-    window_size: 9
+    window_size: 5
     stride: 4
-    padding: 4
+    padding: 2
     depths: ${model.net.backbone.layer_depths}
 #  fine_module:
 #    _target_: src.models.components.nets.new_matcher.LoFTR
