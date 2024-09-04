@@ -56,9 +56,9 @@ class FineMatching(nn.Module):
         heatmap = F.softmax(similarity, dim=1) * F.softmax(similarity, dim=2)
 
         with torch.no_grad():
-            m_idxes = torch.arange(m, device=x0.device)
-            idxes = heatmap.flatten(start_dim=1).argmax(dim=1)
-            idxes = m_idxes, idxes // ww, idxes % ww
+            mask = ((heatmap == heatmap.amax(dim=2, keepdim=True)) &
+                    (heatmap == heatmap.amax(dim=1, keepdim=True)))
+            idxes = mask.nonzero(as_tuple=True)
             biases0 = self.cls_delta.index_select(0, idxes[1])
             biases1 = self.cls_delta.index_select(0, idxes[2])
 

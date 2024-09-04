@@ -4,6 +4,7 @@ import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
+import torch_scatter
 
 
 class NewMatcherNet(nn.Module):
@@ -174,7 +175,17 @@ class NewMatcherNet(nn.Module):
                                    result["fine_cls_biases1"]], dim=1)
         local_matches = local_matches / s2 + w // 2
         result.update(self.fine_reg_matching(
-            x0_reg, x1_reg, 1, local_matches=local_matches))
+            x0_reg, x1_reg, 1, local_matches=local_matches,
+            m_idxes=result["fine_cls_idxes"][0]))
+        sub_idxes = torch._convert_indices_from_coo_to_csr(
+            result["fine_cls_idxes"][0], size=len(x0_reg))
+        sub_idxes = torch_scatter.segment_min_csr(
+            result["fine_reg_biases"].norm(dim=1), sub_idxes)[1]
+        result["fine_cls_idxes"] = map(
+            lambda x: x[sub_idxes], result["fine_cls_idxes"])
+        result["fine_cls_biases0"] = result["fine_cls_biases0"][sub_idxes]
+        result["fine_cls_biases1"] = result["fine_cls_biases1"][sub_idxes]
+        result["fine_reg_biases"] = result["fine_reg_biases"][sub_idxes]
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
