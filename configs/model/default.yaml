@@ -51,6 +51,7 @@ net:
 #  fine_module: ???
   fine_reg_matching: ???
   extra_scale: 16
+  enable_crop: True
 
 loss: ???
 
