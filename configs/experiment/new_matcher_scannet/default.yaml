@@ -10,6 +10,9 @@ data:
 
 model:
   net:
+    rope:
+      train_size: [832, 832]
+      test_size: [480, 640]
     coarse_matching:
       border_removal: 0
   optimizer:
