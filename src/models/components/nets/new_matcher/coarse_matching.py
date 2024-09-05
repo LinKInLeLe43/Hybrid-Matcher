@@ -8,7 +8,9 @@ from torch.nn import functional as F
 class CoarseMatching(nn.Module):
     def __init__(
         self,
+        depth: int,
         fused_selective_module: nn.Module,
+        use_matchability: bool = False,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -17,11 +19,18 @@ class CoarseMatching(nn.Module):
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
+        self.use_matchability = use_matchability
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
+
+        if use_matchability:
+            self.matchability = nn.Sequential(
+                nn.Linear(depth, depth // 2, bias=False),
+                nn.ReLU(inplace=True),
+                nn.Linear(depth // 2, 1, bias=False))
 
     def _remove_border_for_train(
         self,
@@ -235,7 +244,6 @@ class CoarseMatching(nn.Module):
 
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
-            score = confidence = confidence0_to_1 * confidence1_to_0
         else:
             similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
             similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
@@ -247,12 +255,21 @@ class CoarseMatching(nn.Module):
                 2, idxes0_to_1, confidence0_to_1)
             confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
                 1, idxes1_to_0, confidence1_to_0)
-            confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, idxes0_to_1, idxes1_to_0
 
+        heatmap = confidence = confidence0_to_1 * confidence1_to_0
+        if self.training and self.use_matchability:
+            m0 = self.matchability(x0).sigmoid()
+            m1 = self.matchability(x1).sigmoid().transpose(1, 2)
+            confidence *= m0 * m1
+            heatmap = F.pad(confidence, (0, 1, 0, 1))
+            heatmap[:, :-1, -1:] = 1 - m0
+            heatmap[:, -1:, :-1] = 1 - m1
+
+        score = (confidence if self.training else
+                 (confidence, idxes0_to_1, idxes1_to_0))
         result.update(self._create_coarse_matching(
             score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
         result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
                           x1.transpose(1, 2).unflatten(2, (h1, w1)))
-        result["coarse_cls_heatmap"] = confidence
+        result["coarse_cls_heatmap"] = heatmap
         return result

@@ -32,6 +32,7 @@ net:
         _target_: src.models.components.nets.new_matcher.Attention
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
+    depth: ${model.net.local_coc.layer_depths.0}
     fused_selective_module:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
@@ -46,6 +47,7 @@ net:
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
+    use_matchability: true
     temperature: 0.1
   fine_preprocess: ???
 #  fine_module: ???
