@@ -145,13 +145,13 @@ class AggregatedEncoder(nn.Module):
         self.down_q = nn.Conv2d(
             depth, depth, scale, stride=scale, groups=depth, bias=False)
         self.down_kv = nn.MaxPool2d(scale, stride=scale)
+        self.norm1 = nn.LayerNorm(depth)
 
         self.q_proj = nn.Linear(depth, depth, bias=False)
         self.k_proj = nn.Linear(depth, depth, bias=False)
         self.v_proj = nn.Linear(depth, depth, bias=False)
 
         self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
 
         self.mlp = nn.Sequential(
             nn.Linear(2 * depth, 2 * depth, bias=False),
@@ -168,12 +168,13 @@ class AggregatedEncoder(nn.Module):
         source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         s, fc = self.scale, self.heads_count
+        h, w = x.shape[-2:]
 
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = self.down_q(x).permute(0, 2, 3, 1)
-        kv = self.down_kv(source).permute(0, 2, 3, 1)
+        q = self.norm1(self.down_q(x).permute(0, 2, 3, 1))
+        kv = self.norm1(self.down_kv(source).permute(0, 2, 3, 1))
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 
         if rope is not None:
@@ -186,8 +187,7 @@ class AggregatedEncoder(nn.Module):
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
-        out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // s, x.shape[3] // s))
+        out = out.transpose(1, 2).unflatten(2, (h // s, w // s))
         out = F.interpolate(out, scale_factor=s, mode="bilinear")
 
         out = torch.cat([x, out], dim=1)
