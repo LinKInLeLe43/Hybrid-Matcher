@@ -38,3 +38,47 @@ class SinePositionalEncoding(nn.Module):
         pe = self.positional_encoding[None, :, :h, :w]
         out = x + pe
         return out
+
+
+class RoPESinePositionalEncoding(nn.Module):
+    def __init__(
+        self,
+        depth: int,
+        train_size: Tuple[int, int],
+        test_size: Optional[Tuple[int, int]] = None
+    ) -> None:
+        super().__init__()
+        max_shape = 256, 256
+
+        factor = torch.arange(depth // 4)[None, None, :]
+        factor = (-math.log(10000.0) / (depth // 4) * factor).exp()
+
+        x = factor * torch.ones(max_shape).cumsum(1)[:, :, None]
+        y = factor * torch.ones(max_shape).cumsum(0)[:, :, None]
+
+        if test_size is not None and test_size != train_size:
+            x *= train_size[1] / test_size[1]
+            y *= train_size[0] / test_size[0]
+
+        sin = torch.zeros((*max_shape, depth // 2))
+        cos = torch.zeros((*max_shape, depth // 2))
+        sin[..., 0::2] = y.sin()
+        sin[..., 1::2] = x.sin()
+        cos[..., 0::2] = y.cos()
+        cos[..., 1::2] = x.cos()
+
+        sin = sin.repeat_interleave(2, dim=2)
+        cos = cos.repeat_interleave(2, dim=2)
+
+        self.register_buffer("sin", sin, persistent=False)
+        self.register_buffer("cos", cos, persistent=False)
+
+    def rotate_half(self, x: torch.Tensor) -> torch.Tensor:
+        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        out = torch.stack((-x2, x1), dim=-1).flatten(start_dim=-2)
+        return out
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h, w, _ = x.shape[-3:]
+        out = self.cos[:h, :w] * x + self.sin[:h, :w] * self.rotate_half(x)
+        return out

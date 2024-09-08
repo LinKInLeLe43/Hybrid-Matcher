@@ -10,6 +10,7 @@ class NewMatcherNet(nn.Module):
         self,
         type: str,
         backbone: nn.Module,
+        rope: nn.Module,
         local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
@@ -23,6 +24,7 @@ class NewMatcherNet(nn.Module):
         super().__init__()
         self.type = type
         self.backbone = backbone
+        self.rope = rope
         self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
@@ -127,7 +129,7 @@ class NewMatcherNet(nn.Module):
                 b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
 
                 b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x)
+                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, self.rope)
 
                 x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
                 x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
@@ -143,7 +145,7 @@ class NewMatcherNet(nn.Module):
                 x1_16x, x1_32x = self.local_coc(x1_8x)
 
             x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, x0_mask=mask0_16x,
+                x0_16x, x1_16x, x0_32x, x1_32x, self.rope, x0_mask=mask0_16x,
                 x1_mask=mask1_16x, y0_mask=mask0_32x, y1_mask=mask1_32x)
 
         result = self.coarse_matching(

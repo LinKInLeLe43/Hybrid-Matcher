@@ -163,20 +163,25 @@ class AggregatedEncoder(nn.Module):
         self,
         x: torch.Tensor,
         source: torch.Tensor,
+        rope: Optional[nn.Module] = None,
         x_mask: Optional[torch.Tensor] = None,
         source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         s, fc = self.scale, self.heads_count
 
-        q = self.down_q(x).flatten(start_dim=2).transpose(1, 2)
-        kv = self.down_kv(source).flatten(start_dim=2).transpose(1, 2)
-
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = einops.rearrange(self.q_proj(q), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(self.k_proj(kv), "n s (fc sc) -> n fc s sc", fc=fc)
-        v = einops.rearrange(self.v_proj(kv), "n s (fc sc) -> n fc s sc", fc=fc)
+        q = self.down_q(x).permute(0, 2, 3, 1)
+        kv = self.down_kv(source).permute(0, 2, 3, 1)
+        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
+
+        if rope is not None:
+            q, k = rope(q), rope(k)
+
+        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 

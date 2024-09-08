@@ -7,6 +7,11 @@ net:
     _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
     block_counts: [2, 4, 4]
     layer_depths: [64, 128, 256]
+  rope:
+    _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
+    depth: ${model.net.backbone.layer_depths.2}
+    train_size: ???
+    test_size: ???
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     scales: [2, 2]
