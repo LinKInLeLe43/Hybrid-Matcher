@@ -11,7 +11,6 @@ class CoarseMatching(nn.Module):
         fused_selective_module: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
-        temperature: float = 0.1,
         train_percent: float = 0.2,
         train_min_gt_count: int = 200
     ) -> None:
@@ -19,9 +18,11 @@ class CoarseMatching(nn.Module):
         self.fused_selective_module = fused_selective_module
         self.threshold = threshold
         self.border_removal = border_removal
-        self.temperature = temperature
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
+
+        self.temperature_x = nn.Parameter(torch.tensor(10.0))
+        self.temperature_y = nn.Parameter(torch.tensor(10.0))
 
     def _remove_border_for_train(
         self,
@@ -197,7 +198,7 @@ class CoarseMatching(nn.Module):
         _y1 = y1.flatten(start_dim=2).transpose(1, 2)
         _y0, _y1 = _y0 / c ** 0.5, _y1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
-        similarity /= self.temperature
+        similarity *= self.temperature_y
         if y0_mask is not None and y1_mask is not None:
             mask = (y0_mask.flatten(start_dim=1)[:, :, None] &
                     y1_mask.flatten(start_dim=1)[:, None, :])
@@ -227,7 +228,7 @@ class CoarseMatching(nn.Module):
 
         if self.training:
             similarity = torch.einsum("nlc,nsc->nls", _x0, _x1)
-            similarity /= self.temperature
+            similarity *= self.temperature_x
             if x0_mask is not None and x1_mask is not None:
                 mask = (x0_mask.flatten(start_dim=1)[:, :, None] &
                         x1_mask.flatten(start_dim=1)[:, None, :])
@@ -239,8 +240,8 @@ class CoarseMatching(nn.Module):
         else:
             similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
             similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
-            similarity0_to_1 /= self.temperature
-            similarity1_to_0 /= self.temperature
+            similarity0_to_1 *= self.temperature_x
+            similarity1_to_0 *= self.temperature_x
             confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
             confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
             confidence0_to_1 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
