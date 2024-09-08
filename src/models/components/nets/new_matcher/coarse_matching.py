@@ -23,51 +23,12 @@ class CoarseMatching(nn.Module):
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
 
-    def _remove_border_for_train(
-        self,
-        x: torch.Tensor,
-        size0: Tuple[int, int],
-        size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor]
-    ) -> Tuple[torch.Tensor, int]:
-        r = self.border_removal
-        (h0, w0), (h1, w1) = size0, size1
-
-        out = x.reshape(-1, h0, w0, h1, w1)
-        out[:, :r, :, :, :] = False
-        out[:, :, :r, :, :] = False
-        out[:, :, :, :r, :] = False
-        out[:, :, :, :, :r] = False
-
-        if mask0 is not None:
-            h0s = mask0.sum(dim=1).amax(dim=1).int()
-            w0s = mask0.sum(dim=2).amax(dim=1).int()
-            h1s = mask1.sum(dim=1).amax(dim=1).int()
-            w1s = mask1.sum(dim=2).amax(dim=1).int()
-            max_count = torch.minimum(h0s * w0s, h1s * w1s).sum().item()
-            for b, (_h0, _w0, _h1, _w1) in enumerate(zip(h0s, w0s, h1s, w1s)):
-                out[b, _h0 - r:, :, :, :] = False
-                out[b, :, _w0 - r:, :, :] = False
-                out[b, :, :, _h1 - r:, :] = False
-                out[b, :, :, :, _w1 - r:] = False
-        else:
-            max_count = len(x) * min(h0 * w0, h1 * w1)
-            if r > 0:
-                out[:, -r:, :, :, :] = False
-                out[:, :, -r:, :, :] = False
-                out[:, :, :, -r:, :] = False
-                out[:, :, :, :, -r:] = False
-
-        out = out.reshape(-1, h0 * w0, h1 * w1)
-        return out, max_count
-
-    def _remove_border_for_eval(
+    def _remove_border(
         self,
         x: torch.Tensor,
         size: Tuple[int, int],
         mask: Optional[torch.Tensor]
-    ) -> torch.Tensor:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         r = self.border_removal
 
         if r == 0:
@@ -80,14 +41,16 @@ class CoarseMatching(nn.Module):
         if mask is not None:
             hs = mask.sum(dim=1).amax(dim=1).int()
             ws = mask.sum(dim=2).amax(dim=1).int()
+            count = hs * ws
             for b, (h, w) in enumerate(zip(hs, ws)):
                 out[b, h - r:, :] = 0
                 out[b, :, w - r:] = 0
         else:
+            count = x.new_tensor(len(x) * [size[0] * size[1]], dtype=torch.int)
             out[:, -r:, :] = 0
             out[:, :, -r:] = 0
         out = out.flatten(start_dim=1)
-        return out
+        return out, count
 
     def _sample_for_train(
         self,
@@ -120,50 +83,43 @@ class CoarseMatching(nn.Module):
     @torch.no_grad()
     def _create_coarse_matching(
         self,
-        score: Union[torch.Tensor,
-                     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        score: torch.Tensor,
+        idxes0_to_1: torch.Tensor,
+        idxes1_to_0: torch.Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
+        n, l0, l1 = score.shape
+        device = score.device
+        r = torch.arange(n, device=device)[:, None, None]
+        r0 = torch.arange(l0, device=device)[None, :, None]
+        r1 = torch.arange(l1, device=device)[None, None, :]
+
+        values0_to_1, sub_idxes0_to_1 = score[r, r0, idxes0_to_1].max(dim=2)
+        sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
+        idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
+        idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
+        idxes0_to_1, count0 = self._remove_border(idxes0_to_1, size0, mask0)
+        idxes1_to_0, count1 = self._remove_border(idxes1_to_0, size1, mask1)
+        biprojection = torch.stack([idxes1_to_0[b, idx1]
+                                    for b, idx1 in enumerate(idxes0_to_1)])
+        mask = biprojection == r0[:, :, 0]
+        if self.border_removal > 0:
+            mask[:, 0] = False
+        mask &= values0_to_1 > self.threshold
+        b_idxes, i_idxes = mask.nonzero(as_tuple=True)
+        j_idxes = idxes0_to_1[b_idxes, i_idxes]
+        train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
         if self.training:
-            mask, max_count = self._remove_border_for_train(
-                score > self.threshold, size0, size1, mask0, mask1)
-            mask &= ((score == score.amax(dim=2, keepdim=True)) &
-                     (score == score.amax(dim=1, keepdim=True)))
             train_idxes, matching_idxes = self._sample_for_train(
-                max_count, mask.nonzero(as_tuple=True), gt_idxes)
+                torch.minimum(count0, count1).sum().item(), matching_idxes,
+                gt_idxes)
             b_idxes, i_idxes, j_idxes = matching_idxes
-            scores = score[matching_idxes]
-        else:
-            score, idxes0_to_1, idxes1_to_0 = score
-            n, l0, l1 = score.shape
-            device = score.device
-            r = torch.arange(n, device=device)[:, None, None]
-            r0 = torch.arange(l0, device=device)[None, :, None]
-            r1 = torch.arange(l1, device=device)[None, None, :]
 
-            values0_to_1, sub_idxes0_to_1 = score[r, r0, idxes0_to_1].max(dim=2)
-            sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
-            idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
-            idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
-            idxes0_to_1 = self._remove_border_for_eval(
-                idxes0_to_1, size0, mask0)
-            idxes1_to_0 = self._remove_border_for_eval(
-                idxes1_to_0, size1, mask1)
-            biprojection = torch.stack([idxes1_to_0[b, idx1]
-                                        for b, idx1 in enumerate(idxes0_to_1)])
-            mask = biprojection == r0[:, :, 0]
-            if self.border_removal > 0:
-                mask[:, 0] = False
-            mask &= values0_to_1 > self.threshold
-            b_idxes, i_idxes = mask.nonzero(as_tuple=True)
-            j_idxes = idxes0_to_1[b_idxes, i_idxes]
-            train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
-            scores = values0_to_1[b_idxes, i_idxes]
-
+        scores = values0_to_1[b_idxes, i_idxes]
         points0 = torch.stack([i_idxes % size0[1],
                                i_idxes // size0[1]], dim=1).float()
         points1 = torch.stack([j_idxes % size1[1],
@@ -225,33 +181,21 @@ class CoarseMatching(nn.Module):
         _selective0 = selective0 / c ** 0.5
         _selective1 = selective1 / c ** 0.5
 
-        if self.training:
-            similarity = torch.einsum("nlc,nsc->nls", _x0, _x1)
-            similarity /= self.temperature
-            if x0_mask is not None and x1_mask is not None:
-                mask = (x0_mask.flatten(start_dim=1)[:, :, None] &
-                        x1_mask.flatten(start_dim=1)[:, None, :])
-                similarity.masked_fill_(~mask, -1e9)
-
-            confidence0_to_1 = F.softmax(similarity, dim=2)
-            confidence1_to_0 = F.softmax(similarity, dim=1)
-            score = confidence = confidence0_to_1 * confidence1_to_0
-        else:
-            similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
-            similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
-            similarity0_to_1 /= self.temperature
-            similarity1_to_0 /= self.temperature
-            confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
-            confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
-            confidence0_to_1 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
-                2, idxes0_to_1, confidence0_to_1)
-            confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
-                1, idxes1_to_0, confidence1_to_0)
-            confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, idxes0_to_1, idxes1_to_0
+        similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
+        similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
+        similarity0_to_1 /= self.temperature
+        similarity1_to_0 /= self.temperature
+        confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
+        confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
+        confidence0_to_1 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
+            2, idxes0_to_1, confidence0_to_1)
+        confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
+            1, idxes1_to_0, confidence1_to_0)
+        confidence = confidence0_to_1 * confidence1_to_0
 
         result.update(self._create_coarse_matching(
-            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
+            confidence, idxes0_to_1, idxes1_to_0, (h0, w0), (h1, w1), x0_mask,
+            x1_mask, x_gt_idxes))
         result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
                           x1.transpose(1, 2).unflatten(2, (h1, w1)))
         result["coarse_cls_heatmap"] = confidence
