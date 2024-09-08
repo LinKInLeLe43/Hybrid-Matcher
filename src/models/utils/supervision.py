@@ -37,6 +37,7 @@ def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
     extra_scale: Optional[int] = None,
+    return_weight: bool = True,
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -69,7 +70,10 @@ def create_coarse_supervision(
     flows0 = coors0_to_1 = points0_to_1 / scale1
     flows1 = coors1_to_0 = points1_to_0 / scale0
 
-    coors0_to_1 = coors0_to_1.round().long()
+    coors0_to_1 = coors0_to_1.round()
+    if return_weight:
+        weights = (1.0 - 2 * (flows0 - coors0_to_1).abs()).prod(dim=2)
+    coors0_to_1 = coors0_to_1.long()
     coors1_to_0 = coors1_to_0.round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
@@ -86,6 +90,8 @@ def create_coarse_supervision(
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
     supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
+    if return_weight:
+        supervision["coarse_weights"] = weights[b_idxes, i_idxes]
 
     if extra_scale is not None:
         if extra_scale <= scale:
@@ -100,6 +106,11 @@ def create_coarse_supervision(
         gt_idxes = gt_mask.nonzero(as_tuple=True)
         supervision["extra_coarse_gt_mask"] = gt_mask
         supervision["extra_coarse_gt_idxes"] = gt_idxes
+        if return_weight:
+            weights = weights.reshape(-1, fh0, stride, fw0, stride)
+            weights = weights.mean(dim=(2, 4)).reshape(-1, fh0 * fw0)
+            supervision["extra_coarse_weights"] = (
+                weights[gt_idxes[0], gt_idxes[1]])
 
     if return_coor:
         if "scale1" in batch:
@@ -120,6 +131,7 @@ def create_fine_supervision(
     scales: Tuple[int, int],
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     offset: float = 0.5,
+    return_weight: bool = True,
     return_coor: bool = False
 ) -> Dict[str, Any]:
     m, w, scale = len(idxes[0]), scales[0] // scales[1], scales[1]
@@ -175,10 +187,13 @@ def create_fine_supervision(
             batch["T1_to_0"][[b]])
         points0_to_1[b_mask] = b_points0_to_1.reshape(-1, ww, 2)
         points1_to_0[b_mask] = b_points1_to_0.reshape(-1, ww, 2)
-    coors0_to_1 = points0_to_1 / scale1
-    coors1_to_0 = points1_to_0 / scale0
+    flows0 = coors0_to_1 = points0_to_1 / scale1
+    flows1 = coors1_to_0 = points1_to_0 / scale0
 
-    coors0_to_1 = (coors0_to_1 - offset).round().long()
+    coors0_to_1 = (coors0_to_1 - offset).round()
+    if return_weight:
+        weights = (1.0 - 2 * (flows0 - offset - coors0_to_1).abs()).prod(dim=2)
+    coors0_to_1 = coors0_to_1.long()
     coors1_to_0 = (coors1_to_0 - offset).round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
@@ -191,6 +206,9 @@ def create_fine_supervision(
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
     supervision = {"fine_gt_mask": gt_mask}
+    if return_weight:
+        m_idxes, i_idxes, j_idxes = gt_mask.nonzero(as_tuple=True)
+        supervision["fine_weights"] = weights[m_idxes, i_idxes]
 
     if return_coor:
         if "scale1" in batch:

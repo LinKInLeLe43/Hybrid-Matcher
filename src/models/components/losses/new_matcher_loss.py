@@ -20,6 +20,7 @@ def _compute_cls_loss(
     gt_mask: torch.Tensor,
     loss_pos_weight: float = 1.0,
     loss_neg_weight: float = 1.0,
+    pos_weights: Optional[torch.Tensor] = None,
     mask0: Optional[torch.Tensor] = None,
     mask1: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
@@ -36,6 +37,7 @@ def _compute_cls_loss(
     if not pos_mask.any():
         pos_mask[0, 0, 0] = True
         loss_pos_weight = 0.0
+        pos_weights = None
         if weight is not None:
             weight[0, 0, 0] = 0.0
     if not neg_mask.any():
@@ -46,6 +48,8 @@ def _compute_cls_loss(
 
     heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
     pos_losses = _focal_loss(heatmap[pos_mask])
+    if pos_weights is not None:
+        pos_losses *= pos_weights
     if weight is not None:
         pos_losses *= weight[pos_mask]
     if sparse:
@@ -136,10 +140,13 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         self,
         coarse_cls_heatmap: Optional[torch.Tensor] = None,
         coarse_gt_mask: Optional[torch.Tensor] = None,
+        coarse_weights: Optional[torch.Tensor] = None,
         extra_coarse_cls_heatmap: Optional[torch.Tensor] = None,
         extra_coarse_gt_mask: Optional[torch.Tensor] = None,
+        extra_coarse_weights: Optional[torch.Tensor] = None,
         fine_cls_heatmap: Optional[torch.Tensor] = None,
         fine_gt_mask: Optional[torch.Tensor] = None,
+        fine_weights: Optional[torch.Tensor] = None,
         fine_reg_biases: Optional[torch.Tensor] = None,
         fine_gt_biases: Optional[torch.Tensor] = None,
         fine_reg_stds: Optional[torch.Tensor] = None,
@@ -164,7 +171,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                     self.coarse_cls_sparse, coarse_cls_heatmap, coarse_gt_mask,
                     loss_pos_weight=self.coarse_cls_loss_pos_weight,
                     loss_neg_weight=self.coarse_cls_loss_neg_weight,
-                    mask0=mask0, mask1=mask1)
+                    pos_weights=coarse_weights, mask0=mask0, mask1=mask1)
                 total_loss += coarse_cls_loss
                 loss["scalar"]["coarse_cls_loss"] = (
                     coarse_cls_loss.detach().cpu())
@@ -179,7 +186,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                     extra_coarse_gt_mask,
                     loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
                     loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
-                    mask0=extra_mask0, mask1=extra_mask1)
+                    pos_weights=extra_coarse_weights, mask0=extra_mask0,
+                    mask1=extra_mask1)
                 total_loss += extra_coarse_cls_loss
                 loss["scalar"]["extra_coarse_cls_loss"] = (
                     extra_coarse_cls_loss.detach().cpu())
@@ -191,7 +199,8 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 fine_cls_loss = _compute_cls_loss(
                     self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
                     loss_pos_weight=self.fine_cls_loss_pos_weight,
-                    loss_neg_weight=self.fine_cls_loss_neg_weight)
+                    loss_neg_weight=self.fine_cls_loss_neg_weight,
+                    pos_weights=fine_weights)
                 total_loss += fine_cls_loss
                 loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
 
