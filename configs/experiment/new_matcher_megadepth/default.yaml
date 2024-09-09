@@ -16,6 +16,13 @@ data:
 
 model:
   net:
+    rope:
+      train_size:
+        - ${data.train_dataset.image_size}
+        - ${data.train_dataset.image_size}
+      test_size:
+        - ${data.test_dataset.image_size}
+        - ${data.test_dataset.image_size}
     coarse_matching:
       train_percent: 0.3
   optimizer:
