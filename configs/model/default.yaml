@@ -72,4 +72,6 @@ end_point_thresholds: ???
 
 epipolar_thresholds: ???
 
+pose_ransac_count: ???
+
 pose_thresholds: ???
