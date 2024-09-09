@@ -279,27 +279,41 @@ def _compute_pose_errors(
     K1: torch.Tensor,
     R: torch.Tensor,
     t: torch.Tensor,
+    ransac_count: int,
     enable_loransac: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     n = len(K0)
     R_errors, t_errors, inliers_per_batch = [], [], np.empty(n, dtype=object)
+    device = points0.device
+
     for b in range(n):
         mask = b_idxes == b
         R_error, t_error, inliers = np.inf, np.inf, np.array([], dtype=np.bool_)
-        if enable_loransac:
-            out = _estimate_pose_with_lo_ransac(
-                points0[mask], points1[mask], K0[b], K1[b])
-        else:
-            out = _estimate_pose_with_opencv_ransac(
-                points0[mask], points1[mask], K0[b], K1[b])
-        if out is not None:
-            est_R, est_t, inliers = out
-            gt_R, gt_t = R[b].cpu().numpy(), t[b].cpu().numpy()
-            R_error, t_error = _compute_relative_pose_error(
-                est_R, gt_R, est_t, gt_t)
-        R_errors.append(R_error)
-        t_errors.append(t_error)
-        inliers_per_batch[b] = inliers
+        b_points0, b_points1 = points0[mask], points1[mask]
+        b_K0, b_K1 = K0[b], K1[b]
+
+        for _ in range(ransac_count):
+            idxes = torch.from_numpy(
+                np.random.permutation(np.arange(len(b_points0))))
+            b_points0 = b_points0[idxes]
+            b_points1 = b_points1[idxes]
+
+            if enable_loransac:
+                out = _estimate_pose_with_lo_ransac(
+                    b_points0, b_points1, b_K0, b_K1)
+            else:
+                out = _estimate_pose_with_opencv_ransac(
+                    b_points0, b_points1, b_K0, b_K1)
+
+            if out is not None:
+                est_R, est_t, inliers = out
+                gt_R, gt_t = R[b].cpu().numpy(), t[b].cpu().numpy()
+                R_error, t_error = _compute_relative_pose_error(
+                    est_R, gt_R, est_t, gt_t)
+
+            R_errors.append(R_error)
+            t_errors.append(t_error)
+            inliers_per_batch[b] = inliers
     R_errors, t_errors = np.array(R_errors), np.array(t_errors)
     return R_errors, t_errors, inliers_per_batch
 
@@ -307,6 +321,7 @@ def _compute_pose_errors(
 def compute_error(
     batch: Dict[str, Any],
     result: Dict[str, Any],
+    ransac_count: int,
     enable_loransac: bool = False,
     advanced: bool = False,
     coarse_scale: Optional[int] = None
@@ -321,7 +336,8 @@ def compute_error(
     R_errors, t_errors, inliers_per_batch = _compute_pose_errors(
         result["idxes"][0], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
-        batch["T0_to_1"][:, :3, 3], enable_loransac=enable_loransac)
+        batch["T0_to_1"][:, :3, 3], ransac_count,
+        enable_loransac=enable_loransac)
     error = {"identifiers": identifiers,
              "epipolar_errors_per_batch": epipolar_errors_per_batch,
              "R_errors": R_errors,
@@ -384,12 +400,13 @@ def compute_metric(
     pose_thresholds: List[int],
     advanced: bool = False
 ) -> Dict[str, Any]:
+    n = len(error["identifiers"])
     idxes = np.unique(error["identifiers"], return_index=True)[1]
     epipolar_precisions = _compute_precision(
         error["epipolar_errors_per_batch"][idxes], epipolar_thresholds)
+    pose_errors = np.maximum(error["R_errors"], error["t_errors"])
     pose_aucs = _compute_aucs(
-        np.maximum(error["R_errors"][idxes], error["t_errors"][idxes]),
-        pose_thresholds)
+        pose_errors.reshape(n, -1)[idxes].reshape(-1), pose_thresholds)
     metric = {"epipolar_precisions": epipolar_precisions,
               "pose_aucs": pose_aucs}
     if advanced:
