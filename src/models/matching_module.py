@@ -44,6 +44,7 @@ class MatchingModule(pl.LightningModule):
         warmup_ratio: float,
         end_point_thresholds: List[float],
         epipolar_thresholds: List[float],
+        pose_ransac_count: int,
         pose_thresholds: List[float],
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
@@ -120,7 +121,8 @@ class MatchingModule(pl.LightningModule):
         if (self.hparams.train_plot_enabled and
             self.trainer.global_rank == 0 and
             self.trainer._logger_connector.should_update_logs):
-            error = utils.compute_error(batch, result)
+            error = utils.compute_error(
+                batch, result, self.hparams.pose_ransac_count)
             figures = utils.plot_evaluation_figures(
                 batch, result, error, self.hparams.epipolar_thresholds[0])
             self.logger.experiment.add_figure(
@@ -148,7 +150,8 @@ class MatchingModule(pl.LightningModule):
         result, loss = self.model_step(batch)
         loss = loss.pop("scalar")
         error = utils.compute_error(
-            batch, result, advanced=self.hparams.advanced_metrics,
+            batch, result, self.hparams.pose_ransac_count,
+            advanced=self.hparams.advanced_metrics,
             coarse_scale=self.net.scales[0])
         figures = []
         if batch_idx % self.hparams.val_plot_intervals[0] == 0:
@@ -227,7 +230,7 @@ class MatchingModule(pl.LightningModule):
             result = self.net(batch)
         with self.test_time_profiler.profile("error"):
             error = utils.compute_error(
-                batch, result,
+                batch, result, self.hparams.pose_ransac_count,
                 enable_loransac=self.hparams.test_enable_loransac,
                 advanced=self.hparams.advanced_metrics,
                 coarse_scale=self.net.scales[0])
