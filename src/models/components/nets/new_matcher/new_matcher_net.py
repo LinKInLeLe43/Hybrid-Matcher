@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import kornia as K
 import torch
@@ -17,6 +17,7 @@ class NewMatcherNet(nn.Module):
         # fine_module: nn.Module,
         fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
+        enable_crop: bool = False,
         fine_cls_matching: Optional[nn.Module] = None
     ) -> None:
         super().__init__()
@@ -29,6 +30,7 @@ class NewMatcherNet(nn.Module):
         # self.fine_module = fine_module
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
+        self.enable_crop = enable_crop
         self.fine_cls_matching = fine_cls_matching
 
         self.scales = (backbone.scales[0],
@@ -101,34 +103,50 @@ class NewMatcherNet(nn.Module):
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
-            x = torch.cat([batch["image0"], batch["image1"]])
-            xs = self.backbone(x)
-            x_16x, x_32x = self.local_coc(xs[-1])
-
-            if self.local_coc.scales[0] == 1:
-                xs.pop(-1)
+            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
 
             x0s, x1s = [], []
             for x in xs:
                 x0, x1 = x.chunk(2)
                 x0s.append(x0)
                 x1s.append(x1)
-            x0_16x, x1_16x = x_16x.chunk(2)
-            x0_32x, x1_32x = x_32x.chunk(2)
         else:
             x0s = self.backbone(batch["image0"])
-            x0_16x, x0_32x = self.local_coc(x0s[-1])
-
             x1s = self.backbone(batch["image1"])
-            x1_16x, x1_32x = self.local_coc(x1s[-1])
 
-            if self.local_coc.scales[0] == 1:
-                x0s.pop(-1)
-                x1s.pop(-1)
+        if self.local_coc.scales[0] == 1:
+            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
+        else:
+            x0_8x, x1_8x = x0s[-1], x1s[-1]
 
-        x0_16x, x1_16x = self.coarse_module(
-            x0_16x, x1_16x, x0_32x, x1_32x, x0_mask=mask0_16x,
-            x1_mask=mask1_16x, y0_mask=mask0_32x, y1_mask=mask1_32x)
+        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
+            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
+            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
+
+            x0_16x, x1_16x = [], []
+            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
+                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
+                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
+
+                b_x0_16x, b_x1_16x = self.coarse_module(
+                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x)
+
+                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
+                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
+            x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
+        else:
+            if x0_8x.shape == x1_8x.shape:
+                x_8x = torch.cat([x0_8x, x1_8x])
+                x_16x, x_32x = self.local_coc(x_8x)
+                x0_16x, x1_16x = x_16x.chunk(2)
+                x0_32x, x1_32x = x_32x.chunk(2)
+            else:
+                x0_16x, x0_32x = self.local_coc(x0_8x)
+                x1_16x, x1_32x = self.local_coc(x1_8x)
+
+            x0_16x, x1_16x = self.coarse_module(
+                x0_16x, x1_16x, x0_32x, x1_32x, x0_mask=mask0_16x,
+                x1_mask=mask1_16x, y0_mask=mask0_32x, y1_mask=mask1_32x)
 
         result = self.coarse_matching(
             x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
@@ -169,3 +187,23 @@ class NewMatcherNet(nn.Module):
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
+
+    def crop_by_mask(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor
+    ) -> List[torch.Tensor]:
+        outs = []
+        for b_x, b_mask in zip(x, mask):
+            b_h = b_mask.sum(dim=0).amax().item()
+            b_w = b_mask.sum(dim=1).amax().item()
+            outs.append(b_x[None, :, :b_h, :b_w])
+        return outs
+
+    def pad_by_mask(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        _, c, _h, _w = x.shape
+        _, h, w = mask.shape
+
+        out = x.new_zeros((1, c, h, w))
+        out[0, :, :_h, :_w] = x
+        return out
