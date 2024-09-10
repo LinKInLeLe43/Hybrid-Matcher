@@ -83,14 +83,18 @@ class MatchingModule(pl.LightningModule):
         if self.net.type == "one_stage":
             supervision = utils.create_coarse_supervision(
                 batch, s1, extra_scale=s0, return_coor=True)
+            coarse_points1 = supervision.pop("points1")
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"],
                 extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+            supervision.update(utils.create_fine_supervision(
+                batch, (s1, 1), result["coarse_cls_idxes"],
+                offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
             supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
-                supervision.pop("points0_to_1"), supervision["points1"],
-                result["coarse_cls_idxes"], s2, self.net.reg_w)
+                supervision.pop("points0_to_1"), supervision.pop("points1"),
+                result["fine_cls_idxes"], s2, self.net.reg_w)
             supervision.update(utils.compute_dense_gt_biases(
-                batch, result, self.dense_matcher, supervision.pop("points1"),
+                batch, result, self.dense_matcher, coarse_points1,
                 result["coarse_cls_idxes"], s2, self.net.reg_w))
         elif self.net.type == "two_stage":
             supervision = utils.create_coarse_supervision(

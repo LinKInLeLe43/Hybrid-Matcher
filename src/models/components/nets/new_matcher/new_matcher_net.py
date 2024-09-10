@@ -3,6 +3,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import kornia as K
 import torch
 from torch import nn
+from torch.nn import functional as F
+import torch_scatter
 
 
 class NewMatcherNet(nn.Module):
@@ -16,10 +18,10 @@ class NewMatcherNet(nn.Module):
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
         # fine_module: nn.Module,
+        fine_cls_matching: nn.Module,
         fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
-        enable_crop: bool = False,
-        fine_cls_matching: Optional[nn.Module] = None
+        enable_crop: bool = False
     ) -> None:
         super().__init__()
         self.type = type
@@ -30,19 +32,16 @@ class NewMatcherNet(nn.Module):
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
+        self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
-        self.fine_cls_matching = fine_cls_matching
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1] // fine_preprocess.scale_before_crop)
         self.reg_w = fine_reg_matching.window_size
 
         if type == "two_stage":
-            if fine_cls_matching is None:
-                raise ValueError("")
-
             self.cls_w = fine_cls_matching.window_size
             self.cls_c = fine_cls_matching.depth
             self.reg_c = fine_reg_matching.depth
@@ -72,13 +71,10 @@ class NewMatcherNet(nn.Module):
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
-        biases0 = 0
-        biases1 = (self.reg_w // 2) * result["fine_reg_biases"][:m].detach()
-        if self.type == "two_stage":
-            biases0 += result.pop("fine_cls_biases0")[:m]
-            biases1 += result.pop("fine_cls_biases1")[:m]
-        biases0 *= self.scales[1]
-        biases1 *= self.scales[1]
+        biases0 = result.pop("fine_cls_biases0")[:m]
+        biases1 = result.pop("fine_cls_biases1")[:m]
+        biases1 += (self.scales[1] * (self.reg_w // 2) *
+                    result["fine_reg_biases"][:m].detach())
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
@@ -158,7 +154,7 @@ class NewMatcherNet(nn.Module):
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
-        x0_1x, x1_1x = self.fine_preprocess(
+        x0_reg, x1_reg = self.fine_preprocess(
             x0s, x1s, result["coarse_cls_idxes"])
 
         # if self.type == "one_stage":
@@ -187,7 +183,21 @@ class NewMatcherNet(nn.Module):
         # else:
         #     assert False
 
-        result.update(self.fine_reg_matching(x0_1x, x1_1x, 1))
+        (s1, s2), w = self.scales, self.reg_w
+        grid = K.create_meshgrid(
+            s1, s1, normalized_coordinates=False, device=x0_reg.device)
+        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
+        x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
+        x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
+        x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
+
+        result.update(self.fine_cls_matching(x0_cls, x1_cls))
+
+        local_matches = torch.cat([result["fine_cls_biases0"],
+                                   result["fine_cls_biases1"]], dim=1)
+        local_matches = local_matches / s2 + w // 2
+        result.update(self.fine_reg_matching(
+            x0_reg, x1_reg, 1, local_matches=local_matches))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
