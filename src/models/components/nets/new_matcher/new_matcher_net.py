@@ -17,7 +17,7 @@ class NewMatcherNet(nn.Module):
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         fine_preprocess: nn.Module,
-        # fine_module: nn.Module,
+        fine_module: nn.Module,
         fine_cls_matching: nn.Module,
         fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
@@ -31,7 +31,7 @@ class NewMatcherNet(nn.Module):
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
-        # self.fine_module = fine_module
+        self.fine_module = fine_module
         self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
@@ -156,6 +156,9 @@ class NewMatcherNet(nn.Module):
 
         x0_reg, x1_reg = self.fine_preprocess(
             x0s, x1s, result["coarse_cls_idxes"])
+
+        if len(x0_reg) != 0:
+            x0_reg, x1_reg = self.fine_module(x0_reg, x1_reg)
 
         # if self.type == "one_stage":
         #     if len(x0_1x) != 0:

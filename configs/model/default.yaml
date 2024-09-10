@@ -53,7 +53,7 @@ net:
       layer_count: 2
     temperature: 0.1
   fine_preprocess: ???
-#  fine_module: ???
+  fine_module: ???
   fine_reg_matching: ???
   extra_scale: 16
   enable_crop: true

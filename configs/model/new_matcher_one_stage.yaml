@@ -11,15 +11,11 @@ net:
     stride: 4
     padding: 2
     depths: ${model.net.backbone.layer_depths}
-#  fine_module:
-#    _target_: src.models.components.nets.new_matcher.LoFTR
-#    encoder:
-#      _target_: src.models.components.nets.new_matcher.TransformerEncoder
-#      depth: ${model.net.backbone.layer_depths.0}
-#      heads_count: 8
-#      attention:
-#        _target_: src.models.components.nets.new_matcher.FullAttention
-#    types: ["self", "cross"]
+  fine_module:
+    _target_: src.models.components.nets.new_matcher.MlpMixer
+    length: 25
+    depth: ${model.net.backbone.layer_depths.0}
+    layer_count: 2
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "classification"
