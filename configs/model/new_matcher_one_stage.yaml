@@ -20,6 +20,13 @@ net:
 #      attention:
 #        _target_: src.models.components.nets.new_matcher.FullAttention
 #    types: ["self", "cross"]
+  fine_cls_matching:
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "classification"
+    depth: ${model.net.backbone.layer_depths.0}
+    window_size: 8
+    temperature: 1.0
+    cls_offset: 0.5
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.homo.FineHomo
 
@@ -31,5 +38,8 @@ loss:
   extra_coarse_cls_sparse: true
   extra_coarse_cls_loss_pos_weight: 0.5
   extra_coarse_cls_loss_neg_weight: 0.5
+  fine_cls_sparse: true
+  fine_cls_loss_pos_weight: 0.25
+  fine_cls_loss_neg_weight: 0.25
   fine_reg_loss_weight: 1.0
   dense_reg_loss_weight: 1.0
