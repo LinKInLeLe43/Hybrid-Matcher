@@ -61,7 +61,7 @@ class LocalCluster(nn.Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        type: str = "segment_csr"
+        type: str = "original"
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
@@ -130,7 +130,7 @@ class LocalCluster(nn.Module):
                 dispatched,
                 "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
                 fh=fh, fw=fw, sh=sh, sw=sw)
-        elif self.type == "segment_csr":
+        elif self.type == "torch_scatter":
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, x_value, center_value = map(
@@ -202,7 +202,7 @@ class GlobalCluster(nn.Module):
         fc = self.heads_count
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = center1.shape
-        m, s = n * fc, h1 * w1
+        m, l, s = n * fc, h0 * w0, h1 * w1
         device = x0.device
 
         x0_point = self.proj0(x0.permute(0, 2, 3, 1))
@@ -222,9 +222,9 @@ class GlobalCluster(nn.Module):
             mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
-        max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
         if self.type == "flattened_index":
+            max_sim_values, max_sim_idxes = similarities.max(dim=2)
             max_sim_idxes = (max_sim_idxes +
                              s * torch.arange(m, device=device)[:, None])
             max_sim_values, max_sim_idxes, center1_value = map(
@@ -235,8 +235,19 @@ class GlobalCluster(nn.Module):
                           center1_value.index_select(0, max_sim_idxes))
             dispatched = einops.rearrange(
                 dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
-            dispatched = self.merge(dispatched)
+        elif self.type == "torch_scatter":
+            csr_idxes = s * torch.arange(l + 1, device=device)[None]
+            max_sim_values, max_sim_idxes = torch_scatter.segment_max_csr(
+                similarities.flatten(start_dim=1), csr_idxes)
+
+            range = torch.arange(m, device=device)[:, None]
+            dispatched = (max_sim_values[:, :, None] *
+                          center1_value[range, max_sim_idxes % s])
+            dispatched = einops.rearrange(
+                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
+                w=w0)
         elif self.type == "original":
+            max_sim_idxes = similarities.argmax(dim=2)
             mask = torch.zeros_like(similarities)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
             similarities = (mask * similarities)[..., None]
@@ -248,6 +259,7 @@ class GlobalCluster(nn.Module):
                 w=w0)
         else:
             raise NotImplementedError("")
+        dispatched = self.merge(dispatched)
         return dispatched
 
 
