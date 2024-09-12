@@ -56,7 +56,7 @@ class ResNet82(nn.Module):
         self.scales = 8, 2
 
         self.conv = nn.Conv2d(
-            3, initial_depth, 7, stride=2, padding=3, bias=False)
+            1, initial_depth, 7, stride=2, padding=3, bias=False)
         self.norm = nn.BatchNorm2d(initial_depth)
         self.relu = nn.ReLU(inplace=True)
 
@@ -94,11 +94,6 @@ class ResNet82(nn.Module):
         return layer
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
-        n, _, h, w = x.shape
-        coors = K.create_meshgrid(h, w, device=x.device)
-        coors = (coors / 2).permute(0, 3, 1, 2).expand(n, -1, -1, -1)
-        x = torch.cat([x, coors], dim=1)
-
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)

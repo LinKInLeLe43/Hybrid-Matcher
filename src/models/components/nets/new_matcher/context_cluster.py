@@ -509,6 +509,7 @@ class GlobalCoC(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        rope: Optional[torch.Tensor] = None,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -533,8 +534,10 @@ class GlobalCoC(nn.Module):
             # x1 = global_block(x1, center1, mask=mask11)
             x0 = global_block(x0, y1, mask=mask01)
             x1 = global_block(x1, y0, mask=mask10)
-            x0 = self_block(x0, x0, x_mask=y0_mask, source_mask=y0_mask)
-            x1 = self_block(x1, x1, x_mask=y1_mask, source_mask=y1_mask)
+            x0 = self_block(
+                x0, x0, rope=rope, x_mask=y0_mask, source_mask=y0_mask)
+            x1 = self_block(
+                x1, x1, rope=rope, x_mask=y1_mask, source_mask=y1_mask)
             x0 = cross_block(x0, x1, x_mask=y0_mask, source_mask=y1_mask)
             x1 = cross_block(x1, x0, x_mask=y1_mask, source_mask=y0_mask)
         return x0, x1
