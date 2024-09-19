@@ -69,7 +69,7 @@ class LocalCluster(nn.Module):
         self.type = type
 
         self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
-        self.center_proposal = nn.AdaptiveAvgPool2d(center_size)
+        self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
         self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
