@@ -7,13 +7,9 @@ net:
     _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
     block_counts: [2, 4, 4]
     layer_depths: [64, 128, 256]
-  rope:
-    _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
-    train_size: ???
-    test_size: ???
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
+    initial_depth: ${model.net.backbone.layer_depths.2}
     scales: [2, 2]
     blocks_counts: [2, 2]
     layer_depths: [256, 256]
@@ -21,6 +17,11 @@ net:
     heads_counts: [8, 8]
     center_sizes: [4, 2]
     fold_sizes: [1, 1]
+  rope:
+    _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
+    depth: ${model.net.local_coc.layer_depths.0}
+    train_size: ???
+    test_size: ???
   coarse_module:
     _target_: src.models.components.nets.new_matcher.GlobalCoC
     scale: 2

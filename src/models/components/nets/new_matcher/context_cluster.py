@@ -337,6 +337,7 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
+        initial_depth: int,
         scales: List[int],
         blocks_counts: List[int],
         layer_depths: List[int],
@@ -349,7 +350,6 @@ class LocalCoC(nn.Module):
         super().__init__()
         self.scales = scales
 
-        initial_depth = layer_depths[0]
         self.point_reducers, self.layers = nn.ModuleList(), nn.ModuleList()
         for i in range(len(scales)):
             if scales[i] > 1:
@@ -415,7 +415,14 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        x: torch.Tensor,
+        rope: Optional[nn.Module] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if rope is not None:
+            x = rope.abs_pe(x)
+
         outs = []
         for point_reducer, layer in zip(self.point_reducers, self.layers):
             x = point_reducer(x)

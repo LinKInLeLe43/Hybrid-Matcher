@@ -82,11 +82,12 @@ class RoPESinePositionalEncoding(nn.Module):
         return out
 
     def abs_pe(self, x: torch.Tensor) -> torch.Tensor:
-        h, w = x.shape[-2:]
-        out = x + self.pe[:, :h, :w]
+        _, c, h, w = x.shape
+        out = x + self.pe[:c, :h, :w]
         return out
 
     def rel_pe(self, x: torch.Tensor) -> torch.Tensor:
-        h, w, _ = x.shape[-3:]
-        out = self.cos[:h, :w] * x + self.sin[:h, :w] * self._rotate_half(x)
+        _, h, w, c = x.shape
+        out = (self.cos[:h, :w, :c] * x +
+               self.sin[:h, :w, :c] * self._rotate_half(x))
         return out
