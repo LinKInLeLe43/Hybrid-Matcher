@@ -10,7 +10,10 @@ net:
     window_size: 5
     stride: 4
     padding: 2
-    depths: ${model.net.backbone.layer_depths}
+    depths:
+        - ${model.net.backbone.layer_depths.0}
+        - ${model.net.backbone.layer_depths.0}
+        - ${model.net.backbone.layer_depths.1}
 #  fine_module:
 #    _target_: src.models.components.nets.new_matcher.LoFTR
 #    encoder:

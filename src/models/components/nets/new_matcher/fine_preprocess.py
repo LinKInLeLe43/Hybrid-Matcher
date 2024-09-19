@@ -34,13 +34,15 @@ class FinePreprocess(nn.Module):
             self.ups, self.downs = nn.ModuleList(), nn.ModuleList()
             for i in range(len(depths[:-1])):
                 c0, c1 = depths[i], depths[i + 1]
-                self.ups.append(nn.Conv2d(c0, c1, 1, bias=False))
+                self.ups.append(nn.Conv2d(c0, 2 * c0, 1, bias=False))
                 self.downs.append(nn.Sequential(
-                    nn.Conv2d(c1, c1, 3, padding=1, bias=False),
-                    nn.BatchNorm2d(c1),
+                    nn.Conv2d(2 * c0, 2 * c0, 3, padding=1, bias=False),
+                    nn.BatchNorm2d(2 * c0),
                     nn.LeakyReLU(inplace=True),
-                    nn.Conv2d(c1, c0, 3, padding=1, bias=False)))
-            self.ups.append(nn.Conv2d(c1, c1, 1, bias=False))
+                    nn.Conv2d(
+                        2 * c0, c0 if i == 0 else 2 * depths[i - 1], 3,
+                        padding=1, bias=False)))
+            self.ups.append(nn.Conv2d(c1, 2 * c0, 1, bias=False))
         else:
             raise ValueError("")
 
