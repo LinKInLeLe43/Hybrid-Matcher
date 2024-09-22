@@ -45,12 +45,28 @@ def _compute_cls_loss(
             weight[0, 0, 0] = 0.0
 
     heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
+    use_bin = False
+    if heatmap.shape != gt_mask.shape:
+        if sparse:
+            bin0_mask = gt_mask.sum(dim=2) == 0
+            bin1_mask = gt_mask.sum(dim=1) == 0
+            if mask0 is not None:
+                bin0_mask &= mask0.flatten(start_dim=1)
+                bin1_mask &= mask1.flatten(start_dim=1)
+            bins = torch.cat([heatmap[:, :-1, -1][bin0_mask],
+                              heatmap[:, -1, :-1][bin1_mask]])
+            use_bin = True
+        heatmap = heatmap[:, :-1, :-1]
+
     pos_losses = _focal_loss(heatmap[pos_mask])
     if weight is not None:
         pos_losses *= weight[pos_mask]
-    if sparse:
+    if sparse and not use_bin:
         loss = loss_pos_weight * pos_losses.mean()
         return loss
+
+    if use_bin:
+        neg_losses = _focal_loss(bins)
     else:
         neg_losses = _focal_loss(1 - heatmap[neg_mask])
         if weight is not None:

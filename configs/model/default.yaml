@@ -35,6 +35,7 @@ net:
       scale: ${model.net.coarse_module.scale}
       attention:
         _target_: src.models.components.nets.new_matcher.Attention
+    use_matchability: true
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     fused_selective_module:
@@ -51,6 +52,7 @@ net:
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
+    use_matchability: ${model.net.coarse_module.use_matchability}
     temperature: 0.1
   fine_preprocess: ???
 #  fine_module: ???
