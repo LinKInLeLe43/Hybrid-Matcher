@@ -99,20 +99,19 @@ class CoarseMatching(nn.Module):
         device = matching_idxes[0].device
 
         train_count = int(self.train_percent * max_count)
-        rest_count = train_count - self.train_min_gt_count
-        matching_count, gt_count = len(matching_idxes[0]), len(gt_idxes[0])
-        if matching_count <= rest_count:
-            matching_subidxes = torch.arange(matching_count, device=device)
-        else:
-            matching_subidxes = torch.randint(
-                matching_count, (rest_count,), device=device)
-            matching_count = rest_count
-        gt_subidxes = torch.randint(
-            gt_count, (train_count - matching_count,), device=device)
+        # rest_count = train_count - self.train_min_gt_count
+        # matching_count, gt_count = len(matching_idxes[0]), len(gt_idxes[0])
+        # if matching_count <= rest_count:
+        #     matching_subidxes = torch.arange(matching_count, device=device)
+        # else:
+        #     matching_subidxes = torch.randint(
+        #         matching_count, (rest_count,), device=device)
+        #     matching_count = rest_count
+        gt_subidxes = torch.randint(len(gt_idxes[0]), (train_count,), device=device)
 
-        matching_idxes = tuple(map(
-            lambda x: x[matching_subidxes], matching_idxes))
-        train_idxes = tuple(map(
+        # matching_idxes = tuple(map(
+        #     lambda x: x[matching_subidxes], matching_idxes))
+        matching_idxes = train_idxes = tuple(map(
             lambda x, y: torch.cat([x, y[gt_subidxes]]),
             matching_idxes, gt_idxes))
         return train_idxes, matching_idxes
