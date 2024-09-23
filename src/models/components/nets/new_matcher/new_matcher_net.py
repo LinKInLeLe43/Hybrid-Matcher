@@ -123,16 +123,25 @@ class NewMatcherNet(nn.Module):
             x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
 
             x0_16x, x1_16x = [], []
+            m0 = m1 = None
+            if self.coarse_module.use_matchability:
+                m0, m1 = [], []
             for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
                 b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
                 b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
 
-                b_x0_16x, b_x1_16x = self.coarse_module(
+                b_x0_16x, b_x1_16x, b_m0, b_m1 = self.coarse_module(
                     b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
 
                 x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
                 x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
+
+                if self.coarse_module.use_matchability:
+                    m0.append(self.pad_by_mask(b_m0[:, None], mask0_16x[[b]])[:, 0])
+                    m1.append(self.pad_by_mask(b_m1[:, None], mask1_16x[[b]])[:, 0])
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
+            if self.coarse_module.use_matchability:
+                m0, m1 = torch.cat(m0), torch.cat(m1)
         else:
             if x0_8x.shape == x1_8x.shape:
                 x_8x = torch.cat([x0_8x, x1_8x])
@@ -143,13 +152,13 @@ class NewMatcherNet(nn.Module):
                 x0_16x, x0_32x = self.local_coc(x0_8x)
                 x1_16x, x1_32x = self.local_coc(x1_8x)
 
-            x0_16x, x1_16x = self.coarse_module(
+            x0_16x, x1_16x, m0, m1 = self.coarse_module(
                 x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
                 x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
                 y1_mask=mask1_32x)
 
         result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+            x0s[-1], x1s[-1], x0_16x, x1_16x, m0=m0, m1=m1, x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")

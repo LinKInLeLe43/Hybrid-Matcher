@@ -9,6 +9,7 @@ class CoarseMatching(nn.Module):
     def __init__(
         self,
         fused_selective_module: nn.Module,
+        use_matchability: bool = False,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -17,6 +18,7 @@ class CoarseMatching(nn.Module):
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
+        self.use_matchability = use_matchability
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -181,6 +183,8 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        m0: Optional[torch.Tensor] = None,
+        m1: Optional[torch.Tensor] = None,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -209,6 +213,16 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
+
+            if self.use_matchability:
+                if m0 is None or m1 is None:
+                    raise ValueError("")
+
+                m0, m1 = m0.reshape(n, -1, 1), m1.reshape(n, 1, -1)
+                confidence = F.pad(confidence * m0 * m1, (0, 1, 0, 1))
+                confidence[:, :-1, -1:] = 1 - m0
+                confidence[:, -1:, :-1] = 1 - m1
+
             result["extra_coarse_cls_heatmap"] = confidence
             _similarity = similarity.clone()
             _similarity[y_gt_idxes] = 1e9
