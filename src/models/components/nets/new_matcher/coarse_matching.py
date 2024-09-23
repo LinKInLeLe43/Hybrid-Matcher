@@ -210,6 +210,7 @@ class CoarseMatching(nn.Module):
         topk = 8
         result = {}
         if self.training:
+            _similarity = similarity.clone()
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
@@ -218,16 +219,28 @@ class CoarseMatching(nn.Module):
                 if m0 is None or m1 is None:
                     raise ValueError("")
 
-                m0, m1 = m0.reshape(n, -1, 1), m1.reshape(n, 1, -1)
-                confidence = F.pad(confidence * m0 * m1, (0, 1, 0, 1))
-                confidence[:, :-1, -1:] = 1 - m0
-                confidence[:, -1:, :-1] = 1 - m1
+                mask = ((m0[:, -1] > 0.8).reshape(n, -1, 1) &
+                        (m1[:, -1] > 0.8).reshape(n, 1, -1))
+                _similarity.masked_fill_(~mask, -1e9)
+
+                avg_m0 = m0.mean(dim=1).reshape(n, -1, 1)
+                avg_m1 = m1.mean(dim=1).reshape(n, 1, -1)
+                confidence = F.pad(confidence * avg_m0 * avg_m1, (0, 1, 0, 1))
+                confidence[:, :-1, -1:] = 1 - avg_m0
+                confidence[:, -1:, :-1] = 1 - avg_m1
 
             result["extra_coarse_cls_heatmap"] = confidence
-            _similarity = similarity.clone()
             _similarity[y_gt_idxes] = 1e9
         else:
             _similarity = similarity
+
+            if self.use_matchability:
+                if m0 is None or m1 is None:
+                    raise ValueError("")
+
+                mask = ((m0[:, -1] > 0.8).reshape(n, -1, 1) &
+                        (m1[:, -1] > 0.8).reshape(n, 1, -1))
+                _similarity.masked_fill_(~mask, -1e9)
 
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)

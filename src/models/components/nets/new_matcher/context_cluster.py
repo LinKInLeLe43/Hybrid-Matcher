@@ -487,6 +487,7 @@ class GlobalCoC(nn.Module):
         bias: bool = True
     ) -> None:
         super().__init__()
+        self.scale = scale
         self.use_matchability = use_matchability
 
         merge_block = MergeBlock(scale, in_depth, bias=bias)
@@ -563,23 +564,33 @@ class GlobalCoC(nn.Module):
             x0 = global_block(x0, y1, mask=mask01)
             x1 = global_block(x1, y0, mask=mask10)
 
+            _y0_mask, _y1_mask = y0_mask, y1_mask
             if self.use_matchability:
                 m0.append(matchability_decoder[0](x0).sigmoid())
                 m1.append(matchability_decoder[0](x1).sigmoid())
 
+                m0_mask = (F.max_pool2d((m0[-1] > 0.8).float(), self.scale)
+                           .bool().flatten(start_dim=1))
+                m1_mask = (F.max_pool2d((m1[-1] > 0.8).float(), self.scale)
+                           .bool().flatten(start_dim=1))
+                if _y0_mask is not None and _y1_mask is not None:
+                    _y0_mask = m0_mask & _y0_mask
+                    _y1_mask = m1_mask & _y1_mask
+                else:
+                    _y0_mask, _y1_mask = m0_mask, m1_mask
+
             x0 = self_block(
-                x0, x0, rope=rope, x_mask=y0_mask, source_mask=y0_mask)
+                x0, x0, rope=rope, x_mask=_y0_mask, source_mask=_y0_mask)
             x1 = self_block(
-                x1, x1, rope=rope, x_mask=y1_mask, source_mask=y1_mask)
-            x0 = cross_block(x0, x1, x_mask=y0_mask, source_mask=y1_mask)
-            x1 = cross_block(x1, x0, x_mask=y1_mask, source_mask=y0_mask)
+                x1, x1, rope=rope, x_mask=_y1_mask, source_mask=_y1_mask)
+            x0 = cross_block(x0, x1, x_mask=_y0_mask, source_mask=_y1_mask)
+            x1 = cross_block(x1, x0, x_mask=_y1_mask, source_mask=_y0_mask)
 
             if self.use_matchability:
                 m0.append(matchability_decoder[1](x0).sigmoid())
                 m1.append(matchability_decoder[1](x1).sigmoid())
 
         if self.use_matchability:
-            m0 = torch.cat(m0, dim=1).mean(dim=1)
-            m1 = torch.cat(m1, dim=1).mean(dim=1)
+            m0, m1 = torch.cat(m0, dim=1), torch.cat(m1, dim=1)
 
         return x0, x1, m0, m1

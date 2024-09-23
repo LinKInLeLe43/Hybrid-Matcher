@@ -137,8 +137,8 @@ class NewMatcherNet(nn.Module):
                 x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
 
                 if self.coarse_module.use_matchability:
-                    m0.append(self.pad_by_mask(b_m0[:, None], mask0_16x[[b]])[:, 0])
-                    m1.append(self.pad_by_mask(b_m1[:, None], mask1_16x[[b]])[:, 0])
+                    m0.append(self.pad_by_mask(b_m0, mask0_16x[[b]]))
+                    m1.append(self.pad_by_mask(b_m1, mask1_16x[[b]]))
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
             if self.coarse_module.use_matchability:
                 m0, m1 = torch.cat(m0), torch.cat(m1)
