@@ -193,6 +193,12 @@ def create_fine_supervision(
         idxes1_to_0 == 0, -200, idxes1_to_0 + h0 * w0 * b_idxes[:, None])
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
+
+    mask = torch.zeros((w, w), dtype=torch.bool)
+    mask[1:-1, 1:-1] = True
+    mask = mask.flatten()
+    gt_mask[:, ~mask, :] = False
+    gt_mask[:, :, ~mask] = False
     supervision = {"fine_gt_mask": gt_mask}
 
     if return_coor:
