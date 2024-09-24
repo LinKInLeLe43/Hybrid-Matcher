@@ -41,5 +41,5 @@ loss:
   fine_cls_sparse: true
   fine_cls_loss_pos_weight: 0.25
   fine_cls_loss_neg_weight: 0.25
-  fine_reg_loss_weight: 1.0
+  fine_reg_loss_weight: 2.0
   dense_reg_loss_weight: 1.0

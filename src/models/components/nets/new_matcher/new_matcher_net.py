@@ -73,7 +73,7 @@ class NewMatcherNet(nn.Module):
         biases0 = result.pop("fine_cls_biases0")[:m]
         biases1 = result.pop("fine_cls_biases1")[:m]
         biases1 += (self.scales[1] * (self.reg_w // 2) *
-                    result["fine_reg_biases"][:m].detach())
+                    result["fine_reg_biases1"][:m].detach())
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
@@ -199,6 +199,8 @@ class NewMatcherNet(nn.Module):
         result.update(self.fine_reg_matching(
             x0_reg, x1_reg, 1, local_matches=local_matches))
 
+        result["fine_reg_biases1"], result["fine_reg_biases0"] = (
+            result["fine_reg_biases"].chunk(2))
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
 
