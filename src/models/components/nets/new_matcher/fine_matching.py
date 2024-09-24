@@ -29,6 +29,11 @@ class FineMatching(nn.Module):
             grid = K.create_meshgrid(w, w, normalized_coordinates=False)
             delta = (grid - w / 2 + cls_offset).reshape(-1, 2)
             self.register_buffer("cls_delta", delta, persistent=False)
+
+            mask = torch.zeros((w, w), dtype=torch.bool)
+            mask[1:-1, 1:-1] = True
+            mask = (mask.reshape(-1, 1) & mask.reshape(1, -1)).flatten()
+            self.register_buffer("cls_mask", mask, persistent=False)
         elif type == "regression_by_expectation":
             self.reg_by_exp_with_std = reg_by_exp_with_std
         else:
@@ -57,7 +62,8 @@ class FineMatching(nn.Module):
 
         with torch.no_grad():
             m_idxes = torch.arange(m, device=x0.device)
-            idxes = heatmap.flatten(start_dim=1).argmax(dim=1)
+            idxes = (heatmap.flatten(start_dim=1).where(self.cls_mask, 0)
+                     .argmax(dim=1))
             idxes = m_idxes, idxes // ww, idxes % ww
             biases0 = self.cls_delta.index_select(0, idxes[1])
             biases1 = self.cls_delta.index_select(0, idxes[2])
