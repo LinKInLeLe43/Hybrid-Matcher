@@ -337,6 +337,7 @@ class GlobalClusterBlock(nn.Module):
 class LocalCoC(nn.Module):
     def __init__(
         self,
+        initial_depth: int,
         scales: List[int],
         blocks_counts: List[int],
         layer_depths: List[int],
@@ -349,7 +350,6 @@ class LocalCoC(nn.Module):
         super().__init__()
         self.scales = scales
 
-        initial_depth = layer_depths[0]
         self.point_reducers, self.layers = nn.ModuleList(), nn.ModuleList()
         for i in range(len(scales)):
             if scales[i] > 1:

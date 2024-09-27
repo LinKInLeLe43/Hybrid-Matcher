@@ -9,11 +9,12 @@ net:
     layer_depths: [64, 128, 256]
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-    depth: ${model.net.backbone.layer_depths.2}
+    depth: ${model.net.local_coc.layer_depths.0}
     train_size: ???
     test_size: ???
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
+    initial_depth: ${model.net.backbone.layer_depths.2}
     scales: [2, 2]
     blocks_counts: [2, 2]
     layer_depths: [256, 256]
