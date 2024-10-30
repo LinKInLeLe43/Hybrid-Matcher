@@ -12,7 +12,7 @@ model:
   net:
     rope:
       train_size: [832, 832]
-      test_size: [640, 640]
+      test_size: [832, 832]
     coarse_matching:
       threshold: 0.3
       border_removal: 0

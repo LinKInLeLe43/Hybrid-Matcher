@@ -318,10 +318,10 @@ class FusedSelectiveTransformer(nn.Module):
             fw=fw1, sw=sw)
         selective0 = einops.repeat(
             x0[_idxes1_to_0], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh0, sh=sh, fw=fw0, sw=sw)
+            fh=fh1, sh=sh, fw=fw1, sw=sw)
         selective1 = einops.repeat(
             x1[_idxes0_to_1], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh1, sh=sh, fw=fw1, sw=sw)
+            fh=fh0, sh=sh, fw=fw0, sw=sw)
         idxes0_to_1 = (w1 * s * (idxes0_to_1 // (w1 // s)) +
                        s * (idxes0_to_1 % (w1 // s)))[..., None]
         idxes1_to_0 = (w0 * s * (idxes1_to_0 // (w0 // s)) +

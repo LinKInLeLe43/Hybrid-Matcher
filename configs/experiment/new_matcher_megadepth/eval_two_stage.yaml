@@ -9,4 +9,4 @@ tags: ["eval-new_matcher_two_stage-megadepth"]
 
 data:
   test_dataset:
-    image_size: 1216
+    image_size: 1152
