@@ -7,9 +7,11 @@ net:
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
     type: "eloftr"
-    window_size: 5
-    stride: 4
-    padding: 2
+    window_size: 8
+    stride: 8
+    padding: 0
+    right_extra: 1
+    scale_before_crop: 2
     depths: ${model.net.backbone.layer_depths}
 #  fine_module:
 #    _target_: src.models.components.nets.new_matcher.LoFTR
@@ -23,12 +25,16 @@ net:
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
     type: "classification"
-    depth: ${model.net.backbone.layer_depths.0}
+    depth: 56
     window_size: 8
     temperature: 1.0
     cls_offset: 0.5
   fine_reg_matching:
-    _target_: src.models.components.nets.new_matcher.homo.FineHomo
+    _target_: src.models.components.nets.new_matcher.FineMatching
+    type: "regression_by_expectation"
+    depth: 8
+    window_size: 3
+    temperature: 10.0
 
 loss:
   _target_: src.models.components.losses.NewMatcherLoss
@@ -41,5 +47,4 @@ loss:
   fine_cls_sparse: true
   fine_cls_loss_pos_weight: 0.25
   fine_cls_loss_neg_weight: 0.25
-  fine_reg_loss_weight: 1.0
-  dense_reg_loss_weight: 1.0
+  fine_reg_loss_weight: 0.25
