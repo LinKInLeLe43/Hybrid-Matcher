@@ -49,6 +49,7 @@ class MatchingModule(pl.LightningModule):
         pose_thresholds: List[float],
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
+        test_fp16_precision: bool = False,
         test_preparation_enabled: bool = False,
         test_enable_loransac: bool = False,
         advanced_metrics: bool = True,
@@ -222,6 +223,9 @@ class MatchingModule(pl.LightningModule):
         for m in self.net.modules():
             if hasattr(m, "switch_to_deploy"):
                 m.switch_to_deploy()
+
+        if self.hparams.test_fp16_precision:
+            self.net = self.net.half()
 
     def test_step(
         self,

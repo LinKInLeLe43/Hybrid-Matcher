@@ -15,11 +15,13 @@ class ScanNetDataset(data.Dataset):
         data_root: str,
         intrinsic_path: str,
         load_depth: bool = True,
+        fp16: bool = False,
         min_overlap_score: float = 0.0
     ) -> None:
         super().__init__()
         self.data_root = data_root
         self.intrinsics = dict(np.load(intrinsic_path))
+        self.fp16 = fp16
         self.load_depth = load_depth
 
         with np.load(npz_path) as data:
@@ -84,7 +86,10 @@ class ScanNetDataset(data.Dataset):
 
         for key, value in data.items():
             if isinstance(value, np.ndarray):
-                data[key] = torch.from_numpy(value).float()
+                if self.fp16 and key in ["image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
+                    data[key] = torch.from_numpy(value).half()
+                else:
+                    data[key] = torch.from_numpy(value).float()
         return data
 
     def __len__(self) -> int:

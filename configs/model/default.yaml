@@ -12,6 +12,7 @@ net:
     depth: ${model.net.local_coc.layer_depths.0}
     train_size: ???
     test_size: ???
+    fp16: ${fp16}
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     initial_depth: ${model.net.backbone.layer_depths.2}
@@ -66,6 +67,8 @@ optimizer: ???
 scheduler: ???
 
 train_batch_size_per_gpu: ${data.train_batch_size_per_gpu}
+
+test_fp16_precision: ${fp16}
 
 canonical_batch_size: ???
 

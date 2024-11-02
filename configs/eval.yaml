@@ -19,6 +19,8 @@ train: false
 
 test: true
 
+fp16: false
+
 ckpt_path: ???
 
 seed: 66

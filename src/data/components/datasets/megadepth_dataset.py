@@ -17,6 +17,7 @@ class MegaDepthDataset(data.Dataset):
         image_size: int,
         image_factor: int,
         mask_factors: List[int],
+        fp16: bool = False,
         load_depth: bool = True,
         min_overlap_score: float = 0.0
     ) -> None:
@@ -25,6 +26,7 @@ class MegaDepthDataset(data.Dataset):
         self.image_size = image_size
         self.image_factor = image_factor
         self.mask_factors = mask_factors
+        self.fp16 = fp16
         self.load_depth = load_depth
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
@@ -102,7 +104,10 @@ class MegaDepthDataset(data.Dataset):
 
         for key, value in data.items():
             if isinstance(value, np.ndarray):
-                data[key] = torch.from_numpy(value).float()
+                if self.fp16 and key in ["image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
+                    data[key] = torch.from_numpy(value).half()
+                else:
+                    data[key] = torch.from_numpy(value).float()
 
         mask = torch.stack([data.pop("mask0"), data.pop("mask1")])
         for factor in self.mask_factors:

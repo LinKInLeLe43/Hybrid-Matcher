@@ -28,6 +28,8 @@ train: true
 
 test: false
 
+fp16: false
+
 ckpt_path: null
 
 seed: 66

@@ -45,7 +45,8 @@ class RoPESinePositionalEncoding(nn.Module):
         self,
         depth: int,
         train_size: Tuple[int, int],
-        test_size: Optional[Tuple[int, int]] = None
+        test_size: Optional[Tuple[int, int]] = None,
+        fp16: bool = False
     ) -> None:
         super().__init__()
         max_shape = 256, 256
@@ -71,6 +72,9 @@ class RoPESinePositionalEncoding(nn.Module):
               .permute(2, 0, 1))
         sin = sin.repeat_interleave(2, dim=2)
         cos = cos.repeat_interleave(2, dim=2)
+
+        if fp16:
+            pe, sin, cos = pe.half(), sin.half(), cos.half()
 
         self.register_buffer("pe", pe, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
