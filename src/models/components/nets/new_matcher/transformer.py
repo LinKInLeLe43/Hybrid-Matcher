@@ -177,7 +177,7 @@ class AggregatedEncoder(nn.Module):
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 
         if rope is not None:
-            q, k = rope.rel_pe(q), rope.rel_pe(k)
+            q, k = rope.rel(q), rope.rel(k)
 
         q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)

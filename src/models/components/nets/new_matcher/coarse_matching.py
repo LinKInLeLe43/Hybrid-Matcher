@@ -181,13 +181,11 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None,
-        x_gt_idxes:
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
+        gt_idxes_8x:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        y_gt_idxes:
+        gt_idxes_16x:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
         n, c, h0, w0 = x0.shape
@@ -198,9 +196,12 @@ class CoarseMatching(nn.Module):
         _y0, _y1 = _y0 / c ** 0.5, _y1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
         similarity /= self.temperature
-        if y0_mask is not None and y1_mask is not None:
-            mask = (y0_mask.flatten(start_dim=1)[:, :, None] &
-                    y1_mask.flatten(start_dim=1)[:, None, :])
+        if mask0 is not None and mask1 is not None:
+            mask0_16x = F.max_pool2d(mask0.float(), 2, stride=2).bool()
+            mask1_16x = F.max_pool2d(mask1.float(), 2, stride=2).bool()
+
+            mask = (mask0_16x.flatten(start_dim=1)[:, :, None] &
+                    mask1_16x.flatten(start_dim=1)[:, None, :])
             similarity.masked_fill_(~mask, -1e9)
 
         topk = 8
@@ -211,7 +212,7 @@ class CoarseMatching(nn.Module):
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_coarse_cls_heatmap"] = confidence
             _similarity = similarity.clone()
-            _similarity[y_gt_idxes] = 1e9
+            _similarity[gt_idxes_16x] = 1e9
         else:
             _similarity = similarity
 
@@ -228,9 +229,9 @@ class CoarseMatching(nn.Module):
         if self.training:
             similarity = torch.einsum("nlc,nsc->nls", _x0, _x1)
             similarity /= self.temperature
-            if x0_mask is not None and x1_mask is not None:
-                mask = (x0_mask.flatten(start_dim=1)[:, :, None] &
-                        x1_mask.flatten(start_dim=1)[:, None, :])
+            if mask0 is not None and mask1 is not None:
+                mask = (mask0.flatten(start_dim=1)[:, :, None] &
+                        mask1.flatten(start_dim=1)[:, None, :])
                 similarity.masked_fill_(~mask, -1e9)
 
             confidence0_to_1 = F.softmax(similarity, dim=2)
@@ -251,8 +252,8 @@ class CoarseMatching(nn.Module):
             score = confidence, idxes0_to_1, idxes1_to_0
 
         result.update(self._create_coarse_matching(
-            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
-        result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
-                          x1.transpose(1, 2).unflatten(2, (h1, w1)))
+            score, (h0, w0), (h1, w1), mask0, mask1, gt_idxes_8x))
+        result["features_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
+                                 x1.transpose(1, 2).unflatten(2, (h1, w1)))
         result["coarse_cls_heatmap"] = confidence
         return result

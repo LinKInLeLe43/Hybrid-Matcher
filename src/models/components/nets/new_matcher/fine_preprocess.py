@@ -50,25 +50,21 @@ class FinePreprocess(nn.Module):
 
     def _crop_by_idxes(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        s, e, scale = self.stride, self.right_extra, self.scale_before_crop
-        w0, w1 = self.window_size, self.window_size + 2 * e
-        p0, p1 = self.padding, self.padding + e
-        ww0, ww1 = w0 ** 2, w1 ** 2
-        b_idxes, i_idxes, j_idxes = idxes
+        x: torch.Tensor,
+        idxes: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor]:
+        s, scale = self.stride, self.scale_before_crop
+        w = self.window_size
+        p = self.padding
+        ww = w ** 2
+        b_idxes, i_idxes = idxes
 
         if scale > 1:
-            x0 = F.interpolate(x0, scale_factor=scale, mode="bilinear")
-            x1 = F.interpolate(x1, scale_factor=scale, mode="bilinear")
+            x = F.interpolate(x, scale_factor=scale, mode="bilinear")
 
-        out0 = F.unfold(x0, w0, padding=p0, stride=s)[b_idxes, :, i_idxes]
-        out1 = F.unfold(x1, w1, padding=p1, stride=s)[b_idxes, :, j_idxes]
-        out0 = out0.unflatten(1, (-1, ww0)).transpose(1, 2)
-        out1 = out1.unflatten(1, (-1, ww1)).transpose(1, 2)
-        return out0, out1
+        out = F.unfold(x, w, padding=p, stride=s)[b_idxes, :, i_idxes]
+        out = out.unflatten(1, (-1, ww)).transpose(1, 2)
+        return out
 
     def _fuse_loftr(
         self,
@@ -112,42 +108,31 @@ class FinePreprocess(nn.Module):
 
     def _fuse_eloftr(
         self,
-        x0s: List[torch.Tensor],
-        x1s: List[torch.Tensor],
-        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if x0s[0].shape == x1s[0].shape:
-            xs = [torch.cat(x) for x in zip(x0s, x1s)]
-            out0, out1 = self._fuse_eloftr_impl(xs).chunk(2)
-        else:
-            out0 = self._fuse_eloftr_impl(x0s)
-            out1 = self._fuse_eloftr_impl(x1s)
-        out0, out1 = self._crop_by_idxes(out0, out1, idxes)
-        return out0, out1
+        xs: List[torch.Tensor],
+        idxes: Tuple[torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor]:
+        out = self._crop_by_idxes(self._fuse_eloftr_impl(xs), idxes)
+        return out
 
     def forward(
         self,
-        x0s: List[torch.Tensor],
-        x1s: List[torch.Tensor],
-        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        ww0 = self.window_size ** 2
-        ww1 = (self.window_size + 2 * self.right_extra) ** 2
+        xs: List[torch.Tensor],
+        idxes: Tuple[torch.Tensor, torch.Tensor]
+    ) -> torch.Tensor:
+        ww = self.window_size ** 2
         m, c = len(idxes[0]), self.depths[0]
 
         if m == 0:
-            out0 = x0s[0].new_empty((0, ww0, c))
-            out1 = x1s[0].new_empty((0, ww1, c))
-            return out0, out1
+            out0 = xs[0].new_empty((0, ww, c))
+            return out0
 
         if self.norm_before_fuse:
-            x0s[-1] = x0s[-1] / self.depths[-1] ** 0.5
-            x1s[-1] = x1s[-1] / self.depths[-1] ** 0.5
+            xs[-1] = xs[-1] / self.depths[-1] ** 0.5
 
         if self.type == "loftr":
-            out0, out1 = self._fuse_loftr(x0s, x1s, idxes)
+            out = self._fuse_loftr(xs, idxes)
         elif self.type == "eloftr":
-            out0, out1 = self._fuse_eloftr(x0s, x1s, idxes)
+            out = self._fuse_eloftr(xs, idxes)
         else:
             assert False
-        return out0, out1
+        return out

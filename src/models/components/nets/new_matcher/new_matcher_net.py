@@ -24,17 +24,17 @@ class NewMatcherNet(nn.Module):
     ) -> None:
         super().__init__()
         self.type = type
-        self.backbone = backbone
-        self.rope = rope
-        self.local_coc = local_coc
-        self.coarse_module = coarse_module
+        self.low_level_backbone = backbone
+        self.positional_encoding = rope
+        self.high_level_backbone = local_coc
+        self.coarse_interaction = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
         self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
-        self.enable_crop = enable_crop
+        self.is_crop_enabled = enable_crop
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1] // fine_preprocess.scale_before_crop)
@@ -87,108 +87,125 @@ class NewMatcherNet(nn.Module):
         result["coarse_points1"] = coarse_points1
         result["points0"], result["points1"] = fine_points0, fine_points1
 
-    def forward(
+    def forward(self, batch: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+        image0, image1 = batch["image0"], batch["image1"]
+        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
+
+        if image0.shape == image1.shape:
+            image = torch.cat([image0, image1])
+            mask = (
+                torch.cat([mask0, mask1])
+                if mask0 is not None and mask1 is not None else None
+            )
+            result = self._coarse_level_forward_aligned(image, mask, **kwargs)
+        else:
+            raise ValueError("")
+            # coarse_level_features = self._coarse_level_forwar_unaligned(
+            #     image0, image1, mask0, mask1
+            # )
+
+        self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+        return result
+
+    def _coarse_level_forward_aligned(
         self,
-        batch: Dict[str, Any],
-        gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        extra_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+        image: torch.Tensor,
+        mask: Optional[torch.Tensor],
+        **kwargs: Dict[str, Any]
     ) -> Dict[str, Any]:
-        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
-        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
-        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        n = len(image) // 2
+        device = image.device
+        dtype = image.dtype
 
-        if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+        # Low-level feature extraction down to 1/8 scale
+        features = self.low_level_backbone(image)
 
-            x0s, x1s = [], []
-            for x in xs:
-                x0, x1 = x.chunk(2)
-                x0s.append(x0)
-                x1s.append(x1)
+        # Absolute positional encoding
+        feature_8x = self.positional_encoding.abs(features.pop(-1))
+
+        if self.is_crop_enabled and mask is not None:
+            feature0_16x, feature1_16x = [], []
+            for b in range(n):
+                # High-level feature extraction down to 1/32 scale
+                b_feature0_16x, b_feature0_32x = self.high_level_backbone(
+                    crop_with_mask(feature_8x[0 + b], mask[0 + b])[None]
+                )
+                b_feature1_16x, b_feature1_32x = self.high_level_backbone(
+                    crop_with_mask(feature_8x[n + b], mask[n + b])[None]
+                )
+
+                # Coarse-level interaction
+                b_feature0_16x, b_feature1_16x = self.coarse_interaction(
+                    b_feature0_16x, b_feature1_16x,
+                    b_feature0_32x, b_feature1_32x,
+                    rope=self.positional_encoding
+                )
+
+                feature0_16x.append(
+                    pad_with_mask(
+                        b_feature0_16x[0],
+                        F.max_pool2d(
+                            mask[[0 + b]].float(), 2, stride=2
+                        )[0].bool()
+                    )
+                )
+                feature1_16x.append(
+                    pad_with_mask(
+                        b_feature1_16x[0],
+                        F.max_pool2d(
+                            mask[[n + b]].float(), 2, stride=2
+                        )[0].bool()
+                    )
+                )
+
+            feature0_16x = torch.stack(feature0_16x)
+            feature1_16x = torch.stack(feature1_16x)
+
+            # Coarse-level matching
+            result = self.coarse_matching(
+                feature_8x[:n], feature_8x[n:], feature0_16x, feature1_16x,
+                mask0=mask[:n], mask1=mask[n:],
+                gt_idxes_8x=kwargs.get("gt_idxes"),
+                gt_idxes_16x=kwargs.get("extra_gt_idxes")
+            )
+            features.append(torch.cat(result.pop("features_8x")))
+
+            # Fine-level interaction
+            idxes = result["coarse_cls_idxes"]
+            feature_2x = self.fine_preprocess(
+                features,
+                (
+                    torch.cat([idxes[0], idxes[0]]),
+                    torch.cat([idxes[1], idxes[2]])
+                )
+            )
         else:
-            x0s = self.backbone(batch["image0"])
-            x1s = self.backbone(batch["image1"])
+            # High-level feature extraction down to 1/32 scale
+            feature_16x, feature_32x = self.high_level_backbone(feature_8x)
 
-        if self.local_coc.scales[0] == 1:
-            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
-        else:
-            x0_8x, x1_8x = x0s[-1], x1s[-1]
+            # Coarse-level interaction
+            feature0_16x, feature1_16x = self.coarse_interaction(
+                feature_16x[:n], feature_16x[n:],
+                feature_32x[:n], feature_32x[:n],
+                rope=self.positional_encoding,
+                mask0=mask[:n], mask1=mask[:n]
+            )
 
-        x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
+            # Coarse-level matching
+            result = self.coarse_matching(
+                feature_8x[:n], feature_8x[n:], feature0_16x, feature1_16x,
+                mask0=mask[:n], mask1=mask[n:],
+                gt_idxes_8x=kwargs.get("gt_idxes"),
+                gt_idxes_16x=kwargs.get("extra_gt_idxes")
+            )
+            features.append(torch.cat(result.pop("features_8x")))
 
-        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
-            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
-
-            x0_16x, x1_16x = [], []
-            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
-                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
-
-                b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
-
-                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
-                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
-            x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
-        else:
-            if x0_8x.shape == x1_8x.shape:
-                x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                x0_32x, x1_32x = x_32x.chunk(2)
-            else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
-
-            x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
-                y1_mask=mask1_32x)
-
-        result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
-            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
-            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
-
-        x0_reg, x1_reg = self.fine_preprocess(
-            x0s, x1s, result["coarse_cls_idxes"])
-
-        # if self.type == "one_stage":
-        #     if len(x0_1x) != 0:
-        #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        # elif self.type == "two_stage":
-        #     if len(x0_1x) != 0:
-        #         w0, w1 = self.cls_w, self.fine_w
-        #         x0_1x, x1_1x = self.fine_module(
-        #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
-        #
-        #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
-        #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
-        #
-        #     result.update(self.fine_cls_matching(
-        #         x0_1x, x1_1x[:, self.fine_cls_mask]))
-        #
-        #     m_idxes, sub_i_idxes, sub_j_idxes = map(
-        #         lambda x: x[:, None], result["fine_cls_idxes"])
-        #     sub_j_idxes = (
-        #         self.fine_w *
-        #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
-        #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
-        #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
-        #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
-        # else:
-        #     assert False
-
+        # Fine-level matching
         (s1, s2), w = self.scales, self.reg_w
         grid = K.create_meshgrid(
-            s1, s1, normalized_coordinates=False, device=x0_reg.device,
-            dtype=x0_reg.dtype)
-        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
-        x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
+            s1, s1, normalized_coordinates=False, device=device, dtype=dtype)
+        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * n, -1, -1, -1)
+        x = feature_2x.transpose(1, 2).unflatten(2, (w, w))
         x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
         x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
 
@@ -198,27 +215,72 @@ class NewMatcherNet(nn.Module):
                                    result["fine_cls_biases1"]], dim=1)
         local_matches = local_matches / s2 + w // 2
         result.update(self.fine_reg_matching(
-            x0_reg, x1_reg, 1, local_matches=local_matches))
-
-        self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+            feature_2x[:n], feature_2x[n:], 1, local_matches=local_matches))
         return result
 
-    def crop_by_mask(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor
-    ) -> List[torch.Tensor]:
-        outs = []
-        for b_x, b_mask in zip(x, mask):
-            b_h = b_mask.sum(dim=0).amax().item()
-            b_w = b_mask.sum(dim=1).amax().item()
-            outs.append(b_x[None, :, :b_h, :b_w])
-        return outs
+    # def _coarse_level_forward_unaligned(
+    #     self,
+    #     image0: torch.Tensor,
+    #     image1: torch.Tensor,
+    #     mask0: Optional[torch.Tensor],
+    #     mask1: Optional[torch.Tensor]
+    # ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    #     n = len(image0)
+    #
+    #     # Low-level feature extraction down to 1/8 scale
+    #     fine_level_features0 = self.low_level_backbone(image0)
+    #     fine_level_features1 = self.low_level_backbone(image1)
+    #
+    #     # Absolute positional encoding
+    #     feature0_8x = self.positional_encoding.abs(
+    #         fine_level_features0.pop(-1)
+    #     )
+    #     feature1_8x = self.positional_encoding.abs(
+    #         fine_level_features1.pop(-1)
+    #     )
+    #
+    #     if self.is_crop_enabled and mask0 is not None and mask1 is not None:
+    #         feature0_16x, feature1_16x = [], []
+    #         for b in range(n):
+    #             # High-level feature extraction down to 1/32 scale
+    #             b_feature0_16x, b_feature0_32x = self.high_level_backbone(
+    #                 crop_with_mask(feature0_8x[b], mask0[b])
+    #             )
+    #             b_feature1_16x, b_feature1_32x = self.high_level_backbone(
+    #                 crop_with_mask(feature1_8x[b], mask1[b])
+    #             )
+    #
+    #             # Coarse-level interaction
+    #             b_feature0_16x, b_feature1_16x = self.coarse_interaction(
+    #                 b_feature0_16x, b_feature1_16x,
+    #                 b_feature0_32x, b_feature1_32x
+    #             )
+    #
+    #             feature0_16x.append(pad_with_mask(b_feature0_16x, mask0[b]))
+    #             feature1_16x.append(pad_with_mask(b_feature1_16x, mask1[b]))
+    #
+    #         feature0_16x = torch.cat(feature0_16x)
+    #         feature1_16x = torch.cat(feature1_16x)
+    #     else:
+    #         # High-level feature extraction down to 1/32 scale
+    #         feature0_16x, feature0_32x = self.high_level_backbone(feature0_8x)
+    #         feature1_16x, feature1_32x = self.high_level_backbone(feature1_8x)
+    #
+    #         # Coarse-level interaction
+    #         feature0_16x, feature1_16x = self.coarse_interaction(
+    #             feature0_16x, feature1_16x, feature0_32x, feature1_32x)
+    #
+    #     return feature0_8x, feature1_8x, feature0_16x, feature1_16x
 
-    def pad_by_mask(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        _, c, _h, _w = x.shape
-        _, h, w = mask.shape
 
-        out = x.new_zeros((1, c, h, w))
-        out[0, :, :_h, :_w] = x
-        return out
+def crop_with_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    h, w = mask.sum(dim=0).amax().item(), mask.sum(dim=1).amax().item()
+    out = x[:, :h, :w]
+    return out
+
+
+def pad_with_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    c, h, w = x.shape
+    out = x.new_zeros((c, *mask.shape))
+    out[:, :h, :w] = x
+    return out
