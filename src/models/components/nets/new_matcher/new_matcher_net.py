@@ -95,79 +95,82 @@ class NewMatcherNet(nn.Module):
         extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
+        image0, image1 = batch["image0"], batch["image1"]
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
 
-        if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+        if image0.shape == image1.shape:
+            image = torch.cat([image0, image1])
+            mask = None
+            if mask0 is not None and mask1 is not None:
+                mask = torch.cat([mask0, mask1])
+            n = len(image) // 2
+            xs = self.backbone(image)
 
-            x0s, x1s = [], []
-            for x in xs:
-                x0, x1 = x.chunk(2)
-                x0s.append(x0)
-                x1s.append(x1)
-        else:
-            x0s = self.backbone(batch["image0"])
-            x1s = self.backbone(batch["image1"])
+            x_8x = self.rope.abs_pe(xs[-1])
 
-        if self.local_coc.scales[0] == 1:
-            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
-        else:
-            x0_8x, x1_8x = x0s[-1], x1s[-1]
-
-        x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
-
-        if mask0 is not None and mask1 is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0)
-            x1_8x = self.crop_by_mask(x1_8x, mask1)
-
-            x0_16x, x1_16x = [], []
-            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
-                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
-
-                b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
-
-                x0_16x.append(
-                    self.pad_by_mask(
-                        b_x0_16x,
-                        F.max_pool2d(
-                            mask0[[b]].float(), 2, stride=2
-                        ).bool()
+            if self.enable_crop and mask0 is not None and mask1 is not None:
+                x0_16x, x1_16x = [], []
+                for b in range(n):
+                    b_x0_16x, b_x0_32x = self.local_coc(
+                        crop_with_mask(x_8x[b + 0], mask[b + 0])[None]
                     )
-                )
-                x1_16x.append(
-                    self.pad_by_mask(
-                        b_x1_16x,
-                        F.max_pool2d(
-                            mask1[[b]].float(), 2, stride=2
-                        ).bool()
+                    b_x1_16x, b_x1_32x = self.local_coc(
+                        crop_with_mask(x_8x[b + n], mask[b + n])[None]
                     )
-                )
-            x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
-        else:
-            if x0_8x.shape == x1_8x.shape:
-                x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                x0_32x, x1_32x = x_32x.chunk(2)
+
+                    b_x0_16x, b_x1_16x = self.coarse_module(
+                        b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
+
+                    x0_16x.append(
+                        pad_with_mask(
+                            b_x0_16x[0],
+                            F.max_pool2d(
+                                mask[[b + 0]].float(), 2, stride=2
+                            )[0].bool()
+                        )
+                    )
+                    x1_16x.append(
+                        pad_with_mask(
+                            b_x1_16x[0],
+                            F.max_pool2d(
+                                mask[[b + n]].float(), 2, stride=2
+                            )[0].bool()
+                        )
+                    )
+                x0_16x, x1_16x = torch.stack(x0_16x), torch.stack(x1_16x)
+
+                result = self.coarse_matching(
+                    xs[-1][:n], xs[-1][n:], x0_16x, x1_16x, mask0=mask0, mask1=mask1,
+                    x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
+                xs[-1] = torch.cat(result.pop("x_8x"))
             else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
+                if x0_8x.shape == x1_8x.shape:
+                    x_8x = torch.cat([x0_8x, x1_8x])
+                    x_16x, x_32x = self.local_coc(x_8x)
+                    x0_16x, x1_16x = x_16x.chunk(2)
+                    x0_32x, x1_32x = x_32x.chunk(2)
+                else:
+                    x0_16x, x0_32x = self.local_coc(x0_8x)
+                    x1_16x, x1_32x = self.local_coc(x1_8x)
 
-            x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                mask0=mask0, mask1=mask1)
+                x0_16x, x1_16x = self.coarse_module(
+                    x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
+                    mask0=mask0, mask1=mask1)
+        else:
+            x0s = self.backbone(image0)
+            x1s = self.backbone(image1)
 
-        result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, mask0=mask0, mask1=mask1,
-            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
+            x0_8x = self.rope.abs_pe(x0s[-1])
+            x1_8x = self.rope.abs_pe(x1s[-1])
 
-        x0_reg = self.fine_preprocess(
-            x0s, (result["coarse_cls_idxes"][0], result["coarse_cls_idxes"][1]))
-        x1_reg = self.fine_preprocess(
-            x1s, (result["coarse_cls_idxes"][0], result["coarse_cls_idxes"][2]))
+        idxes = result["coarse_cls_idxes"]
+        x_2x = self.fine_preprocess(
+            xs,
+            (
+                torch.cat([idxes[0], n + idxes[0]]),
+                torch.cat([idxes[1], idxes[2]])
+            )
+        )
 
         # if self.type == "one_stage":
         #     if len(x0_1x) != 0:
@@ -195,12 +198,13 @@ class NewMatcherNet(nn.Module):
         # else:
         #     assert False
 
+        m = len(x_2x) // 2
         (s1, s2), w = self.scales, self.reg_w
         grid = K.create_meshgrid(
-            s1, s1, normalized_coordinates=False, device=x0_reg.device,
-            dtype=x0_reg.dtype)
-        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
-        x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
+            s1, s1, normalized_coordinates=False, device=x_2x.device,
+            dtype=x_2x.dtype)
+        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * m, -1, -1, -1)
+        x = x_2x.transpose(1, 2).unflatten(2, (w, w))
         x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
         x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
 
@@ -210,27 +214,20 @@ class NewMatcherNet(nn.Module):
                                    result["fine_cls_biases1"]], dim=1)
         local_matches = local_matches / s2 + w // 2
         result.update(self.fine_reg_matching(
-            x0_reg, x1_reg, 1, local_matches=local_matches))
+            x_2x[:m], x_2x[m:], 1, local_matches=local_matches))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
 
-    def crop_by_mask(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor
-    ) -> List[torch.Tensor]:
-        outs = []
-        for b_x, b_mask in zip(x, mask):
-            b_h = b_mask.sum(dim=0).amax().item()
-            b_w = b_mask.sum(dim=1).amax().item()
-            outs.append(b_x[None, :, :b_h, :b_w])
-        return outs
 
-    def pad_by_mask(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        _, c, _h, _w = x.shape
-        _, h, w = mask.shape
+def crop_with_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    h, w = mask.sum(dim=0).amax().item(), mask.sum(dim=1).amax().item()
+    out = x[:, :h, :w]
+    return out
 
-        out = x.new_zeros((1, c, h, w))
-        out[0, :, :_h, :_w] = x
-        return out
+
+def pad_with_mask(x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    c, h, w = x.shape
+    out = x.new_zeros((c, *mask.shape))
+    out[:, :h, :w] = x
+    return out
