@@ -24,10 +24,10 @@ class NewMatcherNet(nn.Module):
     ) -> None:
         super().__init__()
         self.type = type
-        self.low_level_backbone = backbone
-        self.positional_encoding = rope
-        self.high_level_backbone = local_coc
-        self.coarse_interaction = coarse_module
+        self.backbone = backbone
+        self.rope = rope
+        self.local_coc = local_coc
+        self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
@@ -118,27 +118,27 @@ class NewMatcherNet(nn.Module):
         dtype = image.dtype
 
         # Low-level feature extraction down to 1/8 scale
-        features = self.low_level_backbone(image)
+        features = self.backbone(image)
 
         # Absolute positional encoding
-        feature_8x = self.positional_encoding.abs(features.pop(-1))
+        feature_8x = self.rope.abs(features.pop(-1))
 
         if self.is_crop_enabled and mask is not None:
             feature0_16x, feature1_16x = [], []
             for b in range(n):
                 # High-level feature extraction down to 1/32 scale
-                b_feature0_16x, b_feature0_32x = self.high_level_backbone(
+                b_feature0_16x, b_feature0_32x = self.local_coc(
                     crop_with_mask(feature_8x[0 + b], mask[0 + b])[None]
                 )
-                b_feature1_16x, b_feature1_32x = self.high_level_backbone(
+                b_feature1_16x, b_feature1_32x = self.local_coc(
                     crop_with_mask(feature_8x[n + b], mask[n + b])[None]
                 )
 
                 # Coarse-level interaction
-                b_feature0_16x, b_feature1_16x = self.coarse_interaction(
+                b_feature0_16x, b_feature1_16x = self.coarse_module(
                     b_feature0_16x, b_feature1_16x,
                     b_feature0_32x, b_feature1_32x,
-                    rope=self.positional_encoding
+                    rope=self.rope
                 )
 
                 feature0_16x.append(
@@ -181,13 +181,13 @@ class NewMatcherNet(nn.Module):
             )
         else:
             # High-level feature extraction down to 1/32 scale
-            feature_16x, feature_32x = self.high_level_backbone(feature_8x)
+            feature_16x, feature_32x = self.local_coc(feature_8x)
 
             # Coarse-level interaction
-            feature0_16x, feature1_16x = self.coarse_interaction(
+            feature0_16x, feature1_16x = self.coarse_module(
                 feature_16x[:n], feature_16x[n:],
                 feature_32x[:n], feature_32x[:n],
-                rope=self.positional_encoding,
+                rope=self.rope,
                 mask0=mask[:n], mask1=mask[:n]
             )
 
