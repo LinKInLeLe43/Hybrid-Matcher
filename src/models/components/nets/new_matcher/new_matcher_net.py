@@ -164,8 +164,10 @@ class NewMatcherNet(nn.Module):
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
-        x0_reg, x1_reg = self.fine_preprocess(
-            x0s, x1s, result["coarse_cls_idxes"])
+        x0_reg = self.fine_preprocess(
+            x0s, (result["coarse_cls_idxes"][0], result["coarse_cls_idxes"][1]))
+        x1_reg = self.fine_preprocess(
+            x1s, (result["coarse_cls_idxes"][0], result["coarse_cls_idxes"][2]))
 
         # if self.type == "one_stage":
         #     if len(x0_1x) != 0:
