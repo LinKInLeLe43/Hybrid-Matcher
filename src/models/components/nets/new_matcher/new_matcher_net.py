@@ -90,72 +90,17 @@ class NewMatcherNet(nn.Module):
     def forward(
         self,
         batch: Dict[str, Any],
-        gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        extra_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+        **kwargs: Dict[str, Any]
     ) -> Dict[str, Any]:
         image0, image1 = batch["image0"], batch["image1"]
         mask0, mask1 = batch.get("mask0"), batch.get("mask1")
 
         if image0.shape == image1.shape:
             image = torch.cat([image0, image1])
-            mask = None
-            if mask0 is not None and mask1 is not None:
-                mask = torch.cat([mask0, mask1])
-            n = len(image) // 2
-            xs = self.backbone(image)
-
-            x_8x = self.rope.abs_pe(xs[-1])
-
             if self.enable_crop and mask0 is not None and mask1 is not None:
-                x0_16x, x1_16x = [], []
-                for b in range(n):
-                    b_x0_16x, b_x0_32x = self.local_coc(
-                        crop_with_mask(x_8x[b + 0], mask[b + 0])[None]
-                    )
-                    b_x1_16x, b_x1_32x = self.local_coc(
-                        crop_with_mask(x_8x[b + n], mask[b + n])[None]
-                    )
-
-                    b_x0_16x, b_x1_16x = self.coarse_module(
-                        b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
-
-                    x0_16x.append(
-                        pad_with_mask(
-                            b_x0_16x[0],
-                            F.max_pool2d(
-                                mask[[b + 0]].float(), 2, stride=2
-                            )[0].bool()
-                        )
-                    )
-                    x1_16x.append(
-                        pad_with_mask(
-                            b_x1_16x[0],
-                            F.max_pool2d(
-                                mask[[b + n]].float(), 2, stride=2
-                            )[0].bool()
-                        )
-                    )
-                x0_16x, x1_16x = torch.stack(x0_16x), torch.stack(x1_16x)
-
-                result = self.coarse_matching(
-                    xs[-1][:n], xs[-1][n:], x0_16x, x1_16x, mask0=mask0, mask1=mask1,
-                    x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-                xs[-1] = torch.cat(result.pop("x_8x"))
-            else:
-                if x0_8x.shape == x1_8x.shape:
-                    x_8x = torch.cat([x0_8x, x1_8x])
-                    x_16x, x_32x = self.local_coc(x_8x)
-                    x0_16x, x1_16x = x_16x.chunk(2)
-                    x0_32x, x1_32x = x_32x.chunk(2)
-                else:
-                    x0_16x, x0_32x = self.local_coc(x0_8x)
-                    x1_16x, x1_32x = self.local_coc(x1_8x)
-
-                x0_16x, x1_16x = self.coarse_module(
-                    x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                    mask0=mask0, mask1=mask1)
+                result = self._forward_aligned_with_crop(
+                    image, torch.cat([mask0, mask1]), **kwargs
+                )
         else:
             x0s = self.backbone(image0)
             x1s = self.backbone(image1)
@@ -163,48 +108,14 @@ class NewMatcherNet(nn.Module):
             x0_8x = self.rope.abs_pe(x0s[-1])
             x1_8x = self.rope.abs_pe(x1s[-1])
 
-        idxes = result["coarse_cls_idxes"]
-        x_2x = self.fine_preprocess(
-            xs,
-            (
-                torch.cat([idxes[0], n + idxes[0]]),
-                torch.cat([idxes[1], idxes[2]])
-            )
-        )
-
-        # if self.type == "one_stage":
-        #     if len(x0_1x) != 0:
-        #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        # elif self.type == "two_stage":
-        #     if len(x0_1x) != 0:
-        #         w0, w1 = self.cls_w, self.fine_w
-        #         x0_1x, x1_1x = self.fine_module(
-        #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
-        #
-        #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
-        #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
-        #
-        #     result.update(self.fine_cls_matching(
-        #         x0_1x, x1_1x[:, self.fine_cls_mask]))
-        #
-        #     m_idxes, sub_i_idxes, sub_j_idxes = map(
-        #         lambda x: x[:, None], result["fine_cls_idxes"])
-        #     sub_j_idxes = (
-        #         self.fine_w *
-        #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
-        #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
-        #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
-        #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
-        # else:
-        #     assert False
-
-        m = len(x_2x) // 2
+        feature_2x = result.pop("feature_2x")
+        m = len(feature_2x) // 2
         (s1, s2), w = self.scales, self.reg_w
         grid = K.create_meshgrid(
-            s1, s1, normalized_coordinates=False, device=x_2x.device,
-            dtype=x_2x.dtype)
+            s1, s1, normalized_coordinates=False, device=feature_2x.device,
+            dtype=feature_2x.dtype)
         grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * m, -1, -1, -1)
-        x = x_2x.transpose(1, 2).unflatten(2, (w, w))
+        x = feature_2x.transpose(1, 2).unflatten(2, (w, w))
         x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
         x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
 
@@ -214,9 +125,74 @@ class NewMatcherNet(nn.Module):
                                    result["fine_cls_biases1"]], dim=1)
         local_matches = local_matches / s2 + w // 2
         result.update(self.fine_reg_matching(
-            x_2x[:m], x_2x[m:], 1, local_matches=local_matches))
+            feature_2x[:m], feature_2x[m:], 1, local_matches=local_matches))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+        return result
+
+    def _forward_aligned_with_crop(
+        self,
+        image: torch.Tensor,
+        mask: torch.Tensor,
+        **kwargs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        n = len(image) // 2
+
+        # Low-level feature extraction down to 1/8 scale
+        features = self.backbone(image)
+
+        # Absolute positional encoding
+        feature_8x = self.rope.abs_pe(features[-1])
+
+        feature0_16x, feature1_16x = [], []
+        for b in range(n):
+            # High-level feature extraction down to 1/32 scale
+            b_feature0_16x, b_feature0_32x = self.local_coc(
+                crop_with_mask(feature_8x[b + 0], mask[b + 0])[None]
+            )
+            b_feature1_16x, b_feature1_32x = self.local_coc(
+                crop_with_mask(feature_8x[b + n], mask[b + n])[None]
+            )
+
+            # Coarse-level interaction
+            b_feature0_16x, b_feature1_16x = self.coarse_module(
+                b_feature0_16x, b_feature1_16x, b_feature0_32x, b_feature1_32x,
+                rope=self.rope
+            )
+
+            feature0_16x.append(
+                pad_with_mask(
+                    b_feature0_16x[0],
+                    F.max_pool2d(mask[[b + 0]].float(), 2, stride=2)[0].bool()
+                )
+            )
+            feature1_16x.append(
+                pad_with_mask(
+                    b_feature1_16x[0],
+                    F.max_pool2d(mask[[b + n]].float(), 2, stride=2)[0].bool()
+                )
+            )
+
+        feature0_16x = torch.stack(feature0_16x)
+        feature1_16x = torch.stack(feature1_16x)
+
+        # Coarse-level matching
+        result = self.coarse_matching(
+            features[-1][:n], features[-1][n:], feature0_16x, feature1_16x,
+            mask0=mask[:n], mask1=mask[n:],
+            x_gt_idxes=kwargs.get("gt_idxes"),
+            y_gt_idxes=kwargs.get("extra_gt_idxes"))
+
+        # Fine-level interaction
+        features[-1] = torch.cat(result.pop("x_8x"))
+        idxes = result["coarse_cls_idxes"]
+        result["feature_2x"] = self.fine_preprocess(
+            features,
+            (
+                torch.cat([idxes[0], n + idxes[0]]),
+                torch.cat([idxes[1], idxes[2]])
+            )
+        )
         return result
 
 
