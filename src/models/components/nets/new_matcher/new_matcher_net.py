@@ -95,9 +95,7 @@ class NewMatcherNet(nn.Module):
         extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
-        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
-        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
 
         if batch["image0"].shape == batch["image1"].shape:
             xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
@@ -118,9 +116,9 @@ class NewMatcherNet(nn.Module):
 
         x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
 
-        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
-            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
+        if mask0 is not None and mask1 is not None and self.enable_crop:
+            x0_8x = self.crop_by_mask(x0_8x, mask0)
+            x1_8x = self.crop_by_mask(x1_8x, mask1)
 
             x0_16x, x1_16x = [], []
             for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
@@ -130,8 +128,22 @@ class NewMatcherNet(nn.Module):
                 b_x0_16x, b_x1_16x = self.coarse_module(
                     b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
 
-                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
-                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
+                x0_16x.append(
+                    self.pad_by_mask(
+                        b_x0_16x,
+                        F.max_pool2d(
+                            mask0[[b]].float(), 2, stride=2
+                        ).bool()
+                    )
+                )
+                x1_16x.append(
+                    self.pad_by_mask(
+                        b_x1_16x,
+                        F.max_pool2d(
+                            mask1[[b]].float(), 2, stride=2
+                        ).bool()
+                    )
+                )
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
         else:
             if x0_8x.shape == x1_8x.shape:
@@ -145,12 +157,10 @@ class NewMatcherNet(nn.Module):
 
             x0_16x, x1_16x = self.coarse_module(
                 x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
-                y1_mask=mask1_32x)
+                mask0=mask0, mask1=mask1)
 
         result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
-            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
+            x0s[-1], x1s[-1], x0_16x, x1_16x, mask0=mask0, mask1=mask1,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
