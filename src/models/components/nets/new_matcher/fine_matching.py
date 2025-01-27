@@ -40,15 +40,7 @@ class FineMatching(nn.Module):
         x1: torch.Tensor
     ) -> Dict[str, Any]:
         ww, c = self.window_size ** 2, self.depth
-        m = len(x0)
-
-        if m == 0:
-            result = {
-                "fine_cls_heatmap": x0.new_empty((0, ww, ww)),
-                "fine_cls_idxes": 3 * (x0.new_empty((0,), dtype=torch.long),),
-                "fine_cls_biases0": x0.new_empty((0, 2)),
-                "fine_cls_biases1": x0.new_empty((0, 2))}
-            return result
+        m = x0.shape[0]
 
         x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
         similarity = torch.einsum("mlc,msc->mls", x0, x1)

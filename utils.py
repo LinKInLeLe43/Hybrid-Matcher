@@ -88,12 +88,12 @@ def load_gray_scale_tensor_cv(
 
 
 if __name__ == "__main__":
-    path0 = ""
-    path1 = ""
-    size = 1152
-    ckpt_path = 
+    path0 = r"C:\Users\LinKInLeLe43\Desktop\1.png"
+    path1 = r"C:\Users\LinKInLeLe43\Desktop\2.png"
+    size = 1024
+    ckpt_path = r"D:\epoch=24-auc@5=0.557-auc@10=0.717-auc@20=0.833.ckpt"
     threshold = 0.2
-    device = "cuda:0"
+    device = "cpu"
 
     overrides = [f"++model.net.coarse_matching.threshold={threshold}"]
     net = get_outdoor_hybrid_matcher(overrides, size=max(832, size), ckpt_path=ckpt_path).to(device)
@@ -104,10 +104,13 @@ if __name__ == "__main__":
         path1, device, dfactor=32, imsize=size, value_to_scale=max, pad2sqr=True)
 
     batch = {"image0": gray0, "image1": gray1}
-    mask = torch.stack([mask0[None], mask1[None]])
-    for factor in [8, 16, 32]:
-        batch[f"mask0_{factor}x"], batch[f"mask1_{factor}x"] = F.max_pool2d(
-            mask, factor, stride=factor
-        )
-    with torch.no_grad():
-        result = net(batch)
+    input = torch.cat([gray0, gray1])
+    # mask = torch.stack([mask0[None], mask1[None]])
+    # for factor in [8, 16, 32]:
+    #     batch[f"mask0_{factor}x"], batch[f"mask1_{factor}x"] = F.max_pool2d(
+    #         mask, factor, stride=factor
+    #     )
+
+    traced_script_module = torch.jit.trace(net.net, input)
+
+    traced_script_module.save("Model_cpu_1024.pt")

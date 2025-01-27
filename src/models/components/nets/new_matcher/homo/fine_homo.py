@@ -16,7 +16,7 @@ class FineHomo(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.padding = True
+        self.padding = False
         self.radius = 1
         self.scale = 2
         self.homo_dense = False

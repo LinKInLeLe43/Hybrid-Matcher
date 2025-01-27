@@ -116,12 +116,8 @@ class FinePreprocess(nn.Module):
         x1s: List[torch.Tensor],
         idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if x0s[0].shape == x1s[0].shape:
-            xs = [torch.cat(x) for x in zip(x0s, x1s)]
-            out0, out1 = self._fuse_eloftr_impl(xs).chunk(2)
-        else:
-            out0 = self._fuse_eloftr_impl(x0s)
-            out1 = self._fuse_eloftr_impl(x1s)
+        xs = [torch.cat(x) for x in zip(x0s, x1s)]
+        out0, out1 = self._fuse_eloftr_impl(xs).chunk(2)
         out0, out1 = self._crop_by_idxes(out0, out1, idxes)
         return out0, out1
 
@@ -131,23 +127,5 @@ class FinePreprocess(nn.Module):
         x1s: List[torch.Tensor],
         idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        ww0 = self.window_size ** 2
-        ww1 = (self.window_size + 2 * self.right_extra) ** 2
-        m, c = len(idxes[0]), self.depths[0]
-
-        if m == 0:
-            out0 = x0s[0].new_empty((0, ww0, c))
-            out1 = x1s[0].new_empty((0, ww1, c))
-            return out0, out1
-
-        if self.norm_before_fuse:
-            x0s[-1] = x0s[-1] / self.depths[-1] ** 0.5
-            x1s[-1] = x1s[-1] / self.depths[-1] ** 0.5
-
-        if self.type == "loftr":
-            out0, out1 = self._fuse_loftr(x0s, x1s, idxes)
-        elif self.type == "eloftr":
-            out0, out1 = self._fuse_eloftr(x0s, x1s, idxes)
-        else:
-            assert False
+        out0, out1 = self._fuse_eloftr(x0s, x1s, idxes)
         return out0, out1

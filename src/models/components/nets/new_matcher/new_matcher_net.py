@@ -64,7 +64,7 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
-        m = len(result["points0"])
+        m = result["points0"].shape[0]
         b_idxes = result["idxes"][0]
 
         coarse_points0 = self.scales[0] * result["points0"]
@@ -89,69 +89,29 @@ class NewMatcherNet(nn.Module):
 
     def forward(
         self,
-        batch: Dict[str, Any],
-        gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        extra_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
-    ) -> Dict[str, Any]:
-        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
-        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
-        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        input: torch.Tensor
+    ) -> torch.Tensor:
+        xs = self.backbone(input)
 
-        if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+        x0s, x1s = [], []
+        for x in xs:
+            x0, x1 = x.chunk(2)
+            x0s.append(x0)
+            x1s.append(x1)
 
-            x0s, x1s = [], []
-            for x in xs:
-                x0, x1 = x.chunk(2)
-                x0s.append(x0)
-                x1s.append(x1)
-        else:
-            x0s = self.backbone(batch["image0"])
-            x1s = self.backbone(batch["image1"])
-
-        if self.local_coc.scales[0] == 1:
-            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
-        else:
-            x0_8x, x1_8x = x0s[-1], x1s[-1]
+        x0_8x, x1_8x = x0s[-1], x1s[-1]
 
         x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
 
-        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
-            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
+        x_8x = torch.cat([x0_8x, x1_8x])
+        x_16x, x_32x = self.local_coc(x_8x)
+        x0_16x, x1_16x = x_16x.chunk(2)
+        x0_32x, x1_32x = x_32x.chunk(2)
 
-            x0_16x, x1_16x = [], []
-            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
-                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
+        x0_16x, x1_16x = self.coarse_module(
+            x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope)
 
-                b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
-
-                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
-                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
-            x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
-        else:
-            if x0_8x.shape == x1_8x.shape:
-                x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                x0_32x, x1_32x = x_32x.chunk(2)
-            else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
-
-            x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
-                y1_mask=mask1_32x)
-
-        result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
-            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
-            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
+        result = self.coarse_matching(x0s[-1], x1s[-1], x0_16x, x1_16x)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
         x0_reg, x1_reg = self.fine_preprocess(
@@ -187,7 +147,7 @@ class NewMatcherNet(nn.Module):
         grid = K.create_meshgrid(
             s1, s1, normalized_coordinates=False, device=x0_reg.device,
             dtype=x0_reg.dtype)
-        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
+        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * x0_reg.shape[0], -1, -1, -1)
         x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
         x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
         x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
@@ -200,8 +160,9 @@ class NewMatcherNet(nn.Module):
         result.update(self.fine_reg_matching(
             x0_reg, x1_reg, 1, local_matches=local_matches))
 
-        self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
-        return result
+        self._scale_points(result)
+        output = torch.cat([result["points0"], result["points1"]], dim=-1)
+        return output
 
     def crop_by_mask(
         self,

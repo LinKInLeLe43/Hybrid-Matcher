@@ -153,8 +153,12 @@ class CoarseMatching(nn.Module):
                 idxes0_to_1, size0, mask0)
             idxes1_to_0 = self._remove_border_for_eval(
                 idxes1_to_0, size1, mask1)
-            biprojection = torch.stack([idxes1_to_0[b, idx1]
-                                        for b, idx1 in enumerate(idxes0_to_1)])
+            biprojection = []
+            for b in range(idxes0_to_1.shape[0]):
+                biprojection.append(idxes1_to_0[b, idxes0_to_1[b]])
+            biprojection = torch.stack(biprojection)
+            # biprojection = torch.stack([idxes1_to_0[b, idx1]
+            #                             for b, idx1 in enumerate(idxes0_to_1)])
             mask = biprojection == r0[:, :, 0]
             if self.border_removal > 0:
                 mask[:, 0] = False
