@@ -84,17 +84,20 @@ class MatchingDataModule(pl.LightningDataModule):
         scene_list_path: str,
         split: bool
     ) -> List[str]:
-        with open(scene_list_path, "r") as f:
-            names = [name for name in f.read().splitlines()]
-        if split:
-            names = self._split_names_per_rank(names)
-        log.info(f"{len(names)} scenes assigned per rank.")
+        if scene_list_path is not None:
+            with open(scene_list_path, "r") as f:
+                names = [name for name in f.read().splitlines()]
+            if split:
+                names = self._split_names_per_rank(names)
+            log.info(f"{len(names)} scenes assigned per rank.")
 
-        npz_paths = []
-        for name in names:
-            if path.splitext(name)[1] != ".npz":
-                name += ".npz"
-            npz_paths.append(path.join(npz_root, name))
+            npz_paths = []
+            for name in names:
+                if path.splitext(name)[1] != ".npz":
+                    name += ".npz"
+                npz_paths.append(path.join(npz_root, name))
+        else:
+            npz_paths = [None]
         return npz_paths
 
     def setup(self, stage: str) -> None:
