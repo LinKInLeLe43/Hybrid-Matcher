@@ -293,11 +293,24 @@ class FusedSelectiveTransformer(nn.Module):
         _, _, h1, w1 = x1.shape
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
-        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
-        x += F.interpolate(y, scale_factor=s, mode="bilinear")
-        x0, x1 = einops.rearrange(
-            self.down(x),
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
+        if x0.shape == x1.shape:
+            x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
+            x += F.interpolate(y, scale_factor=s, mode="bilinear")
+            x0, x1 = einops.rearrange(
+                self.down(x),
+                "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
+                sw=sw).chunk(2)
+        else:
+            x0 = self.x_up(x0) + F.interpolate(self.y_up(y0), scale_factor=s, mode="bilinear")
+            x0 = einops.rearrange(
+                self.down(x0),
+                "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
+                sw=sw)
+            x1 = self.x_up(x1) + F.interpolate(self.y_up(y1), scale_factor=s, mode="bilinear")
+            x1 = einops.rearrange(
+                self.down(x1),
+                "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
+                sw=sw)
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
         range = torch.arange(n, device=x0.device)[:, None, None]
