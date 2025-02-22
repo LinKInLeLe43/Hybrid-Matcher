@@ -95,9 +95,13 @@ class NewMatcherNet(nn.Module):
         extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
-        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
-        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
-        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        mask0_8x, mask1_8x = batch.get("mask0"), batch.get("mask1")
+        mask0_16x = mask1_16x = mask0_32x = mask1_32x = None
+        if mask0_8x is not None and mask1_8x is not None:
+            mask0_16x = F.max_pool2d(mask0_8x.float(), 2, stride=2).bool()
+            mask0_32x = F.max_pool2d(mask0_8x.float(), 4, stride=4).bool()
+            mask1_16x = F.max_pool2d(mask1_8x.float(), 2, stride=2).bool()
+            mask1_32x = F.max_pool2d(mask1_8x.float(), 4, stride=4).bool()
 
         if batch["image0"].shape == batch["image1"].shape:
             xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
