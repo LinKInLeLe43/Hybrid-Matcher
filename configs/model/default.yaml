@@ -8,8 +8,8 @@ net:
     block_counts: [2, 4, 4]
     layer_depths: [64, 128, 192]
   rope:
-    _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-    depth: ${model.net.local_coc.layer_depths.0}
+    _target_: src.models.components.nets.new_matcher.SinePositionalEncoding
+    feat_dim: ${model.net.local_coc.layer_depths.0}
     train_size: ???
     test_size: ???
     fp16: ${fp16}

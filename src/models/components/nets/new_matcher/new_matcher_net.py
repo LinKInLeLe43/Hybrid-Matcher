@@ -120,7 +120,7 @@ class NewMatcherNet(nn.Module):
         else:
             x0_8x, x1_8x = x0s[-1], x1s[-1]
 
-        x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
+        x0_8x, x1_8x = self.rope(x0_8x, "abs"), self.rope(x1_8x, "abs")
 
         if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
             x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
