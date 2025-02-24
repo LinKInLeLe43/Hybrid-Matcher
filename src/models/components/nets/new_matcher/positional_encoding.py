@@ -2,7 +2,9 @@ import math
 from typing import Optional, Tuple
 
 import torch
-from torch import nn
+import torch.nn as nn
+
+MAX_SHAPE = 256, 256
 
 
 class SinePositionalEncoding(nn.Module):
@@ -17,12 +19,11 @@ class SinePositionalEncoding(nn.Module):
     ) -> None:
         super().__init__()
 
-        max_shape = 256, 256
         factor = (
             -math.log(10000.0) / (feat_dim // 4) * torch.arange(feat_dim // 4)
         ).exp()
-        y = factor * torch.ones(*max_shape, 1).cumsum(0)
-        x = factor * torch.ones(*max_shape, 1).cumsum(1)
+        y = factor * torch.ones(*MAX_SHAPE, 1).cumsum(0)
+        x = factor * torch.ones(*MAX_SHAPE, 1).cumsum(1)
 
         if test_size is not None:
             y *= min(train_size[0] / test_size[0], 1.0)
@@ -56,9 +57,10 @@ class SinePositionalEncoding(nn.Module):
             out = x + self.pos_enc[:c, :h, :w]
         elif type == "rel":
             _, h, w, c = x.shape
-            sin = self.sin[:h, :w, :c]
-            cos = self.cos[:h, :w, :c]
-            out = cos * x + sin * self._rotate_half(x)
+            out = (  # fmt: skip
+                (self.cos[:h, :w, :c] * x)
+                + (self.sin[:h, :w, :c] * self._rotate_half(x))
+            )
         else:
             raise ValueError()
         return out
