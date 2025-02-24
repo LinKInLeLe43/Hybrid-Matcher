@@ -32,26 +32,28 @@ class Attention(nn.Module):
             mask = q_mask[..., :, None] & kv_mask[..., None, :]
 
         if self.enable_sdp:
+            args = [x.contiguous() for x in [q, k, v]]
             if self.force_flash:
-                args = [x.contiguous().half() for x in [q, k, v]]
+                if mask is not None:
+                    raise ValueError()
+
                 with sdp_kernel(
-                    enable_math=False,
                     enable_flash=True,
+                    enable_math=False,
                     enable_mem_efficient=False,
                 ):
-                    out = F.scaled_dot_product_attention(
-                        *args, attn_mask=mask
-                    ).to(q.dtype)
+                    out = F.scaled_dot_product_attention(*args)
             else:
-                args = [x.contiguous() for x in [q, k, v]]
                 out = F.scaled_dot_product_attention(*args, attn_mask=mask)
         else:
             scale = q.shape[-1] ** -0.5
             similarity = scale * torch.einsum("...ld,...sd->...ls", q, k)
             if mask is not None:
-                similarity.masked_fill_(~mask, -1e9)
+                similarity.masked_fill_(~mask, -float("inf"))
 
             out = torch.einsum(
                 "...ls,...sc->...lc", F.softmax(similarity, dim=-1), v
             )
+            if mask is not None:
+                out.nan_to_num_()
         return out

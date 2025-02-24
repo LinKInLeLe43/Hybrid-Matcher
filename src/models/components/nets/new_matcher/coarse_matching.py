@@ -201,7 +201,7 @@ class CoarseMatching(nn.Module):
         if y0_mask is not None and y1_mask is not None:
             mask = (y0_mask.flatten(start_dim=1)[:, :, None] &
                     y1_mask.flatten(start_dim=1)[:, None, :])
-            similarity.masked_fill_(~mask, -1e9)
+            similarity.masked_fill_(~mask, -float("inf"))
 
         topk = 8
         result = {}
