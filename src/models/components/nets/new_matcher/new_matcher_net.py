@@ -37,7 +37,7 @@ class NewMatcherNet(nn.Module):
         self.enable_crop = enable_crop
 
         self.scales = (backbone.scales[0],
-                       backbone.scales[1] // fine_preprocess.scale_before_crop)
+                       backbone.scales[1] // fine_preprocess.upsample_factor_before_crop)
         self.reg_w = fine_reg_matching.window_size
 
         if type == "two_stage":
