@@ -35,8 +35,6 @@ net:
       depth: ${model.net.coarse_module.in_depth}
       heads_count: ${model.net.coarse_module.heads_count}
       scale: ${model.net.coarse_module.scale}
-      attention:
-        _target_: src.models.components.nets.new_matcher.Attention
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     fused_selective_module:
@@ -46,12 +44,10 @@ net:
         - ${model.net.backbone.layer_depths.2}
         - ${model.net.local_coc.layer_depths.0}
       encoder:
-        _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
+        _target_: src.models.components.nets.new_matcher.RegionBasedSelectiveEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
         feat_dim: ${model.net.coarse_matching.fused_selective_module.depths.0}
         num_head: 8
-        attention:
-          _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
     temperature: 0.1
   fine_preprocess: ???

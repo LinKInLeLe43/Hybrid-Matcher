@@ -6,14 +6,23 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
+from .attention import Attention
+
 
 class TransformerEncoder(nn.Module):
     def __init__(
-        self, feat_dim: int, num_head: int, attention: nn.Module
+        self,
+        feat_dim: int,
+        num_head: int,
+        allow_sdp: bool = False,
+        force_flash: bool = False,
     ) -> None:
         super().__init__()
         self.num_head = num_head
-        self.attention = attention
+
+        self.attention = Attention(
+            allow_sdp=allow_sdp, force_flash=force_flash
+        )
         self.nchw = False
 
         self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
@@ -38,7 +47,7 @@ class TransformerEncoder(nn.Module):
         mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if mask0 is not None and mask1 is not None:
-            mask0, mask1 = mask0.unsqueeze(1), mask1.unsqueeze(1)
+            mask0, mask1 = mask0[:, None], mask1[:, None]
 
         q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
@@ -52,14 +61,22 @@ class TransformerEncoder(nn.Module):
         return out
 
 
-class ConvTransformerEncoder(nn.Module):
+class RegionBasedSelectiveEncoder(nn.Module):
     def __init__(
-        self, scale: int, feat_dim: int, num_head: int, attention: nn.Module
+        self,
+        scale: int,
+        feat_dim: int,
+        num_head: int,
+        allow_sdp: bool = False,
+        force_flash: bool = False,
     ) -> None:
         super().__init__()
         self.scale = scale
         self.num_head = num_head
-        self.attention = attention
+
+        self.attention = Attention(
+            allow_sdp=allow_sdp, force_flash=force_flash
+        )
         self.nchw = False
 
         self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
@@ -85,7 +102,7 @@ class ConvTransformerEncoder(nn.Module):
         mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if mask0 is not None and mask1 is not None:
-            mask0, mask1 = mask0.unsqueeze(1), mask1.unsqueeze(1)
+            mask0, mask1 = mask0[:, None], mask1[:, None]
 
         kwargs = {
             "fh": size0[0] // self.scale,
@@ -120,12 +137,13 @@ class AggregatedEncoder(nn.Module):
         depth: int,
         heads_count: int,
         scale: int,
-        attention: nn.Module
+        allow_sdp: bool = False,
+        force_flash: bool = False,
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.scale = scale
-        self.attention = attention
+        self.attention = Attention(allow_sdp=allow_sdp, force_flash=force_flash)
         self.nchw = True
 
         self.down_q = nn.Conv2d(
