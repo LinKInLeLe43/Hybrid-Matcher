@@ -3,63 +3,53 @@ from typing import List, Optional, Tuple
 
 import einops
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 class TransformerEncoder(nn.Module):
     def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-        attention: nn.Module
+        self, feat_dim: int, num_head: int, attention: nn.Module
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
+        self.num_head = num_head
         self.attention = attention
         self.nchw = False
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
+        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
 
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
+        self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.norm1 = nn.LayerNorm(feat_dim)
 
         self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.Linear(2 * feat_dim, 2 * feat_dim, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Linear(2 * feat_dim, feat_dim, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(feat_dim)
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
+        x0: torch.Tensor,
+        x1: torch.Tensor,
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        fc = self.heads_count
+        if mask0 is not None and mask1 is not None:
+            mask0, mask1 = mask0.unsqueeze(-3), mask1.unsqueeze(-3)
 
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-
-        out = torch.cat([x, out], dim=2)
-        out = self.mlp(out)
-        out = self.norm2(out)
-
-        out += x
+        q, k, v = self.q_proj(x0), self.k_proj(x1), self.v_proj(x1)
+        q, k, v = (
+            x.unflatten(-1, (self.num_head, -1)).transpose(-3, -2)
+            for x in (q, k, v)
+        )
+        message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+        message = self.norm1(
+            self.merge(message.transpose(-3, -2).flatten(start_dim=-2))
+        )
+        out = x0 + self.norm2(self.mlp(torch.cat([x0, message], dim=-1)))
         return out
 
 
