@@ -48,8 +48,8 @@ net:
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
-        depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
-        heads_count: 8
+        feat_dim: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        num_head: 8
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2

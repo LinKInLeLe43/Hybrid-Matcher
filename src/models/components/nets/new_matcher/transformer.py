@@ -76,25 +76,6 @@ class ConvTransformerEncoder(nn.Module):
         )
         self.norm2 = nn.LayerNorm(feat_dim)
 
-    def _to_nchw(self, x: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
-        out = rearrange(
-            x,
-            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=size[0] // self.scale,
-            fw=size[1] // self.scale,
-            sh=self.scale,
-        )
-        return out
-
-    def _from_nchw(self, x: torch.Tensor) -> torch.Tensor:
-        out = rearrange(
-            x,
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
-            sh=self.scale,
-            sw=self.scale,
-        )
-        return out
-
     def forward(
         self,
         feat0: torch.Tensor,
@@ -121,7 +102,7 @@ class ConvTransformerEncoder(nn.Module):
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
-        message = torch.cat([feat0, message])
+        message = torch.cat([feat0, message], dim=-1)
         message = rearrange(
             message, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", **kwargs
         )
