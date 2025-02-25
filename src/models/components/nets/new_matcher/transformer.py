@@ -186,7 +186,7 @@ class AggregatedEncoder(nn.Module):
             mask0, mask1 = mask0[:, None], mask1[:, None]
 
         n, _, h, w = feat0.shape
-        q, kv = self.down_q(feat0).permute(0, 2, 3, 1)
+        q = self.down_q(feat0).permute(0, 2, 3, 1)
         kv = self.down_kv(feat1).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 

@@ -546,9 +546,9 @@ class GlobalCoC(nn.Module):
             x0 = global_block(x0, y1, mask=mask01)
             x1 = global_block(x1, y0, mask=mask10)
             x0 = self_block(
-                x0, x0, rope=rope, x_mask=y0_mask, source_mask=y0_mask)
+                x0, x0, rope=rope, mask0=y0_mask, mask1=y0_mask)
             x1 = self_block(
-                x1, x1, rope=rope, x_mask=y1_mask, source_mask=y1_mask)
-            x0 = cross_block(x0, x1, x_mask=y0_mask, source_mask=y1_mask)
-            x1 = cross_block(x1, x0, x_mask=y1_mask, source_mask=y0_mask)
+                x1, x1, rope=rope, mask0=y1_mask, mask1=y1_mask)
+            x0 = cross_block(x0, x1, mask0=y0_mask, mask1=y1_mask)
+            x1 = cross_block(x1, x0, mask0=y1_mask, mask1=y0_mask)
         return x0, x1
