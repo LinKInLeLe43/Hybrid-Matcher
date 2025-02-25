@@ -1,10 +1,10 @@
 import copy
 from typing import List, Optional, Tuple
 
-import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange, repeat
 
 
 class TransformerEncoder(nn.Module):
@@ -32,89 +32,104 @@ class TransformerEncoder(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
+        feat0: torch.Tensor,
+        feat1: torch.Tensor,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         if mask0 is not None and mask1 is not None:
-            mask0, mask1 = mask0.unsqueeze(-3), mask1.unsqueeze(-3)
+            mask0, mask1 = mask0.unsqueeze(1), mask1.unsqueeze(1)
 
-        q, k, v = self.q_proj(x0), self.k_proj(x1), self.v_proj(x1)
+        q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
-            x.unflatten(-1, (self.num_head, -1)).transpose(-3, -2)
+            x.unflatten(-1, (self.num_head, -1)).transpose(1, 2)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
-        message = self.norm1(
-            self.merge(message.transpose(-3, -2).flatten(start_dim=-2))
-        )
-        out = x0 + self.norm2(self.mlp(torch.cat([x0, message], dim=-1)))
+        message = message.transpose(1, 2).flatten(start_dim=-2)
+        message = self.norm1(self.merge(message))
+        out = feat0 + self.norm2(self.mlp(torch.cat([feat0, message], dim=-1)))
         return out
 
 
 class ConvTransformerEncoder(nn.Module):
     def __init__(
-        self,
-        scale: int,
-        depth: int,
-        heads_count: int,
-        attention: nn.Module
+        self, scale: int, feat_dim: int, num_head: int, attention: nn.Module
     ) -> None:
         super().__init__()
         self.scale = scale
-        self.heads_count = heads_count
+        self.num_head = num_head
         self.attention = attention
         self.nchw = False
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
+        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
 
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
+        self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.norm1 = nn.LayerNorm(feat_dim)
 
         self.mlp = nn.Sequential(
-            nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
+            nn.Conv2d(2 * feat_dim, 2 * feat_dim, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Conv2d(2 * feat_dim, feat_dim, 3, padding=1, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(feat_dim)
+
+    def _to_nchw(self, x: torch.Tensor, size: Tuple[int, int]) -> torch.Tensor:
+        out = rearrange(
+            x,
+            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            fh=size[0] // self.scale,
+            fw=size[1] // self.scale,
+            sh=self.scale,
+        )
+        return out
+
+    def _from_nchw(self, x: torch.Tensor) -> torch.Tensor:
+        out = rearrange(
+            x,
+            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            sh=self.scale,
+            sw=self.scale,
+        )
+        return out
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
-        size: Tuple[int, int],
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
+        feat0: torch.Tensor,
+        feat1: torch.Tensor,
+        size0: Tuple[int, int],
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        sh, sw, fc = self.scale, self.scale, self.heads_count
-        fh, fw = size[0] // sh, size[1] // sw
+        if mask0 is not None and mask1 is not None:
+            mask0, mask1 = mask0.unsqueeze(1), mask1.unsqueeze(1)
 
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+        kwargs = {
+            "fh": size0[0] // self.scale,
+            "fw": size0[1] // self.scale,
+            "sh": self.scale,
+            "sw": self.scale,
+        }
 
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-
-        out = torch.cat([x, out], dim=2)
-        out = einops.rearrange(
-            out, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", fh=fh, sh=sh,
-            fw=fw, sw=sw)
-        out = self.mlp(out)
-        out = einops.rearrange(
-            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw)
-        out = self.norm2(out)
-
-        out += x
+        q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
+        q, k, v = (
+            x.unflatten(-1, (self.num_head, -1)).transpose(1, 2)
+            for x in (q, k, v)
+        )
+        message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+        message = message.transpose(1, 2).flatten(start_dim=-2)
+        message = self.norm1(self.merge(message))
+        message = torch.cat([feat0, message])
+        message = rearrange(
+            message, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", **kwargs
+        )
+        message = self.mlp(message)
+        message = rearrange(
+            message, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", **kwargs
+        )
+        out = feat0 + self.norm2(message)
         return out
 
 
@@ -169,11 +184,11 @@ class AggregatedEncoder(nn.Module):
         if rope is not None:
             q, k = rope(q, "rel"), rope(k, "rel")
 
-        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        q = rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        k = rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        v = rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
+        out = rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
         out = self.norm1(out)
@@ -286,18 +301,18 @@ class FusedSelectiveTransformer(nn.Module):
         if x0.shape == x1.shape:
             x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
             x += F.interpolate(y, scale_factor=s, mode="bilinear")
-            x0, x1 = einops.rearrange(
+            x0, x1 = rearrange(
                 self.down(x),
                 "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
                 sw=sw).chunk(2)
         else:
             x0 = self.x_up(x0) + F.interpolate(self.y_up(y0), scale_factor=s, mode="bilinear")
-            x0 = einops.rearrange(
+            x0 = rearrange(
                 self.down(x0),
                 "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
                 sw=sw)
             x1 = self.x_up(x1) + F.interpolate(self.y_up(y1), scale_factor=s, mode="bilinear")
-            x1 = einops.rearrange(
+            x1 = rearrange(
                 self.down(x1),
                 "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh,
                 sw=sw)
@@ -313,16 +328,16 @@ class FusedSelectiveTransformer(nn.Module):
             x1 = layer(
                 x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1))
 
-        out0 = einops.rearrange(
+        out0 = rearrange(
             x0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh0, sh=sh,
             fw=fw0, sw=sw)
-        out1 = einops.rearrange(
+        out1 = rearrange(
             x1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh1, sh=sh,
             fw=fw1, sw=sw)
-        selective0 = einops.repeat(
+        selective0 = repeat(
             x0[_idxes1_to_0], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
             fh=fh1, sh=sh, fw=fw1, sw=sw)
-        selective1 = einops.repeat(
+        selective1 = repeat(
             x1[_idxes0_to_1], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
             fh=fh0, sh=sh, fw=fw0, sw=sw)
         idxes0_to_1 = (w1 * s * (idxes0_to_1 // (w1 // s)) +
@@ -331,10 +346,10 @@ class FusedSelectiveTransformer(nn.Module):
                        s * (idxes1_to_0 % (w0 // s)))[..., None]
         idxes0_to_1 = idxes0_to_1 + idxes0_to_1.new_tensor([0, 1, w1, w1 + 1])
         idxes1_to_0 = idxes1_to_0 + idxes1_to_0.new_tensor([0, 1, w0, w0 + 1])
-        idxes0_to_1 = einops.repeat(
+        idxes0_to_1 = repeat(
             idxes0_to_1, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)",
             fh=fh0, sh=sh, fw=fw0, sw=sw)
-        idxes1_to_0 = einops.repeat(
+        idxes1_to_0 = repeat(
             idxes1_to_0, "n (fh fw) k ss -> n (k ss) (fh sh fw sw)",
             fh=fh1, sh=sh, fw=fw1, sw=sw)
         return out0, out1, selective0, selective1, idxes0_to_1, idxes1_to_0
