@@ -13,12 +13,12 @@ class TransformerEncoder(nn.Module):
     def __init__(
         self,
         feat_dim: int,
-        num_head: int,
+        num_heads: int,
         allow_sdp: bool = False,
         force_flash: bool = False,
     ) -> None:
         super().__init__()
-        self.num_head = num_head
+        self.num_heads = num_heads
 
         self.attention = Attention(
             allow_sdp=allow_sdp, force_flash=force_flash
@@ -51,7 +51,7 @@ class TransformerEncoder(nn.Module):
 
         q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
-            x.unflatten(-1, (self.num_head, -1)).transpose(1, 2)
+            x.unflatten(-1, (self.num_heads, -1)).transpose(1, 2)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
@@ -66,13 +66,13 @@ class RegionBasedSelectiveEncoder(nn.Module):
         self,
         scale: int,
         feat_dim: int,
-        num_head: int,
+        num_heads: int,
         allow_sdp: bool = False,
         force_flash: bool = False,
     ) -> None:
         super().__init__()
         self.scale = scale
-        self.num_head = num_head
+        self.num_heads = num_heads
 
         self.attention = Attention(
             allow_sdp=allow_sdp, force_flash=force_flash
@@ -113,7 +113,7 @@ class RegionBasedSelectiveEncoder(nn.Module):
 
         q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
-            x.unflatten(-1, (self.num_head, -1)).transpose(1, 2)
+            x.unflatten(-1, (self.num_heads, -1)).transpose(1, 2)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
@@ -134,73 +134,81 @@ class RegionBasedSelectiveEncoder(nn.Module):
 class AggregatedEncoder(nn.Module):
     def __init__(
         self,
-        depth: int,
-        heads_count: int,
         scale: int,
+        feat_dim: int,
+        num_heads: int,
         allow_sdp: bool = False,
         force_flash: bool = False,
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
         self.scale = scale
-        self.attention = Attention(allow_sdp=allow_sdp, force_flash=force_flash)
+        self.num_heads = num_heads
+
+        self.head_dim = feat_dim // num_heads
+        self.attention = Attention(
+            allow_sdp=allow_sdp, force_flash=force_flash
+        )
         self.nchw = True
 
         self.down_q = nn.Conv2d(
-            depth, depth, scale, stride=scale, groups=depth, bias=False)
+            feat_dim,
+            feat_dim,
+            scale,
+            stride=scale,
+            groups=feat_dim,
+            bias=False,
+        )
         self.down_kv = nn.MaxPool2d(scale, stride=scale)
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
+        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
 
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
+        self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.norm1 = nn.LayerNorm(feat_dim)
 
         self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.Linear(2 * feat_dim, 2 * feat_dim, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Linear(2 * feat_dim, feat_dim, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(feat_dim)
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
+        feat0: torch.Tensor,
+        feat1: torch.Tensor,
         rope: Optional[nn.Module] = None,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        s, fc = self.scale, self.heads_count
+        if mask0 is not None and mask1 is not None:
+            mask0, mask1 = mask0[:, None], mask1[:, None]
 
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
-        q = self.down_q(x).permute(0, 2, 3, 1)
-        kv = self.down_kv(source).permute(0, 2, 3, 1)
+        n, _, h, w = feat0.shape
+        q, kv = self.down_q(feat0).permute(0, 2, 3, 1)
+        kv = self.down_kv(feat1).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 
         if rope is not None:
             q, k = rope(q, "rel"), rope(k, "rel")
 
-        q = rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        k = rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        v = rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // s, x.shape[3] // s))
-        out = F.interpolate(out, scale_factor=s, mode="bilinear")
-
-        out = torch.cat([x, out], dim=1)
-        out = out.permute(0, 2, 3, 1)
-        out = self.mlp(out)
-        out = self.norm2(out)
-        out = out.permute(0, 3, 1, 2).contiguous()
-
-        out += x
+        q, k, v = (
+            x.reshape(n, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            for x in (q, k, v)
+        )
+        message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+        message = message.transpose(1, 2).flatten(start_dim=-2)
+        message = self.norm1(self.merge(message))
+        message = message.transpose(1, 2).unflatten(
+            -1, (h // self.scale, w // self.scale)
+        )
+        message = F.interpolate(
+            message, scale_factor=self.scale, mode="bilinear"
+        )
+        message = torch.cat([feat0, message], dim=1)
+        message = self.norm2(self.mlp(message.permute(0, 2, 3, 1)))
+        out = feat0 + message.permute(0, 3, 1, 2).contiguous()
         return out
 
 

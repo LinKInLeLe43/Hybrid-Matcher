@@ -32,9 +32,9 @@ net:
     layer_count: 2
     attention_block:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
-      depth: ${model.net.coarse_module.in_depth}
-      heads_count: ${model.net.coarse_module.heads_count}
       scale: ${model.net.coarse_module.scale}
+      feat_dim: ${model.net.coarse_module.in_depth}
+      num_heads: ${model.net.coarse_module.heads_count}
   coarse_matching:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     fused_selective_module:
@@ -47,7 +47,7 @@ net:
         _target_: src.models.components.nets.new_matcher.RegionBasedSelectiveEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
         feat_dim: ${model.net.coarse_matching.fused_selective_module.depths.0}
-        num_head: 8
+        num_heads: 8
       layer_count: 2
     temperature: 0.1
   fine_preprocess: ???
