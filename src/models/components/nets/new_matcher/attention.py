@@ -34,6 +34,7 @@ class Attention(nn.Module):
         if self.enable_sdp:
             args = [x.contiguous() for x in [q, k, v]]
             if self.force_flash:
+                # FlashAttention does not support mask and FP32 precision
                 if mask is not None:
                     raise ValueError()
 

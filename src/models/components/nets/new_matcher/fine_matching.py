@@ -8,6 +8,8 @@ from kornia.utils.grid import create_meshgrid
 
 
 class FineMatching(nn.Module):
+    # TODO:
+    # Change out keys
     def __init__(
         self,
         type: str,
@@ -45,22 +47,22 @@ class FineMatching(nn.Module):
                 "fine_cls_heatmap": feat0.new_empty(0, self.WW, self.WW),
                 "fine_cls_idxes": 3 * (feat0.new_empty(0, dtype=torch.long),),
                 "fine_cls_biases0": feat0.new_empty(0, 2),
-                "fine_cls_biases1": feat0.new_empty(0, 2),
+                "fine_cls_biases1": feat1.new_empty(0, 2),
             }
             return out
 
         feat0, feat1 = self.scale * feat0, self.scale * feat1
         similarity = (
-            torch.einsum("mlc,msc->mls", feat0, feat1) / self.temperature
+            torch.einsum("...lc,...sc->...ls", feat0, feat1) / self.temperature
         )
-        heatmap = F.softmax(similarity, dim=1) * F.softmax(similarity, dim=2)
+        heatmap = F.softmax(similarity, dim=-2) * F.softmax(similarity, dim=-1)
 
         with torch.no_grad():
             m_indices = torch.arange(feat0.shape[0], device=feat0.device)
-            indices = heatmap.flatten(start_dim=1).argmax(dim=1)
-            i_indices, j_indices = indices // self.WW, indices % self.WW
-            biases0 = self.cls_biases.index_select(0, i_indices)
-            biases1 = self.cls_biases.index_select(0, j_indices)
+            ij_indices = heatmap.flatten(start_dim=-2).argmax(dim=-1)
+            i_indices, j_indices = ij_indices // self.WW, ij_indices % self.WW
+            biases0 = self.cls_biases[i_indices]
+            biases1 = self.cls_biases[j_indices]
 
         out = {
             "fine_cls_heatmap": heatmap,
@@ -79,10 +81,10 @@ class FineMatching(nn.Module):
 
         feat1 = self.scale * feat1
         similarity = (
-            torch.einsum("mc,mrc->mr", feat0[:, self.WW // 2], feat1)
+            torch.einsum("...c,...rc->...r", feat0[:, self.WW // 2], feat1)
             / self.temperature
         )
-        heatmap = F.softmax(similarity, dim=1).unflatten(1, (self.W, self.W))
+        heatmap = F.softmax(similarity, dim=-1).unflatten(-1, (self.W, self.W))
         biases = spatial_expectation2d(heatmap[None])[0]
         out = {"fine_reg_biases": biases}
         return out

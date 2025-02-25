@@ -74,7 +74,7 @@ class FinePreprocess(nn.Module):
 
     def _fpn_fuse(self, feats: List[torch.Tensor]) -> torch.Tensor:
         out = self.ups[-1](feats[-1])
-        for i in reversed(range(len(feats[:-1]))):
+        for i in reversed(range(len(feats) - 1)):
             out = self.downs[i](
                 self.ups[i](feats[i])
                 + F.interpolate(
