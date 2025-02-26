@@ -281,12 +281,12 @@ class FusedSelectiveTransformer(nn.Module):
         return out
 
     def _scale_indices(
-        self, indices: torch.Tensor, fw: int, **kwargs
+        self, indices: torch.Tensor, tgt_fw: int, **kwargs
     ) -> torch.Tensor:
-        w = self.scale * fw
-        rows, cols = indices // fw, indices % fw
-        out = w * self.scale * rows + self.scale * cols
-        out = indices.new_tensor([0, 1, w, w + 1]) + out[..., None]
+        tgt_w = self.scale * tgt_fw
+        rows, cols = indices // tgt_fw, indices % tgt_fw
+        out = tgt_w * self.scale * rows + self.scale * cols
+        out = indices.new_tensor([0, 1, tgt_w, tgt_w + 1]) + out[..., None]
         out = repeat(out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **kwargs)
         return out
 
@@ -325,8 +325,8 @@ class FusedSelectiveTransformer(nn.Module):
 
         indices1_to_0 = indices1_to_0.transpose(1, 2)
         range = torch.arange(
-            feat0.shape[0],
-            device=feat0.device,
+            btm_feat0.shape[0],
+            device=btm_feat0.device,
         )[:, None, None]
         _idxes0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
         _idxes1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)

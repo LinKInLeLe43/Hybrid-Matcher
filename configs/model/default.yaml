@@ -31,7 +31,7 @@ net:
     heads_count: 8
     layer_count: 2
     attention_block:
-      _target_: src.models.components.nets.new_matcher.AggregatedEncoder
+      _target_: src.models.components.nets.new_matcher.AggregatedTransformerLayer
       scale: ${model.net.coarse_module.scale}
       feat_dim: ${model.net.coarse_module.in_depth}
       num_heads: ${model.net.coarse_module.heads_count}
@@ -40,15 +40,15 @@ net:
     fused_selective_module:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
-      depths:
+      feat_dims:
         - ${model.net.backbone.layer_depths.2}
         - ${model.net.local_coc.layer_depths.0}
-      encoder:
-        _target_: src.models.components.nets.new_matcher.RegionBasedSelectiveEncoder
+      layer:
+        _target_: src.models.components.nets.new_matcher.SelectiveTransformerLayer
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
-        feat_dim: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        feat_dim: ${model.net.coarse_matching.fused_selective_module.feat_dims.0}
         num_heads: 8
-      layer_count: 2
+      num_layers: 2
     temperature: 0.1
   fine_preprocess: ???
 #  fine_module: ???
