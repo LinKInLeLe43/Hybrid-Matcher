@@ -32,14 +32,14 @@ class FinePreprocess(nn.Module):
 
         self.ups, self.downs = nn.ModuleList(), nn.ModuleList()
         for i in range(len(feat_dims) - 1):
-            bottom_dim, top_dim = feat_dims[i], feat_dims[i + 1]
-            self.ups.append(nn.Conv2d(bottom_dim, top_dim, 1, bias=False))
+            btm_dim, top_dim = feat_dims[i], feat_dims[i + 1]
+            self.ups.append(nn.Conv2d(btm_dim, top_dim, 1, bias=False))
             self.downs.append(
                 nn.Sequential(
                     nn.Conv2d(top_dim, top_dim, 3, padding=1, bias=False),
                     nn.BatchNorm2d(top_dim),
                     nn.LeakyReLU(inplace=True),
-                    nn.Conv2d(top_dim, bottom_dim, 3, padding=1, bias=False),
+                    nn.Conv2d(top_dim, btm_dim, 3, padding=1, bias=False),
                 )
             )
         self.ups.append(nn.Conv2d(top_dim, top_dim, 1, bias=False))
