@@ -43,11 +43,7 @@ net:
       feat_dims:
         - ${model.net.backbone.layer_depths.2}
         - ${model.net.local_coc.layer_depths.0}
-      layer:
-        _target_: src.models.components.nets.new_matcher.SelectiveTransformerLayer
-        scale: ${model.net.coarse_matching.fused_selective_module.scale}
-        feat_dim: ${model.net.coarse_matching.fused_selective_module.feat_dims.0}
-        num_heads: 8
+      num_heads: 8
       num_layers: 2
     temperature: 0.1
   fine_preprocess: ???

@@ -20,17 +20,15 @@ class VanillaTransformerLayer(nn.Module):
         super().__init__()
         self.num_heads = num_heads
 
+        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
         self.attention = Attention(
             allow_sdp=allow_sdp, force_flash=force_flash
         )
 
-        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-
         self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
         self.norm1 = nn.LayerNorm(feat_dim)
-
         self.mlp = nn.Sequential(
             nn.Linear(2 * feat_dim, 2 * feat_dim, bias=False),
             nn.ReLU(inplace=True),
@@ -54,13 +52,17 @@ class VanillaTransformerLayer(nn.Module):
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
-        out = feat0 + self.norm2(self.mlp(torch.cat([feat0, message], dim=-1)))
+        message = torch.cat([feat0, message], dim=-1)
+        out = feat0 + self.norm2(self.mlp(message))
         return out
 
 
 class AggregatedTransformerLayer(nn.Module):
+    # TODO:
+    # Remove .contiguous() after test training and inferencing
     def __init__(
         self,
         scale: int,
@@ -72,11 +74,7 @@ class AggregatedTransformerLayer(nn.Module):
         super().__init__()
         self.scale = scale
         self.num_heads = num_heads
-
         self.head_dim = feat_dim // num_heads
-        self.attention = Attention(
-            allow_sdp=allow_sdp, force_flash=force_flash
-        )
 
         self.down_q = nn.Conv2d(
             feat_dim,
@@ -87,14 +85,15 @@ class AggregatedTransformerLayer(nn.Module):
             bias=False,
         )
         self.down_kv = nn.MaxPool2d(scale, stride=scale)
-
         self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
         self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
         self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.attention = Attention(
+            allow_sdp=allow_sdp, force_flash=force_flash
+        )
 
         self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
         self.norm1 = nn.LayerNorm(feat_dim)
-
         self.mlp = nn.Sequential(
             nn.Linear(2 * feat_dim, 2 * feat_dim, bias=False),
             nn.ReLU(inplace=True),
@@ -114,18 +113,17 @@ class AggregatedTransformerLayer(nn.Module):
             mask0, mask1 = mask0[:, None], mask1[:, None]
 
         n, _, h, w = feat0.shape
-        q = self.down_q(feat0).permute(0, 2, 3, 1)
-        kv = self.down_kv(feat1).permute(0, 2, 3, 1)
+        q, kv = self.down_q(feat0), self.down_kv(feat1)
+        q, kv = q.permute(0, 2, 3, 1), kv.permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
-
         if rope is not None:
             q, k = rope(q, "rel"), rope(k, "rel")
-
         q, k, v = (
             x.reshape(n, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
         message = message.transpose(1, 2).unflatten(
@@ -153,17 +151,15 @@ class SelectiveTransformerLayer(nn.Module):
         self.scale = scale
         self.num_heads = num_heads
 
+        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
+        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
         self.attention = Attention(
             allow_sdp=allow_sdp, force_flash=force_flash
         )
 
-        self.q_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-        self.k_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-        self.v_proj = nn.Linear(feat_dim, feat_dim, bias=False)
-
         self.merge = nn.Linear(feat_dim, feat_dim, bias=False)
         self.norm1 = nn.LayerNorm(feat_dim)
-
         self.mlp = nn.Sequential(
             nn.Conv2d(2 * feat_dim, 2 * feat_dim, 1, bias=False),
             nn.ReLU(inplace=True),
@@ -188,13 +184,13 @@ class SelectiveTransformerLayer(nn.Module):
             "sh": self.scale,
             "sw": self.scale,
         }
-
         q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
             x.unflatten(-1, (self.num_heads, -1)).transpose(1, 2)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
+
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
         message = torch.cat([feat0, message], dim=-1)
@@ -244,8 +240,10 @@ class FusedSelectiveTransformer(nn.Module):
         self,
         scale: int,
         feat_dims: Tuple[int, int],
-        layer: nn.Module,
+        num_heads: int,
         num_layers: int,
+        allow_sdp: bool = False,
+        force_flash: bool = False,
     ) -> None:
         super().__init__()
         self.scale = scale
@@ -259,6 +257,13 @@ class FusedSelectiveTransformer(nn.Module):
             nn.Conv2d(feat_dims[1], feat_dims[0], 3, padding=1, bias=False),
         )
 
+        layer = SelectiveTransformerLayer(
+            scale,
+            feat_dims[0],
+            num_heads,
+            allow_sdp=allow_sdp,
+            force_flash=force_flash,
+        )
         self.layers = nn.ModuleList(
             [copy.deepcopy(layer) for _ in range(num_layers)]
         )
@@ -280,13 +285,14 @@ class FusedSelectiveTransformer(nn.Module):
         )
         return out
 
-    def _scale_indices(
+    @torch.no_grad()
+    def _map_indices(
         self, indices: torch.Tensor, tgt_fw: int, **kwargs
     ) -> torch.Tensor:
         tgt_w = self.scale * tgt_fw
         rows, cols = indices // tgt_fw, indices % tgt_fw
-        out = tgt_w * self.scale * rows + self.scale * cols
-        out = indices.new_tensor([0, 1, tgt_w, tgt_w + 1]) + out[..., None]
+        out = (self.scale * tgt_w * rows + self.scale * cols)[..., None]
+        out = out + indices.new_tensor([0, 1, tgt_w, tgt_w + 1])
         out = repeat(out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **kwargs)
         return out
 
@@ -306,6 +312,7 @@ class FusedSelectiveTransformer(nn.Module):
         torch.Tensor,
         torch.Tensor,
     ]:
+        n, device = btm_feat0.shape[0], btm_feat0.device
         fh0 = btm_feat0.shape[2] // self.scale
         fw0 = btm_feat0.shape[3] // self.scale
         fh1 = btm_feat1.shape[2] // self.scale
@@ -314,51 +321,50 @@ class FusedSelectiveTransformer(nn.Module):
         kwargs1 = {"fh": fh1, "fw": fw1, "sh": self.scale, "sw": self.scale}
 
         if btm_feat0.shape == btm_feat1.shape:
+            btm_feat = torch.cat([btm_feat0, btm_feat1])
+            top_feat = torch.cat([top_feat0, top_feat1])
             feat0, feat1 = self._fuse_feats(
-                torch.cat([btm_feat0, btm_feat1]),
-                torch.cat([top_feat0, top_feat1]),
-                **kwargs0,
+                btm_feat, top_feat, **kwargs0
             ).chunk(2)
         else:
             feat0 = self._fuse_feats(btm_feat0, top_feat0, **kwargs0)
             feat1 = self._fuse_feats(btm_feat1, top_feat1, **kwargs1)
 
         indices1_to_0 = indices1_to_0.transpose(1, 2)
-        range = torch.arange(
-            btm_feat0.shape[0],
-            device=btm_feat0.device,
-        )[:, None, None]
-        _idxes0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _idxes1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
-
+        range = torch.arange(n, device=device)[:, None, None]
+        _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
+        _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
         for layer in self.layers:
-            feat0 = layer(
-                feat0,
-                feat1[_idxes0_to_1].flatten(start_dim=1, end_dim=2),
-                (fh0, fw0),
-            )
-            feat1 = layer(
-                feat1,
-                feat0[_idxes1_to_0].flatten(start_dim=1, end_dim=2),
-                (fh1, fw1),
-            )
+            feat0_to_1 = feat1[_indices0_to_1].flatten(start_dim=1, end_dim=2)
+            feat0 = layer(feat0, feat0_to_1, (fh0, fw0))
+            feat1_to_0 = feat0[_indices1_to_0].flatten(start_dim=1, end_dim=2)
+            feat1 = layer(feat1, feat1_to_0, (fh1, fw1))
 
-        out0 = rearrange(
+        feat1_to_0, feat0_to_1 = feat0[_indices1_to_0], feat1[_indices0_to_1]
+        feat0 = rearrange(
             feat0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs0
         )
-        out1 = rearrange(
+        feat1 = rearrange(
             feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs1
         )
-        selective0 = repeat(
-            feat0[_idxes1_to_0],
+        feat1_to_0 = repeat(
+            feat1_to_0,
             "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
             **kwargs1,
         )
-        selective1 = repeat(
-            feat1[_idxes0_to_1],
+        feat0_to_1 = repeat(
+            feat0_to_1,
             "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
             **kwargs0,
         )
-        indices0_to_1 = self._scale_indices(indices0_to_1, fw1, **kwargs0)
-        indices1_to_0 = self._scale_indices(indices1_to_0, fw0, **kwargs1)
-        return out0, out1, selective0, selective1, indices0_to_1, indices1_to_0
+        indices0_to_1 = self._map_indices(indices0_to_1, fw1, **kwargs0)
+        indices1_to_0 = self._map_indices(indices1_to_0, fw0, **kwargs1)
+        indices1_to_0 = indices1_to_0.transpose(1, 2)
+        return (
+            feat0,
+            feat1,
+            feat1_to_0,
+            feat0_to_1,
+            indices0_to_1,
+            indices1_to_0,
+        )
