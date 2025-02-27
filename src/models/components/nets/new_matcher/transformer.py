@@ -294,7 +294,7 @@ class FusedSelectiveTransformer(nn.Module):
         rows, cols = indices // tgt_fw, indices % tgt_fw
         out = (self.scale * tgt_w * rows + self.scale * cols)[..., None]
         out = out + indices.new_tensor([0, 1, tgt_w, tgt_w + 1])
-        out = repeat(out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **kwargs)
+        out = repeat(out, "n (fh fw) k r -> n (fh sh fw sw) (k r)", **kwargs)
         return out
 
     def forward(
@@ -348,14 +348,10 @@ class FusedSelectiveTransformer(nn.Module):
             feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs1
         )
         feat0_to_1 = repeat(
-            feat0_to_1,
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            **kwargs0,
+            feat0_to_1, "(n fh fw) k r c -> n (fh sh fw sw) (k r) c", **kwargs0
         )
         feat1_to_0 = repeat(
-            feat1_to_0,
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            **kwargs1,
+            feat1_to_0, "(n fh fw) k r c -> n (fh sh fw sw) (k r) c", **kwargs1
         )
         indices0_to_1 = self._map_indices(indices0_to_1, fw1, **kwargs0)
         indices1_to_0 = self._map_indices(indices1_to_0, fw0, **kwargs1)

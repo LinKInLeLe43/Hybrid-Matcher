@@ -34,7 +34,7 @@ class Attention(nn.Module):
         if self.enable_sdp:
             args = [x.contiguous() for x in [q, k, v]]
             if self.force_flash:
-                # FlashAttention does not support mask and FP32 precision
+                # Flash kernel does not support mask and FP32 precision
                 if mask is not None:
                     raise ValueError()
 
@@ -45,16 +45,16 @@ class Attention(nn.Module):
                 ):
                     out = F.scaled_dot_product_attention(*args)
             else:
+                # Automatically selects the best kernel
                 out = F.scaled_dot_product_attention(*args, attn_mask=mask)
         else:
             scale = q.shape[-1] ** -0.5
-            similarity = scale * torch.einsum("...ld,...sd->...ls", q, k)
+            similarity = torch.einsum("...ld,...sd->...ls", q, k) * scale
             if mask is not None:
                 similarity.masked_fill_(~mask, -float("inf"))
 
-            out = torch.einsum(
-                "...ls,...sc->...lc", F.softmax(similarity, dim=-1), v
-            )
+            attention = F.softmax(similarity, dim=-1)
+            out = torch.einsum("...ls,...sc->...lc", attention, v)
             if mask is not None:
                 out.nan_to_num_()
         return out

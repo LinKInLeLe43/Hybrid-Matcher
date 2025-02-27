@@ -6,10 +6,11 @@ import torch.nn.functional as F
 from kornia.geometry.subpix.dsnt import spatial_expectation2d
 from kornia.utils.grid import create_meshgrid
 
+# TODO:
+# Change out keys
+
 
 class FineMatching(nn.Module):
-    # TODO:
-    # Change out keys
     def __init__(
         self,
         type: str,
@@ -20,19 +21,17 @@ class FineMatching(nn.Module):
     ) -> None:
         super().__init__()
         self.type = type
+        self.window_size = window_size
         self.temperature = temperature
         self.cls_offset = cls_offset
-
         self.scale = feat_dim**-0.5
-        self.W = window_size
-        self.WW = self.W**2
 
         if type == "cls":
-            cls_biases = (
-                create_meshgrid(self.W, self.W, normalized_coordinates=False)
-                - self.W / 2
-                + cls_offset
-            ).reshape(-1, 2)
+            cls_biases = create_meshgrid(
+                window_size, window_size, normalized_coordinates=False
+            )
+            cls_biases = cls_biases - window_size / 2 + cls_offset
+            cls_biases = cls_biases.reshape(-1, 2)
             self.register_buffer("cls_biases", cls_biases, persistent=False)
         elif type == "reg":
             pass
@@ -43,15 +42,16 @@ class FineMatching(nn.Module):
         self, feat0: torch.Tensor, feat1: torch.Tensor
     ) -> Dict[str, Any]:
         if feat0.shape[0] == 0:
+            ww = self.window_size**2
             out = {
-                "fine_cls_heatmap": feat0.new_empty(0, self.WW, self.WW),
+                "fine_cls_heatmap": feat0.new_empty(0, ww, ww),
                 "fine_cls_idxes": 3 * (feat0.new_empty(0, dtype=torch.long),),
                 "fine_cls_biases0": feat0.new_empty(0, 2),
                 "fine_cls_biases1": feat1.new_empty(0, 2),
             }
             return out
 
-        feat0, feat1 = self.scale * feat0, self.scale * feat1
+        feat0, feat1 = feat0 * self.scale, feat1 * self.scale
         similarity = (
             torch.einsum("...lc,...sc->...ls", feat0, feat1) / self.temperature
         )
@@ -60,7 +60,8 @@ class FineMatching(nn.Module):
         with torch.no_grad():
             m_indices = torch.arange(feat0.shape[0], device=feat0.device)
             ij_indices = heatmap.flatten(start_dim=-2).argmax(dim=-1)
-            i_indices, j_indices = ij_indices // self.WW, ij_indices % self.WW
+            i_indices = ij_indices // self.window_size
+            j_indices = ij_indices % self.window_size
             biases0 = self.cls_biases[i_indices]
             biases1 = self.cls_biases[j_indices]
 
@@ -79,12 +80,13 @@ class FineMatching(nn.Module):
             out = {"fine_reg_biases": feat0.new_empty(0, 2)}
             return out
 
-        feat1 = self.scale * feat1
+        feat0 = feat0[:, self.window_size**2 // 2]
+        feat1 = feat1 * self.scale
         similarity = (
-            torch.einsum("...c,...rc->...r", feat0[:, self.WW // 2], feat1)
-            / self.temperature
+            torch.einsum("...c,...rc->...r", feat0, feat1) / self.temperature
         )
-        heatmap = F.softmax(similarity, dim=-1).unflatten(-1, (self.W, self.W))
+        heatmap = F.softmax(similarity, dim=-1)
+        heatmap = heatmap.unflatten(-1, (self.window_size, self.window_size))
         biases = spatial_expectation2d(heatmap[None])[0]
         out = {"fine_reg_biases": biases}
         return out
