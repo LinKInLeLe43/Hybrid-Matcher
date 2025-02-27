@@ -52,10 +52,9 @@ class FineMatching(nn.Module):
             return out
 
         feat0, feat1 = feat0 * self.scale, feat1 * self.scale
-        similarity = (
-            torch.einsum("...lc,...sc->...ls", feat0, feat1) / self.temperature
-        )
-        heatmap = F.softmax(similarity, dim=-2) * F.softmax(similarity, dim=-1)
+        sim = torch.einsum("...lc,...sc->...ls", feat0, feat1)
+        sim = sim / self.temperature
+        heatmap = F.softmax(sim, dim=-2) * F.softmax(sim, dim=-1)
 
         with torch.no_grad():
             m_indices = torch.arange(feat0.shape[0], device=feat0.device)
@@ -79,12 +78,9 @@ class FineMatching(nn.Module):
             out = {"fine_reg_biases": feat0.new_empty(0, 2)}
             return out
 
-        feat0 = feat0[:, self.window_size**2 // 2]
-        feat1 = feat1 * self.scale
-        similarity = (
-            torch.einsum("...c,...rc->...r", feat0, feat1) / self.temperature
-        )
-        heatmap = F.softmax(similarity, dim=-1)
+        feat0, feat1 = feat0[:, self.window_size**2 // 2], feat1 * self.scale
+        sim = torch.einsum("...c,...rc->...r", feat0, feat1) / self.temperature
+        heatmap = F.softmax(sim, dim=-1)
         heatmap = heatmap.unflatten(-1, (self.window_size, self.window_size))
         biases = spatial_expectation2d(heatmap[None])[0]
         out = {"fine_reg_biases": biases}

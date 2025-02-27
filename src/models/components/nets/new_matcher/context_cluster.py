@@ -99,15 +99,15 @@ class LocalCluster(nn.Module):
 
         feat_sim = F.normalize(feat_sim, dim=-1)
         anchor_sim = F.normalize(anchor_sim, dim=-1)
-        similarity = torch.einsum("...lc,...sc->...ls", feat_sim, anchor_sim)
-        similarity = self.alpha * similarity + self.beta
+        sim = torch.einsum("...lc,...sc->...ls", feat_sim, anchor_sim)
+        sim = self.alpha * sim + self.beta
         if mask is not None:
             mask = repeat(
                 mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw)", **kwargs
             )
-            similarity.masked_fill_(~mask, -float("inf"))
-        similarity = similarity.sigmoid()
-        max_sim_values, max_sim_idxes = similarity.max(dim=2)
+            sim.masked_fill_(~mask[..., None], -float("inf"))
+        sim = sim.sigmoid()
+        max_sim_values, max_sim_idxes = sim.max(dim=2)
 
         if self.type == "flattened_index":
             range = torch.arange(feat_sim.shape[0], device=feat.device)
@@ -134,14 +134,13 @@ class LocalCluster(nn.Module):
                 **kwargs,
             )
         elif self.type == "original":
-            mask = torch.zeros_like(similarity)
+            mask = torch.zeros_like(sim)
             mask = mask.scatter(2, max_sim_idxes[:, :, None], 1.0)
-            similarity = (mask * similarity)[..., None]
+            sim = (mask * sim)[..., None]
 
-            aggregated = (similarity * feat_val[:, :, None, :]).sum(dim=1)
-            aggregated = aggregated + anchor_val
-            aggregated = aggregated / (1 + similarity.sum(dim=1))
-            dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
+            aggregated = anchor_val + (sim * feat_val[:, :, None]).sum(dim=1)
+            aggregated = aggregated / (1 + sim.sum(dim=1))
+            dispatched = (sim * aggregated[:, None]).sum(dim=2)
             dispatched = rearrange(
                 dispatched,
                 "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",

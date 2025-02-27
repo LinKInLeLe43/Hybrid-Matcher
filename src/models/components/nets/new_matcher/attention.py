@@ -49,12 +49,12 @@ class Attention(nn.Module):
                 out = F.scaled_dot_product_attention(*args, attn_mask=mask)
         else:
             scale = q.shape[-1] ** -0.5
-            similarity = torch.einsum("...ld,...sd->...ls", q, k) * scale
+            sim = torch.einsum("...ld,...sd->...ls", q, k) * scale
             if mask is not None:
-                similarity.masked_fill_(~mask, -float("inf"))
+                sim.masked_fill_(~mask, -float("inf"))
 
-            attention = F.softmax(similarity, dim=-1)
-            out = torch.einsum("...ls,...sc->...lc", attention, v)
+            attn = F.softmax(sim, dim=-1)
+            out = torch.einsum("...ls,...sc->...lc", attn, v)
             if mask is not None:
                 out.nan_to_num_()
         return out
