@@ -10,38 +10,40 @@ from einops import rearrange, repeat
 class MLP(nn.Module):
     def __init__(
         self,
-        embed_dim: int,
-        inner_dim: int,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
         bias: bool = True,
     ) -> None:
         super().__init__()
 
-        self.linear0 = nn.Linear(embed_dim, inner_dim, bias=bias)
-        self.linear1 = nn.Linear(inner_dim, embed_dim, bias=bias)
+        self.linear0 = nn.Linear(in_dim, hidden_dim, bias=bias)
+        self.linear1 = nn.Linear(hidden_dim, out_dim, bias=bias)
         self.gelu = nn.GELU()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.linear1(self.gelu(self.linear0(x)))
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        out = self.linear1(self.gelu(self.linear0(feat)))
         return out
 
 
 class ConvMLP(nn.Module):
     def __init__(
         self,
-        embed_dim: int,
-        inner_dim: int,
+        in_dim: int,
+        hidden_dim: int,
+        out_dim: int,
         bias: bool = True,
     ) -> None:
         super().__init__()
 
-        self.linear = nn.Linear(embed_dim, inner_dim, bias=bias)
-        self.conv = nn.Conv2d(inner_dim, embed_dim, 3, padding=1, bias=bias)
+        self.linear = nn.Linear(in_dim, hidden_dim, bias=bias)
+        self.conv = nn.Conv2d(hidden_dim, out_dim, 3, padding=1, bias=bias)
         self.gelu = nn.GELU()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.gelu(self.linear(x)).permute(0, 3, 1, 2)
+    def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        out = self.gelu(self.linear(feat)).permute(0, 3, 1, 2)
         out = self.conv(out).permute(0, 2, 3, 1)
-        return x
+        return out
 
 
 # TODO:
@@ -51,8 +53,8 @@ class ConvMLP(nn.Module):
 class LocalCluster(nn.Module):
     def __init__(
         self,
-        embed_dim: int,
-        inner_dim: int,
+        feat_dim: int,
+        hidden_dim: int,
         num_heads: int,
         anchor_size: int,
         fold_size: int,
@@ -65,9 +67,9 @@ class LocalCluster(nn.Module):
         self.fold_size = fold_size
         self.type = type
 
-        self.proj = nn.Linear(embed_dim, 2 * inner_dim, bias=bias)
+        self.proj = nn.Linear(feat_dim, 2 * hidden_dim, bias=bias)
         self.anchor_proposal = nn.AdaptiveMaxPool2d(anchor_size)
-        self.merge = nn.Linear(inner_dim, embed_dim, bias=bias)
+        self.merge = nn.Linear(hidden_dim, feat_dim, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -426,8 +428,13 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.bias, 0.0)
 
     def forward(
-        self, x: torch.Tensor, masks: List[Optional[torch.Tensor]]
+        self,
+        x: torch.Tensor,
+        masks: Optional[List[Optional[torch.Tensor]]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if masks is None:
+            masks = len(self.layers) * [None]
+
         outs = []
         for point_reducer, layer, mask in zip(
             self.point_reducers, self.layers, masks

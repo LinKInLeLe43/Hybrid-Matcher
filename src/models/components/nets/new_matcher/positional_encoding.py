@@ -39,19 +39,19 @@ class SinePositionalEncoding(nn.Module):
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("pos_enc", pos_enc, persistent=False)
 
-    def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
-        x0, x1 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        out = torch.stack([-x1, x0], dim=-1).flatten(start_dim=-2)
+    def _rotate_half(self, feat: torch.Tensor) -> torch.Tensor:
+        feat0, feat1 = feat.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        out = torch.stack([-feat1, feat0], dim=-1).flatten(start_dim=-2)
         return out
 
-    def forward(self, x: torch.Tensor, type: str) -> torch.Tensor:
+    def forward(self, feat: torch.Tensor, type: str) -> torch.Tensor:
         if type == "abs":
-            _, c, h, w = x.shape
-            out = x + self.pos_enc[:c, :h, :w]
+            _, c, h, w = feat.shape
+            out = feat + self.pos_enc[:c, :h, :w]
         elif type == "rel":
-            _, h, w, c = x.shape
-            sin_part = self.sin[:h, :w, :c] * self._rotate_half(x)
-            cos_part = self.cos[:h, :w, :c] * x
+            _, h, w, c = feat.shape
+            sin_part = self.sin[:h, :w, :c] * self._rotate_half(feat)
+            cos_part = self.cos[:h, :w, :c] * feat
             out = sin_part + cos_part
         else:
             raise ValueError()
