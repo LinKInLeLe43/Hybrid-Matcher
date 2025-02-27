@@ -92,10 +92,10 @@ class LocalCluster(nn.Module):
             **kwargs,
         )
         anchor = self.anchor_proposal(feat)
-        anchor = anchor.flatten(start_dim=-2).transpose(1, 2)
-        anchor_sim, anchor_val = anchor.chunk(2, dim=-1)
         feat = feat.flatten(start_dim=-2).transpose(1, 2)
         feat_sim, feat_val = feat.chunk(2, dim=-1)
+        anchor = anchor.flatten(start_dim=-2).transpose(1, 2)
+        anchor_sim, anchor_val = anchor.chunk(2, dim=-1)
 
         feat_sim = F.normalize(feat_sim, dim=-1)
         anchor_sim = F.normalize(anchor_sim, dim=-1)
@@ -125,9 +125,7 @@ class LocalCluster(nn.Module):
                 0, max_sim_idxes, max_sim_values[:, None] * cat_x_value
             )
             aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = max_sim_values[:, None] * aggregated.index_select(
-                0, max_sim_idxes
-            )
+            dispatched = max_sim_values[:, None] * aggregated[max_sim_idxes]
             dispatched = rearrange(
                 dispatched,
                 "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
@@ -159,7 +157,6 @@ class GlobalCluster(nn.Module):
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
-        type: str = "flattened_index",
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
@@ -174,89 +171,46 @@ class GlobalCluster(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        center1: torch.Tensor,
+        feat: torch.Tensor,
+        anchor: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        fc = self.heads_count
-        n, c, h0, w0 = x0.shape
-        _, _, h1, w1 = center1.shape
-        m, l, s = n * fc, h0 * w0, h1 * w1
-        device = x0.device
-
-        x0_point = self.proj0(x0.permute(0, 2, 3, 1))
-        center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc
+        feat_sim = self.proj0(feat.permute(0, 2, 3, 1))
+        anchor = self.proj1(anchor.permute(0, 2, 3, 1))
+        feat_sim = rearrange(
+            feat_sim, "n h w (fc sc) -> (n fc) (h w) sc", fc=self.heads_count
         )
-        center1 = rearrange(center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
-        center1_point, center1_value = center1.chunk(2, dim=2)
-
-        norm_x0_point = F.normalize(x0_point, dim=2)
-        norm_center1_point = F.normalize(center1_point, dim=2)
-        similarities = torch.einsum(
-            "mlc,msc->mls", norm_x0_point, norm_center1_point
+        anchor = rearrange(
+            anchor, "n h w (fc sc) -> (n fc) (h w) sc", fc=self.heads_count
         )
-        similarities = self.alpha * similarities + self.beta
+        anchor_sim, anchor_val = anchor.chunk(2, dim=2)
+
+        feat_sim = F.normalize(feat_sim, dim=2)
+        anchor_sim = F.normalize(anchor_sim, dim=2)
+        sim = torch.einsum("mlc,msc->mls", feat_sim, anchor_sim)
+        sim = self.alpha * sim + self.beta
         if mask is not None:
-            mask = repeat(mask, "n l s -> (n fc) l s", fc=fc)
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
+            mask = repeat(mask, "n l s -> (n fc) l s", fc=self.heads_count)
+            sim.masked_fill_(~mask, -float("inf"))
+        sim = sim.sigmoid()
+        max_sim_values, max_sim_idxes = sim.max(dim=2)
 
-        if self.type == "flattened_index":
-            max_sim_values, max_sim_idxes = similarities.max(dim=2)
-            max_sim_idxes = (
-                max_sim_idxes + s * torch.arange(m, device=device)[:, None]
-            )
-            max_sim_values, max_sim_idxes, center1_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value),
-            )
-
-            dispatched = max_sim_values[:, None] * center1_value.index_select(
-                0, max_sim_idxes
-            )
-            dispatched = rearrange(
-                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0
-            )
-        elif self.type == "torch_scatter":
-            csr_idxes = s * torch.arange(l + 1, device=device)[None]
-            max_sim_values, max_sim_idxes = torch_scatter.segment_max_csr(
-                similarities.flatten(start_dim=1), csr_idxes
-            )
-
-            range = torch.arange(m, device=device)[:, None]
-            dispatched = (
-                max_sim_values[:, :, None]
-                * center1_value[range, max_sim_idxes % s]
-            )
-            dispatched = rearrange(
-                dispatched,
-                "(n fc) (h w) sc -> n h w (fc sc)",
-                fc=fc,
-                h=h0,
-                w=w0,
-            )
-        elif self.type == "original":
-            max_sim_idxes = similarities.argmax(dim=2)
-            mask = torch.zeros_like(similarities)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
-
-            dispatched = (similarities * center1_value[:, None, :, :]).sum(
-                dim=2
-            )
-            dispatched = rearrange(
-                dispatched,
-                "(n fc) (h w) sc -> n h w (fc sc)",
-                fc=fc,
-                h=h0,
-                w=w0,
-            )
-        else:
-            raise NotImplementedError("")
-        dispatched = self.merge(dispatched)
-        return dispatched
+        range = torch.arange(feat_sim.shape[0], device=feat.device)
+        max_sim_idxes = max_sim_idxes + anchor_sim.shape[1] * range[:, None]
+        max_sim_values, max_sim_idxes, anchor_val = (
+            x.flatten(end_dim=1)
+            for x in (max_sim_values, max_sim_idxes, anchor_val)
+        )
+        dispatched = max_sim_values[:, None] * anchor_val[max_sim_idxes]
+        dispatched = rearrange(
+            dispatched,
+            "(n fc h w) sc -> n h w (fc sc)",
+            fc=self.heads_count,
+            h=feat.shape[2],
+            w=feat.shape[3],
+        )
+        out = self.merge(dispatched)
+        return out
 
 
 class LocalClusterBlock(nn.Module):
