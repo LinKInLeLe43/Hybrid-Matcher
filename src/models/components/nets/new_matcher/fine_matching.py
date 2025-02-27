@@ -41,8 +41,8 @@ class FineMatching(nn.Module):
     def _compute_cls_biases(
         self, feat0: torch.Tensor, feat1: torch.Tensor
     ) -> Dict[str, Any]:
+        ww = self.window_size**2
         if feat0.shape[0] == 0:
-            ww = self.window_size**2
             out = {
                 "fine_cls_heatmap": feat0.new_empty(0, ww, ww),
                 "fine_cls_idxes": 3 * (feat0.new_empty(0, dtype=torch.long),),
@@ -60,8 +60,7 @@ class FineMatching(nn.Module):
         with torch.no_grad():
             m_indices = torch.arange(feat0.shape[0], device=feat0.device)
             ij_indices = heatmap.flatten(start_dim=-2).argmax(dim=-1)
-            i_indices = ij_indices // self.window_size
-            j_indices = ij_indices % self.window_size
+            i_indices, j_indices = ij_indices // ww, ij_indices % ww
             biases0 = self.cls_biases[i_indices]
             biases1 = self.cls_biases[j_indices]
 

@@ -360,7 +360,7 @@ class LocalCoC(nn.Module):
                 point_reducer = nn.Identity()
             self.point_reducers.append(point_reducer)
 
-            layer = nn.Sequential()
+            layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
@@ -419,7 +419,8 @@ class LocalCoC(nn.Module):
         outs = []
         for point_reducer, layer, mask in zip(self.point_reducers, self.layers, masks):
             x = point_reducer(x)
-            x = layer(x, mask=mask)
+            for block in layer:
+                x = block(x, mask=mask)
             outs.append(x)
         return outs[0], outs[-1]
 
