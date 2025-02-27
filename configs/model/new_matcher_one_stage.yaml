@@ -8,8 +8,8 @@ net:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
     feat_dims: ${model.net.backbone.layer_depths}
     window_size: 5
-    stride: 4
     padding: 2
+    stride: 4
 #  fine_module:
 #    _target_: src.models.components.nets.new_matcher.LoFTR
 #    encoder:

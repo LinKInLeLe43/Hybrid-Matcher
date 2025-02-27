@@ -218,7 +218,7 @@ class CoarseMatching(nn.Module):
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
 
-        (x0, x1, selective0, selective1,
+        (x0, x1, selective1, selective0,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
             x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
         _x0, _x1 = x0 / c ** 0.5, x1 / c ** 0.5

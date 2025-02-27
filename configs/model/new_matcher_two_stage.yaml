@@ -8,8 +8,8 @@ net:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
     feat_dims: ${model.net.backbone.layer_depths}
     window_size: 8
-    stride: 8
     padding: 0
+    stride: 8
     right_extra: 1
     upsample_factor_before_crop: 2.0
   fine_module:

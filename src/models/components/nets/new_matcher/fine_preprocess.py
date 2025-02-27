@@ -4,18 +4,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# TODO:
+# - Rename self.ups and self.downs
+# - Change weight init
+# - Check ``align_corners`` in ``_fpn_fuse``
+
 
 class FinePreprocess(nn.Module):
-    # TODO:
-    # - Rename self.ups and self.downs
-    # - Change weight init
-    # - Check ``align_corners`` in ``_fpn_fuse``
     def __init__(
         self,
         feat_dims: List[int],
         window_size: int,
-        stride: int,
         padding: int,
+        stride: int,
         right_extra: int = 0,
         upsample_factor_before_crop: float = 1.0,
         enable_scale_before_fuse: bool = False,
@@ -59,7 +60,6 @@ class FinePreprocess(nn.Module):
             feat0 = F.interpolate(feat0, scale_factor=s, mode="bilinear")
             feat1 = F.interpolate(feat1, scale_factor=s, mode="bilinear")
 
-        ww0, ww1 = self.window_size0**2, self.window_size1**2
         b_indices, i_indices, j_indices = index_triplet
         out0 = F.unfold(
             feat0, self.window_size0, padding=self.padding0, stride=self.stride
@@ -67,8 +67,8 @@ class FinePreprocess(nn.Module):
         out1 = F.unfold(
             feat1, self.window_size1, padding=self.padding1, stride=self.stride
         )[b_indices, :, j_indices]
-        out0 = out0.unflatten(1, (-1, ww0)).transpose(1, 2)
-        out1 = out1.unflatten(1, (-1, ww1)).transpose(1, 2)
+        out0 = out0.unflatten(1, (feat0.shape[1], -1)).transpose(1, 2)
+        out1 = out1.unflatten(1, (feat1.shape[1], -1)).transpose(1, 2)
         return out0, out1
 
     def _fpn_fuse(self, feats: List[torch.Tensor]) -> torch.Tensor:
@@ -78,7 +78,7 @@ class FinePreprocess(nn.Module):
                 out, scale_factor=2.0, mode="bilinear", align_corners=True
             )
             out = out + self.ups[i](feats[i])
-            out = self.self.downs[i](out)
+            out = self.downs[i](out)
         return out
 
     def forward(

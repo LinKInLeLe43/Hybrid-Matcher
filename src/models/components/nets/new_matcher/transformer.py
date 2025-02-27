@@ -8,6 +8,10 @@ from einops import rearrange, repeat
 
 from .attention import Attention
 
+# TODO:
+# - Remove .contiguous() after test training and inferencing
+# - Change weight init
+
 
 class VanillaTransformerLayer(nn.Module):
     def __init__(
@@ -61,8 +65,6 @@ class VanillaTransformerLayer(nn.Module):
 
 
 class AggregatedTransformerLayer(nn.Module):
-    # TODO:
-    # - Remove .contiguous() after test training and inferencing
     def __init__(
         self,
         scale: int,
@@ -74,7 +76,6 @@ class AggregatedTransformerLayer(nn.Module):
         super().__init__()
         self.scale = scale
         self.num_heads = num_heads
-        self.head_dim = feat_dim // num_heads
 
         self.down_q = nn.Conv2d(
             feat_dim,
@@ -112,24 +113,25 @@ class AggregatedTransformerLayer(nn.Module):
         if mask0 is not None and mask1 is not None:
             mask0, mask1 = mask0[:, None], mask1[:, None]
 
-        s = self.scale
-        n, _, h, w = feat0.shape
-
         q, kv = self.down_q(feat0), self.down_kv(feat1)
         q, kv = q.permute(0, 2, 3, 1), kv.permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
         if rope is not None:
             q, k = rope(q, "rel"), rope(k, "rel")
         q, k, v = (
-            x.reshape(n, -1, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+            rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=self.num_heads)
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
 
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
-        message = message.transpose(1, 2).unflatten(-1, (h // s, w // s))
-        message = F.interpolate(message, scale_factor=s, mode="bilinear")
+        message = message.transpose(1, 2).unflatten(
+            -1, (feat0.shape[2] // self.scale, feat0.shape[3] // self.scale)
+        )
+        message = F.interpolate(
+            message, scale_factor=self.scale, mode="bilinear"
+        )
         message = torch.cat([feat0, message], dim=1).permute(0, 2, 3, 1)
         message = self.norm2(self.mlp(message)).permute(0, 3, 1, 2)
         out = feat0 + message.contiguous()
@@ -345,15 +347,15 @@ class FusedSelectiveTransformer(nn.Module):
         feat1 = rearrange(
             feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs1
         )
-        feat1_to_0 = repeat(
-            feat1_to_0,
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            **kwargs1,
-        )
         feat0_to_1 = repeat(
             feat0_to_1,
             "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
             **kwargs0,
+        )
+        feat1_to_0 = repeat(
+            feat1_to_0,
+            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            **kwargs1,
         )
         indices0_to_1 = self._map_indices(indices0_to_1, fw1, **kwargs0)
         indices1_to_0 = self._map_indices(indices1_to_0, fw0, **kwargs1)
@@ -361,8 +363,8 @@ class FusedSelectiveTransformer(nn.Module):
         return (
             feat0,
             feat1,
-            feat1_to_0,
             feat0_to_1,
+            feat1_to_0,
             indices0_to_1,
             indices1_to_0,
         )
