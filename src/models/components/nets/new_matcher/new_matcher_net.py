@@ -139,13 +139,17 @@ class NewMatcherNet(nn.Module):
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
         else:
             if x0_8x.shape == x1_8x.shape:
+                masks = [None, None]
+                if mask0_8x is not None and mask1_8x is not None:
+                    masks = [torch.cat([mask0_16x, mask1_16x]), torch.cat([mask0_32x, mask1_32x])]
+
                 x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
+                x_16x, x_32x = self.local_coc(x_8x, masks)
                 x0_16x, x1_16x = x_16x.chunk(2)
                 x0_32x, x1_32x = x_32x.chunk(2)
             else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
+                x0_16x, x0_32x = self.local_coc(x0_8x, [mask0_16x, mask0_32x])
+                x1_16x, x1_32x = self.local_coc(x1_8x, [mask1_16x, mask1_32x])
 
             x0_16x, x1_16x = self.coarse_module(
                 x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,

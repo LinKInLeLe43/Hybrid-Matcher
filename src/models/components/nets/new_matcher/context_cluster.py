@@ -415,11 +415,11 @@ class LocalCoC(nn.Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(self, x: torch.Tensor, masks:List[Optional[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
         outs = []
-        for point_reducer, layer in zip(self.point_reducers, self.layers):
+        for point_reducer, layer, mask in zip(self.point_reducers, self.layers, masks):
             x = point_reducer(x)
-            x = layer(x)
+            x = layer(x, mask=mask)
             outs.append(x)
         return outs[0], outs[-1]
 
