@@ -1,4 +1,4 @@
-import copy
+from copy import deepcopy
 from typing import List, Optional, Tuple
 
 import torch
@@ -13,7 +13,7 @@ from .attention import Attention
 # - Change weight init
 
 
-class VanillaTransformerLayer(nn.Module):
+class TransformerLayer(nn.Module):
     def __init__(
         self,
         feat_dim: int,
@@ -211,7 +211,7 @@ class LocalFeatureTransformer(nn.Module):
         super().__init__()
         self.types = types
 
-        self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in types])
+        self.layers = nn.ModuleList([deepcopy(layer) for _ in types])
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -266,7 +266,7 @@ class FusedSelectiveTransformer(nn.Module):
             force_flash=force_flash,
         )
         self.layers = nn.ModuleList(
-            [copy.deepcopy(layer) for _ in range(num_layers)]
+            [deepcopy(layer) for _ in range(num_layers)]
         )
 
         for p in self.parameters():

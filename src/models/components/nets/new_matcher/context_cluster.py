@@ -1,175 +1,154 @@
-import copy
+from copy import deepcopy
 from typing import List, Optional, Tuple
 
-import einops
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange, repeat
 
 
-class Mlp(nn.Module):
+class MLP(nn.Module):
     def __init__(
         self,
-        in_depth: int,
-        hidden_depth: int,
-        out_depth: int,
-        bias: bool = True
+        embed_dim: int,
+        inner_dim: int,
+        bias: bool = True,
     ) -> None:
         super().__init__()
 
-        self.linear0 = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.linear1 = nn.Linear(hidden_depth, out_depth, bias=bias)
+        self.linear0 = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.linear1 = nn.Linear(inner_dim, embed_dim, bias=bias)
         self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.linear0(x)
-        x = self.gelu(x)
-        x = self.linear1(x)
-        return x
+        out = self.linear1(self.gelu(self.linear0(x)))
+        return out
 
 
-class Mlp3x3(nn.Module):
+class ConvMLP(nn.Module):
     def __init__(
         self,
-        in_depth: int,
-        hidden_depth: int,
-        out_depth: int,
-        bias: bool = True
+        embed_dim: int,
+        inner_dim: int,
+        bias: bool = True,
     ) -> None:
         super().__init__()
 
-        self.linear = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.conv = nn.Conv2d(hidden_depth, out_depth, 3, padding=1, bias=bias)
+        self.linear = nn.Linear(embed_dim, inner_dim, bias=bias)
+        self.conv = nn.Conv2d(inner_dim, embed_dim, 3, padding=1, bias=bias)
         self.gelu = nn.GELU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.linear(x)
-        x = self.gelu(x)
-        x = x.permute(0, 3, 1, 2)
-        x = self.conv(x)
-        x = x.permute(0, 2, 3, 1)
+        out = self.gelu(self.linear(x)).permute(0, 3, 1, 2)
+        out = self.conv(out).permute(0, 2, 3, 1)
         return x
+
+
+# TODO:
+# - Change fold_size anchor_size to fold_size_per_side anchor_size_per_side
 
 
 class LocalCluster(nn.Module):
     def __init__(
         self,
-        in_depth: int,
-        hidden_depth: int,
-        heads_count: int,
-        center_size: int,
+        embed_dim: int,
+        inner_dim: int,
+        num_heads: int,
+        anchor_size: int,
         fold_size: int,
         bias: bool = True,
-        type: str = "original"
+        type: str = "original",
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
-        self.center_size = center_size
+        self.num_heads = num_heads
+        self.anchor_size = anchor_size
         self.fold_size = fold_size
         self.type = type
 
-        self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
-        self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
-        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+        self.proj = nn.Linear(embed_dim, 2 * inner_dim, bias=bias)
+        self.anchor_proposal = nn.AdaptiveMaxPool2d(anchor_size)
+        self.merge = nn.Linear(inner_dim, embed_dim, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(
-        self,
-        x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        self, feat: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        fc, fh, fw = self.heads_count, self.fold_size, self.fold_size
-        n, c, h, w = x.shape
-        sh, sw = h // fh, w // fw
-        m, s = n * fc * fh * fw, self.center_size ** 2
-        device = x.device
+        kwargs = {
+            "fc": self.num_heads,
+            "fh": self.fold_size,
+            "fw": self.fold_size,
+            "sh": feat.shape[2] // self.fold_size,
+            "sw": feat.shape[3] // self.fold_size,
+        }
 
-        x = self.proj(x.permute(0, 2, 3, 1))
-        x = einops.rearrange(
-            x, "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw", fc=fc,
-            fh=fh, fw=fw)
-        center = self.center_proposal(x)
-        x = x.flatten(start_dim=2).transpose(1, 2)
-        center = center.flatten(start_dim=2).transpose(1, 2)
-        x_point, x_value = x.chunk(2, dim=2)
-        center_point, center_value = center.chunk(2, dim=2)
+        feat = self.proj(feat.permute(0, 2, 3, 1))
+        feat = rearrange(
+            feat,
+            "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw",
+            **kwargs,
+        )
+        anchor = self.anchor_proposal(feat)
+        anchor = anchor.flatten(start_dim=-2).transpose(1, 2)
+        anchor_sim, anchor_val = anchor.chunk(2, dim=-1)
+        feat = feat.flatten(start_dim=-2).transpose(1, 2)
+        feat_sim, feat_val = feat.chunk(2, dim=-1)
 
-        norm_x_point = F.normalize(x_point, dim=2)
-        norm_center_point = F.normalize(center_point, dim=2)
-        similarities = torch.einsum(
-            "mlc,msc->mls", norm_x_point, norm_center_point)
-        similarities = self.alpha * similarities + self.beta
+        feat_sim = F.normalize(feat_sim, dim=-1)
+        anchor_sim = F.normalize(anchor_sim, dim=-1)
+        similarity = torch.einsum("...lc,...sc->...ls", feat_sim, anchor_sim)
+        similarity = self.alpha * similarity + self.beta
         if mask is not None:
-            mask = einops.repeat(
-                mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s", fc=fc,
-                fh=fh, fw=fw, s=s)
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
-        max_sim_values, max_sim_idxes = similarities.max(dim=2)
+            mask = repeat(
+                mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw)", **kwargs
+            )
+            similarity.masked_fill_(~mask, -float("inf"))
+        similarity = similarity.sigmoid()
+        max_sim_values, max_sim_idxes = similarity.max(dim=2)
 
         if self.type == "flattened_index":
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, x_value, center_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, x_value, center_value))
+            range = torch.arange(feat_sim.shape[0], device=feat.device)
+            max_sim_idxes = max_sim_idxes + self.fold_size**2 * range[:, None]
+            max_sim_values, max_sim_idxes, feat_val, anchor_val = (
+                x.flatten(end_dim=1)
+                for x in (max_sim_values, max_sim_idxes, feat_val, anchor_val)
+            )
 
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            aggregated = cat_center_value.index_add_(
-                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value)
+            cat_ones = torch.ones_like(feat_val[:, [0]])
+            cat_x_value = torch.cat([feat_val, cat_ones], dim=1)
+            cat_ones = torch.ones_like(anchor_val[:, [0]])
+            cat_anchor_value = torch.cat([anchor_val, cat_ones], dim=1)
+            aggregated = cat_anchor_value.index_add_(
+                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value
+            )
             aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = (max_sim_values[:, None] *
-                          aggregated.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
+            dispatched = max_sim_values[:, None] * aggregated.index_select(
+                0, max_sim_idxes
+            )
+            dispatched = rearrange(
                 dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
-        elif self.type == "torch_scatter":
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, x_value, center_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, x_value, center_value))
-            _max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
-
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
-                _max_sim_idxes, size=m * s)
-            aggregated = cat_center_value + torch_scatter.segment_csr(
-                (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
-                max_sim_idxes_csr)
-            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = (max_sim_values[:, None] *
-                          aggregated.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
+                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
+                **kwargs,
+            )
         elif self.type == "original":
-            mask = torch.zeros_like(similarities)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
+            mask = torch.zeros_like(similarity)
+            mask = mask.scatter(2, max_sim_idxes[:, :, None], 1.0)
+            similarity = (mask * similarity)[..., None]
 
-            aggregated = (center_value +
-                          (similarities * x_value[:, :, None, :]).sum(dim=1))
-            aggregated /= 1 + similarities.sum(dim=1)
-            dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
+            aggregated = (similarity * feat_val[:, :, None, :]).sum(dim=1)
+            aggregated = aggregated + anchor_val
+            aggregated = aggregated / (1 + similarity.sum(dim=1))
+            dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
+            dispatched = rearrange(
                 dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
+                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
+                **kwargs,
+            )
         else:
             raise NotImplementedError("")
-        dispatched = self.merge(dispatched)
-        return dispatched
+        out = self.merge(dispatched)
+        return out
 
 
 class GlobalCluster(nn.Module):
@@ -179,7 +158,7 @@ class GlobalCluster(nn.Module):
         hidden_depth: int,
         heads_count: int,
         bias: bool = True,
-        type: str = "flattened_index"
+        type: str = "flattened_index",
     ) -> None:
         super().__init__()
         self.heads_count = heads_count
@@ -196,7 +175,7 @@ class GlobalCluster(nn.Module):
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         fc = self.heads_count
         n, c, h0, w0 = x0.shape
@@ -206,56 +185,73 @@ class GlobalCluster(nn.Module):
 
         x0_point = self.proj0(x0.permute(0, 2, 3, 1))
         center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = einops.rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
-        center1 = einops.rearrange(
-            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        x0_point = rearrange(
+            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc
+        )
+        center1 = rearrange(center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
         center1_point, center1_value = center1.chunk(2, dim=2)
 
         norm_x0_point = F.normalize(x0_point, dim=2)
         norm_center1_point = F.normalize(center1_point, dim=2)
         similarities = torch.einsum(
-            "mlc,msc->mls", norm_x0_point, norm_center1_point)
+            "mlc,msc->mls", norm_x0_point, norm_center1_point
+        )
         similarities = self.alpha * similarities + self.beta
         if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
+            mask = repeat(mask, "n l s -> (n fc) l s", fc=fc)
             similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
 
         if self.type == "flattened_index":
             max_sim_values, max_sim_idxes = similarities.max(dim=2)
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
+            max_sim_idxes = (
+                max_sim_idxes + s * torch.arange(m, device=device)[:, None]
+            )
             max_sim_values, max_sim_idxes, center1_value = map(
                 lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value))
+                (max_sim_values, max_sim_idxes, center1_value),
+            )
 
-            dispatched = (max_sim_values[:, None] *
-                          center1_value.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
-                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
+            dispatched = max_sim_values[:, None] * center1_value.index_select(
+                0, max_sim_idxes
+            )
+            dispatched = rearrange(
+                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0
+            )
         elif self.type == "torch_scatter":
             csr_idxes = s * torch.arange(l + 1, device=device)[None]
             max_sim_values, max_sim_idxes = torch_scatter.segment_max_csr(
-                similarities.flatten(start_dim=1), csr_idxes)
+                similarities.flatten(start_dim=1), csr_idxes
+            )
 
             range = torch.arange(m, device=device)[:, None]
-            dispatched = (max_sim_values[:, :, None] *
-                          center1_value[range, max_sim_idxes % s])
-            dispatched = einops.rearrange(
-                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
-                w=w0)
+            dispatched = (
+                max_sim_values[:, :, None]
+                * center1_value[range, max_sim_idxes % s]
+            )
+            dispatched = rearrange(
+                dispatched,
+                "(n fc) (h w) sc -> n h w (fc sc)",
+                fc=fc,
+                h=h0,
+                w=w0,
+            )
         elif self.type == "original":
             max_sim_idxes = similarities.argmax(dim=2)
             mask = torch.zeros_like(similarities)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
             similarities = (mask * similarities)[..., None]
 
-            dispatched = (similarities *
-                          center1_value[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
-                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
-                w=w0)
+            dispatched = (similarities * center1_value[:, None, :, :]).sum(
+                dim=2
+            )
+            dispatched = rearrange(
+                dispatched,
+                "(n fc) (h w) sc -> n h w (fc sc)",
+                fc=fc,
+                h=h0,
+                w=w0,
+            )
         else:
             raise NotImplementedError("")
         dispatched = self.merge(dispatched)
@@ -270,22 +266,25 @@ class LocalClusterBlock(nn.Module):
         heads_count: int,
         center_size: int,
         fold_size: int,
-        bias: bool = True
+        bias: bool = True,
     ) -> None:
         super().__init__()
 
         self.cluster = LocalCluster(
-            in_depth, hidden_depth, heads_count, center_size, fold_size,
-            bias=bias)
+            in_depth,
+            hidden_depth,
+            heads_count,
+            center_size,
+            fold_size,
+            bias=bias,
+        )
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp = Mlp(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
+        self.mlp = MLP(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        self, x: torch.Tensor, mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         new_x = self.cluster(x, mask=mask)
         new_x = self.norm0(new_x)
@@ -305,22 +304,23 @@ class GlobalClusterBlock(nn.Module):
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
-        bias: bool = True
+        bias: bool = True,
     ) -> None:
         super().__init__()
 
         self.cluster = GlobalCluster(
-            in_depth, hidden_depth, heads_count, bias=bias)
+            in_depth, hidden_depth, heads_count, bias=bias
+        )
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
+        self.mlp3x3 = ConvMLP(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(
         self,
         x0: torch.Tensor,
         center1: torch.Tensor,
-        mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor]:
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
@@ -345,7 +345,7 @@ class LocalCoC(nn.Module):
         heads_counts: List[int],
         center_sizes: List[int],
         fold_sizes: List[int],
-        bias: bool = True
+        bias: bool = True,
     ) -> None:
         super().__init__()
         self.scales = scales
@@ -354,8 +354,12 @@ class LocalCoC(nn.Module):
         for i in range(len(scales)):
             if scales[i] > 1:
                 point_reducer = nn.Conv2d(
-                    initial_depth, layer_depths[i], scales[i] + 1,
-                    stride=scales[i], padding=1)
+                    initial_depth,
+                    layer_depths[i],
+                    scales[i] + 1,
+                    stride=scales[i],
+                    padding=1,
+                )
             else:
                 point_reducer = nn.Identity()
             self.point_reducers.append(point_reducer)
@@ -363,8 +367,13 @@ class LocalCoC(nn.Module):
             layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
-                    layer_depths[i], hidden_depths[i], heads_counts[i],
-                    center_sizes[i], fold_sizes[i], bias=bias)
+                    layer_depths[i],
+                    hidden_depths[i],
+                    heads_counts[i],
+                    center_sizes[i],
+                    fold_sizes[i],
+                    bias=bias,
+                )
                 layer.append(block)
             self.layers.append(layer)
 
@@ -410,14 +419,19 @@ class LocalCoC(nn.Module):
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.kaiming_normal_(
-                    m.weight, mode="fan_out", nonlinearity="relu")
+                    m.weight, mode="fan_out", nonlinearity="relu"
+                )
             elif isinstance(m, (nn.BatchNorm2d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: torch.Tensor, masks:List[Optional[torch.Tensor]]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, masks: List[Optional[torch.Tensor]]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         outs = []
-        for point_reducer, layer, mask in zip(self.point_reducers, self.layers, masks):
+        for point_reducer, layer, mask in zip(
+            self.point_reducers, self.layers, masks
+        ):
             x = point_reducer(x)
             for block in layer:
                 x = block(x, mask=mask)
@@ -444,26 +458,20 @@ class LocalCoC(nn.Module):
 
 
 class MergeBlock(nn.Module):
-    def __init__(
-        self,
-        scale: int,
-        depth: int,
-        bias: bool = True
-    ) -> None:
+    def __init__(self, scale: int, depth: int, bias: bool = True) -> None:
         super().__init__()
         self.scale = scale
 
-        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias)
+        self.mlp = MLP(2 * depth, 2 * depth, depth, bias=bias)
         self.norm = nn.LayerNorm(depth)
         self.pooling = nn.MaxPool2d(scale, stride=scale)
 
     def forward(
-        self,
-        x: torch.Tensor,
-        center: torch.Tensor
+        self, x: torch.Tensor, center: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear")
+            center, scale_factor=self.scale, mode="bilinear"
+        )
         new_x = torch.cat([x, up_center], dim=1)
         new_x = new_x.permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
@@ -484,28 +492,33 @@ class GlobalCoC(nn.Module):
         heads_count: int,
         layer_count: int,
         attention_block: nn.Module,
-        bias: bool = True
+        bias: bool = True,
     ) -> None:
         super().__init__()
 
         merge_block = MergeBlock(scale, in_depth, bias=bias)
         self.merge_blocks = nn.ModuleList(
-            [copy.deepcopy(merge_block) for _ in range(layer_count)])
+            [deepcopy(merge_block) for _ in range(layer_count)]
+        )
 
         global_block = GlobalClusterBlock(
-            in_depth, hidden_depth, heads_count, bias=bias)
+            in_depth, hidden_depth, heads_count, bias=bias
+        )
         self.global_blocks = nn.ModuleList(
-            [copy.deepcopy(global_block) for _ in range(layer_count)])
+            [deepcopy(global_block) for _ in range(layer_count)]
+        )
 
         # local_block = LocalClusterBlock(
         #     in_depth, hidden_depth, heads_count, 8, 1, bias=bias)
         # self.local_blocks = nn.ModuleList(
         #     [copy.deepcopy(local_block) for _ in types])
 
-        self.self_blocks = nn.ModuleList([copy.deepcopy(attention_block)
-                                          for _ in range(layer_count)])
-        self.cross_blocks = nn.ModuleList([copy.deepcopy(attention_block)
-                                           for _ in range(layer_count)])
+        self.self_blocks = nn.ModuleList(
+            [deepcopy(attention_block) for _ in range(layer_count)]
+        )
+        self.cross_blocks = nn.ModuleList(
+            [deepcopy(attention_block) for _ in range(layer_count)]
+        )
 
         # TODO: check weight init
         for m in self.modules():
@@ -525,7 +538,7 @@ class GlobalCoC(nn.Module):
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None
+        y1_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         mask00 = mask11 = mask01 = mask10 = None
         if x0_mask is not None:
@@ -539,17 +552,19 @@ class GlobalCoC(nn.Module):
             mask10 = x1_mask[:, :, None] & y0_mask[:, None, :]
 
         for merge_block, global_block, self_block, cross_block in zip(
-            self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks):
+            self.merge_blocks,
+            self.global_blocks,
+            self.self_blocks,
+            self.cross_blocks,
+        ):
             x0, y0 = merge_block(x0, y0)
             x1, y1 = merge_block(x1, y1)
             # x0 = global_block(x0, center0, mask=mask00)
             # x1 = global_block(x1, center1, mask=mask11)
             x0 = global_block(x0, y1, mask=mask01)
             x1 = global_block(x1, y0, mask=mask10)
-            x0 = self_block(
-                x0, x0, rope=rope, mask0=y0_mask, mask1=y0_mask)
-            x1 = self_block(
-                x1, x1, rope=rope, mask0=y1_mask, mask1=y1_mask)
+            x0 = self_block(x0, x0, rope=rope, mask0=y0_mask, mask1=y0_mask)
+            x1 = self_block(x1, x1, rope=rope, mask0=y1_mask, mask1=y1_mask)
             x0 = cross_block(x0, x1, mask0=y0_mask, mask1=y1_mask)
             x1 = cross_block(x1, x0, mask0=y1_mask, mask1=y0_mask)
         return x0, x1
