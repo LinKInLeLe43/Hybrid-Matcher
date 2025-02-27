@@ -21,14 +21,14 @@ class FinePreprocess(nn.Module):
         enable_scale_before_fuse: bool = False,
     ) -> None:
         super().__init__()
+        self.window_size0 = window_size
+        self.window_size1 = window_size + 2 * right_extra
+        self.padding0 = padding
+        self.padding1 = padding + right_extra
+        self.stride = stride
         self.upsample_factor_before_crop = upsample_factor_before_crop
         self.enable_scale_before_fuse = enable_scale_before_fuse
-
         self.scale = feat_dims[-1] ** -0.5
-        self.W0, self.W1 = window_size, window_size + 2 * right_extra
-        self.WW0, self.WW1 = self.W0**2, self.W1**2
-        self.P0, self.P1 = padding, padding + right_extra
-        self.S = stride
 
         self.ups, self.downs = nn.ModuleList(), nn.ModuleList()
         for i in range(len(feat_dims) - 1):
@@ -54,33 +54,31 @@ class FinePreprocess(nn.Module):
         feat1: torch.Tensor,
         index_triplet: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        r = self.upsample_factor_before_crop
-        if r > 1.0:
-            feat0 = F.interpolate(feat0, scale_factor=r, mode="bilinear")
-            feat1 = F.interpolate(feat1, scale_factor=r, mode="bilinear")
+        s = self.upsample_factor_before_crop
+        if s > 1.0:
+            feat0 = F.interpolate(feat0, scale_factor=s, mode="bilinear")
+            feat1 = F.interpolate(feat1, scale_factor=s, mode="bilinear")
 
+        ww0, ww1 = self.window_size0**2, self.window_size1**2
         b_indices, i_indices, j_indices = index_triplet
-        out0 = (
-            F.unfold(feat0, self.W0, padding=self.P0, stride=self.S)
-            .unflatten(1, (-1, self.WW0))
-            .transpose(1, 2)
-        )[b_indices, :, :, i_indices]
-        out1 = (
-            F.unfold(feat1, self.W1, padding=self.P1, stride=self.S)
-            .unflatten(1, (-1, self.WW1))
-            .transpose(1, 2)
-        )[b_indices, :, :, j_indices]
+        out0 = F.unfold(
+            feat0, self.window_size0, padding=self.padding0, stride=self.stride
+        )[b_indices, :, i_indices]
+        out1 = F.unfold(
+            feat1, self.window_size1, padding=self.padding1, stride=self.stride
+        )[b_indices, :, j_indices]
+        out0 = out0.unflatten(1, (-1, ww0)).transpose(1, 2)
+        out1 = out1.unflatten(1, (-1, ww1)).transpose(1, 2)
         return out0, out1
 
     def _fpn_fuse(self, feats: List[torch.Tensor]) -> torch.Tensor:
         out = self.ups[-1](feats[-1])
         for i in reversed(range(len(feats) - 1)):
-            out = self.downs[i](
-                self.ups[i](feats[i])
-                + F.interpolate(
-                    out, scale_factor=2.0, mode="bilinear", align_corners=True
-                )
+            out = F.interpolate(
+                out, scale_factor=2.0, mode="bilinear", align_corners=True
             )
+            out = out + self.ups[i](feats[i])
+            out = self.self.downs[i](out)
         return out
 
     def forward(
@@ -90,18 +88,18 @@ class FinePreprocess(nn.Module):
         index_triplet: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if index_triplet[0].shape[0] == 0:
-            out0 = feats0[0].new_empty(0, self.WW0, feats0[0].shape[1])
-            out1 = feats1[0].new_empty(0, self.WW1, feats1[0].shape[1])
+            ww0, ww1 = self.window_size0**2, self.window_size1**2
+            out0 = feats0[0].new_empty(0, ww0, feats0[0].shape[1])
+            out1 = feats1[0].new_empty(0, ww1, feats1[0].shape[1])
             return out0, out1
 
         if self.enable_scale_before_fuse:
-            feats0[-1] = self.scale * feats0[-1]
-            feats1[-1] = self.scale * feats1[-1]
+            feats0[-1] = feats0[-1] * self.scale
+            feats1[-1] = feats1[-1] * self.scale
 
         if feats0[0].shape == feats1[0].shape:
-            out0, out1 = self._fpn_fuse(
-                [torch.cat(x) for x in zip(feats0, feats1)]
-            ).chunk(2)
+            feats = [torch.cat(x) for x in zip(feats0, feats1)]
+            out0, out1 = self._fpn_fuse(feats).chunk(2)
         else:
             out0, out1 = self._fpn_fuse(feats0), self._fpn_fuse(feats1)
         out0, out1 = self._crop_patches_by_indices(out0, out1, index_triplet)

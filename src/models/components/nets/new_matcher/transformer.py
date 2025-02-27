@@ -62,7 +62,7 @@ class VanillaTransformerLayer(nn.Module):
 
 class AggregatedTransformerLayer(nn.Module):
     # TODO:
-    # Remove .contiguous() after test training and inferencing
+    # - Remove .contiguous() after test training and inferencing
     def __init__(
         self,
         scale: int,
@@ -112,7 +112,9 @@ class AggregatedTransformerLayer(nn.Module):
         if mask0 is not None and mask1 is not None:
             mask0, mask1 = mask0[:, None], mask1[:, None]
 
+        s = self.scale
         n, _, h, w = feat0.shape
+
         q, kv = self.down_q(feat0), self.down_kv(feat1)
         q, kv = q.permute(0, 2, 3, 1), kv.permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
@@ -126,12 +128,8 @@ class AggregatedTransformerLayer(nn.Module):
 
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
-        message = message.transpose(1, 2).unflatten(
-            -1, (h // self.scale, w // self.scale)
-        )
-        message = F.interpolate(
-            message, scale_factor=self.scale, mode="bilinear"
-        )
+        message = message.transpose(1, 2).unflatten(-1, (h // s, w // s))
+        message = F.interpolate(message, scale_factor=s, mode="bilinear")
         message = torch.cat([feat0, message], dim=1).permute(0, 2, 3, 1)
         message = self.norm2(self.mlp(message)).permute(0, 3, 1, 2)
         out = feat0 + message.contiguous()
@@ -184,6 +182,7 @@ class SelectiveTransformerLayer(nn.Module):
             "sh": self.scale,
             "sw": self.scale,
         }
+
         q, k, v = self.q_proj(feat0), self.k_proj(feat1), self.v_proj(feat1)
         q, k, v = (
             x.unflatten(-1, (self.num_heads, -1)).transpose(1, 2)
@@ -312,7 +311,6 @@ class FusedSelectiveTransformer(nn.Module):
         torch.Tensor,
         torch.Tensor,
     ]:
-        n, device = btm_feat0.shape[0], btm_feat0.device
         fh0 = btm_feat0.shape[2] // self.scale
         fw0 = btm_feat0.shape[3] // self.scale
         fh1 = btm_feat1.shape[2] // self.scale
@@ -323,15 +321,15 @@ class FusedSelectiveTransformer(nn.Module):
         if btm_feat0.shape == btm_feat1.shape:
             btm_feat = torch.cat([btm_feat0, btm_feat1])
             top_feat = torch.cat([top_feat0, top_feat1])
-            feat0, feat1 = self._fuse_feats(
-                btm_feat, top_feat, **kwargs0
-            ).chunk(2)
+            feat = self._fuse_feats(btm_feat, top_feat, **kwargs0)
+            feat0, feat1 = feat.chunk(2)
         else:
             feat0 = self._fuse_feats(btm_feat0, top_feat0, **kwargs0)
             feat1 = self._fuse_feats(btm_feat1, top_feat1, **kwargs1)
 
         indices1_to_0 = indices1_to_0.transpose(1, 2)
-        range = torch.arange(n, device=device)[:, None, None]
+        range = torch.arange(btm_feat0.shape[0], device=btm_feat0.device)
+        range = range[:, None, None]
         _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
         _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
         for layer in self.layers:

@@ -1,15 +1,13 @@
-import math
+from math import log
 from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-MAX_SHAPE = 256, 256
-
 
 class SinePositionalEncoding(nn.Module):
     # TODO:
-    # Change usage of fp16
+    # - Change usage of fp16
     def __init__(
         self,
         feat_dim: int,
@@ -19,36 +17,31 @@ class SinePositionalEncoding(nn.Module):
     ) -> None:
         super().__init__()
 
-        factor = (
-            -math.log(10000.0) / (feat_dim // 4) * torch.arange(feat_dim // 4)
-        ).exp()
-        y = factor * torch.ones(*MAX_SHAPE, 1).cumsum(0)
-        x = factor * torch.ones(*MAX_SHAPE, 1).cumsum(1)
-
+        max_shape = 256, 256
+        factors = torch.arange(feat_dim // 4)
+        factors = (-log(10000.0) / (feat_dim // 4) * factors).exp()
+        y = factors * torch.ones(*max_shape, 1).cumsum(0)
+        x = factors * torch.ones(*max_shape, 1).cumsum(1)
         if test_size is not None:
-            y *= min(train_size[0] / test_size[0], 1.0)
-            x *= min(train_size[1] / test_size[1], 1.0)
+            y = y * min(train_size[0] / test_size[0], 1.0)
+            x = x * min(train_size[1] / test_size[1], 1.0)
 
-        sin = torch.stack([y.sin(), x.sin()], dim=-1).flatten(start_dim=-2)
-        cos = torch.stack([y.cos(), x.cos()], dim=-1).flatten(start_dim=-2)
-        pos_enc = (
-            torch.stack([sin, cos], dim=-1)
-            .flatten(start_dim=-2)
-            .permute(2, 0, 1)
-        )
-        sin = sin.repeat_interleave(2, dim=-1)
-        cos = cos.repeat_interleave(2, dim=-1)
-
+        _sin = torch.stack([y.sin(), x.sin()], dim=-1).flatten(start_dim=-2)
+        _cos = torch.stack([y.cos(), x.cos()], dim=-1).flatten(start_dim=-2)
+        sin = _sin.repeat_interleave(2, dim=-1)
+        cos = _cos.repeat_interleave(2, dim=-1)
+        pos_enc = torch.stack([_sin, _cos], dim=-1)
+        pos_enc = pos_enc.flatten(start_dim=-2).permute(2, 0, 1)
         if fp16:
-            pos_enc, sin, cos = pos_enc.half(), sin.half(), cos.half()
+            sin, cos, pos_enc = sin.half(), cos.half(), pos_enc.half()
 
-        self.register_buffer("pos_enc", pos_enc, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
         self.register_buffer("cos", cos, persistent=False)
+        self.register_buffer("pos_enc", pos_enc, persistent=False)
 
     def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
-        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        out = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
+        x0, x1 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        out = torch.stack([-x1, x0], dim=-1).flatten(start_dim=-2)
         return out
 
     def forward(self, x: torch.Tensor, type: str) -> torch.Tensor:
@@ -57,10 +50,9 @@ class SinePositionalEncoding(nn.Module):
             out = x + self.pos_enc[:c, :h, :w]
         elif type == "rel":
             _, h, w, c = x.shape
-            out = (  # fmt: skip
-                (self.cos[:h, :w, :c] * x)
-                + (self.sin[:h, :w, :c] * self._rotate_half(x))
-            )
+            sin_part = self.sin[:h, :w, :c] * self._rotate_half(x)
+            cos_part = self.cos[:h, :w, :c] * x
+            out = sin_part + cos_part
         else:
             raise ValueError()
         return out
