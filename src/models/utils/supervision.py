@@ -40,6 +40,7 @@ def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
     extra_scale: Optional[int] = None,
+    return_weight: bool = False,
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -53,8 +54,12 @@ def create_coarse_supervision(
     scale1 = scale * scale1[:, None] if scale1 is not None else scale
     mask0, mask1 = batch.get(f"mask0_{scale}x"), batch.get(f"mask1_{scale}x")
 
-    coords0 = create_meshgrid(h0, w0, normalized_coordinates=False)
-    coords1 = create_meshgrid(h1, w1, normalized_coordinates=False)
+    coords0 = create_meshgrid(
+        h0, w0, normalized_coordinates=False, device=device
+    )
+    coords1 = create_meshgrid(
+        h1, w1, normalized_coordinates=False, device=device
+    )
     coords0 = coords0.reshape(1, -1, 2).repeat(n, 1, 1)
     coords1 = coords1.reshape(1, -1, 2).repeat(n, 1, 1)
     points0, points1 = scale0 * coords0, scale1 * coords1
@@ -74,17 +79,19 @@ def create_coarse_supervision(
 
     indices0_to_1 = (w1 * coords0_to_1[..., 1] + coords0_to_1[..., 0]).long()
     indices1_to_0 = (w0 * coords1_to_0[..., 1] + coords1_to_0[..., 0]).long()
-    biprojection = indices1_to_0.gather(1, indices0_to_1) == torch.arange(l0)
+    range = torch.arange(l0, device=device)
+    biprojection = indices1_to_0.gather(1, indices0_to_1) == range
     biprojection[:, 0] = False
-    gt_mask = torch.zeros(n, l0, l1, type=torch.bool)
-    gt_mask[biprojection, indices0_to_1[indices0_to_1]] = True
+    gt_mask = torch.zeros(n, l0, l1, dtype=torch.bool, device=device)
+    gt_mask[biprojection, indices0_to_1[biprojection]] = True
     gt_indices = 3 * (torch.tensor([0], device=device),)
     if gt_mask.any():
         gt_indices = gt_mask.nonzero(as_tuple=True)
-
-    
-    
     supervision = {"coarse_gt_idxes": gt_indices, "coarse_gt_mask": gt_mask}
+
+    if return_weight:
+        weights = (1 - 2 * (flows0_to_1 - coords0_to_1).abs()).prod(dim=-1)
+        supervision["coarse_weights"] = weights
 
     if extra_scale is not None:
         if extra_scale <= scale:
@@ -92,13 +99,17 @@ def create_coarse_supervision(
 
         stride = extra_scale // scale
         fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
-        gt_mask = gt_mask.reshape(
+        extra_weights = gt_mask.reshape(
             -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
-        gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
-        gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
-        gt_idxes = gt_mask.nonzero(as_tuple=True)
-        supervision["extra_coarse_gt_mask"] = gt_mask
-        supervision["extra_coarse_gt_idxes"] = gt_idxes
+        extra_weights = extra_weights.sum(dim=(2, 4, 6, 8))
+        extra_gt_mask = extra_weights.reshape(-1, fh0 * fw0, fh1 * fw1).bool()
+        extra_gt_indices = extra_gt_mask.nonzero(as_tuple=True)
+        supervision["extra_coarse_gt_mask"] = extra_gt_mask
+        supervision["extra_coarse_gt_idxes"] = extra_gt_indices
+
+        if return_weight:
+            extra_weights = extra_weights[extra_gt_indices]
+            supervision["extra_coarse_weights"] = extra_weights
 
     if return_coor:
         if "scale1" in batch:
@@ -108,8 +119,8 @@ def create_coarse_supervision(
         supervision["points1"] = points1
 
     if return_flow:
-        supervision["gt_flows0"] = flows0_to_1[gt_idxes[0], gt_idxes[1]]
-        supervision["gt_flows1"] = flows1_to_0[gt_idxes[0], gt_idxes[2]]
+        supervision["gt_flows0"] = flows0_to_1[gt_indices[0], gt_indices[1]]
+        supervision["gt_flows1"] = flows1_to_0[gt_indices[0], gt_indices[2]]
     return supervision
 
 
