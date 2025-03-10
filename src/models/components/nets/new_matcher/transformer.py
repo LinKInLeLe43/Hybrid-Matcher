@@ -1,3 +1,8 @@
+# TODO:
+# - Remove .contiguous() after test training and inferencing
+# - Change weight init
+# - Change variable name
+
 from copy import deepcopy
 from typing import List, Optional, Tuple
 
@@ -6,11 +11,60 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange, repeat
 
-from .attention import Attention
+if hasattr(F, "scaled_dot_product_attention"):
+    FLASH_AVAILABLE = True
+    from torch.backends.cuda import sdp_kernel
+else:
+    FLASH_AVAILABLE = False
 
-# TODO:
-# - Remove .contiguous() after test training and inferencing
-# - Change weight init
+
+class Attention(nn.Module):
+    def __init__(
+        self, allow_sdp: bool = False, force_flash: bool = False
+    ) -> None:
+        super().__init__()
+        self.enable_sdp = allow_sdp and FLASH_AVAILABLE
+        self.force_flash = force_flash
+
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        q_mask: Optional[torch.Tensor] = None,
+        kv_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        mask = None
+        if q_mask is not None and kv_mask is not None:
+            mask = q_mask[..., :, None] & kv_mask[..., None, :]
+
+        if self.enable_sdp:
+            args = [x.contiguous() for x in [q, k, v]]
+            if self.force_flash:
+                # Flash kernel does not support mask and FP32 precision
+                if mask is not None:
+                    raise ValueError()
+
+                with sdp_kernel(
+                    enable_flash=True,
+                    enable_math=False,
+                    enable_mem_efficient=False,
+                ):
+                    out = F.scaled_dot_product_attention(*args)
+            else:
+                # Automatically selects kernel
+                out = F.scaled_dot_product_attention(*args, attn_mask=mask)
+        else:
+            scale = q.shape[-1] ** -0.5
+            sim = torch.einsum("...ld,...sd->...ls", q, k) * scale
+            if mask is not None:
+                sim.masked_fill_(~mask, -float("inf"))
+
+            attn = F.softmax(sim, dim=-1)
+            out = torch.einsum("...ls,...sc->...lc", attn, v)
+            if mask is not None:
+                out.nan_to_num_()
+        return out
 
 
 class TransformerLayer(nn.Module):
@@ -60,8 +114,8 @@ class TransformerLayer(nn.Module):
         message = message.transpose(1, 2).flatten(start_dim=-2)
         message = self.norm1(self.merge(message))
         message = torch.cat([feat0, message], dim=-1)
-        out = feat0 + self.norm2(self.mlp(message))
-        return out
+        feat0 = feat0 + self.norm2(self.mlp(message))
+        return feat0
 
 
 class AggregatedTransformerLayer(nn.Module):
@@ -134,8 +188,8 @@ class AggregatedTransformerLayer(nn.Module):
         )
         message = torch.cat([feat0, message], dim=1).permute(0, 2, 3, 1)
         message = self.norm2(self.mlp(message)).permute(0, 3, 1, 2)
-        out = feat0 + message.contiguous()
-        return out
+        feat0 = feat0 + message.contiguous()
+        return feat0
 
 
 class SelectiveTransformerLayer(nn.Module):
@@ -178,7 +232,7 @@ class SelectiveTransformerLayer(nn.Module):
         if mask0 is not None and mask1 is not None:
             mask0, mask1 = mask0[:, None], mask1[:, None]
 
-        kwargs = {
+        axes_lengths = {
             "fh": size0[0],
             "fw": size0[1],
             "sh": self.scale,
@@ -196,14 +250,18 @@ class SelectiveTransformerLayer(nn.Module):
         message = self.norm1(self.merge(message))
         message = torch.cat([feat0, message], dim=-1)
         message = rearrange(
-            message, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", **kwargs
+            message,
+            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            **axes_lengths,
         )
         message = self.mlp(message)
         message = rearrange(
-            message, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", **kwargs
+            message,
+            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            **axes_lengths,
         )
-        out = feat0 + self.norm2(message)
-        return out
+        feat0 = feat0 + self.norm2(message)
+        return feat0
 
 
 class LocalFeatureTransformer(nn.Module):
@@ -249,18 +307,19 @@ class FusedSelectiveTransformer(nn.Module):
         super().__init__()
         self.scale = scale
 
-        self.x_up = nn.Conv2d(feat_dims[0], feat_dims[1], 1, bias=False)
-        self.y_up = nn.Conv2d(feat_dims[1], feat_dims[1], 1, bias=False)
+        btm_dim, top_dim = feat_dims
+        self.x_up = nn.Conv2d(btm_dim, top_dim, 1, bias=False)
+        self.y_up = nn.Conv2d(top_dim, top_dim, 1, bias=False)
         self.down = nn.Sequential(
-            nn.Conv2d(feat_dims[1], feat_dims[1], 3, padding=1, bias=False),
-            nn.BatchNorm2d(feat_dims[1]),
+            nn.Conv2d(top_dim, top_dim, 3, padding=1, bias=False),
+            nn.BatchNorm2d(top_dim),
             nn.LeakyReLU(inplace=True),
-            nn.Conv2d(feat_dims[1], feat_dims[0], 3, padding=1, bias=False),
+            nn.Conv2d(top_dim, btm_dim, 3, padding=1, bias=False),
         )
 
         layer = SelectiveTransformerLayer(
             scale,
-            feat_dims[0],
+            btm_dim,
             num_heads,
             allow_sdp=allow_sdp,
             force_flash=force_flash,
@@ -274,28 +333,31 @@ class FusedSelectiveTransformer(nn.Module):
                 nn.init.xavier_uniform_(p)
 
     def _fuse_feats(
-        self, btm_feat: torch.Tensor, top_feat: torch.Tensor, **kwargs
+        self, btm_feat: torch.Tensor, top_feat: torch.Tensor, **axes_lengths
     ) -> torch.Tensor:
         btm_feat, top_feat = self.x_up(btm_feat), self.y_up(top_feat)
-        out = btm_feat + F.interpolate(
+        btm_feat = btm_feat + F.interpolate(
             top_feat, scale_factor=self.scale, mode="bilinear"
         )
-        out = self.down(out)
-        out = rearrange(
-            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", **kwargs
+        btm_feat = self.down(btm_feat)
+        btm_feat = rearrange(
+            btm_feat,
+            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            **axes_lengths,
         )
-        return out
+        return btm_feat
 
-    @torch.no_grad()
-    def _map_indices(
-        self, indices: torch.Tensor, tgt_fw: int, **kwargs
+    def _upsample_indices(
+        self, indices: torch.Tensor, window_size: int, **axes_lengths
     ) -> torch.Tensor:
-        tgt_w = self.scale * tgt_fw
-        rows, cols = indices // tgt_fw, indices % tgt_fw
-        out = (self.scale * tgt_w * rows + self.scale * cols)[..., None]
-        out = out + indices.new_tensor([0, 1, tgt_w, tgt_w + 1])
-        out = repeat(out, "n (fh fw) k r -> n (fh sh fw sw) (k r)", **kwargs)
-        return out
+        rows, cols = indices // window_size, indices % window_size
+        w = self.scale * window_size
+        indices = (self.scale * w * rows + self.scale * cols)[..., None]
+        indices = indices + indices.new_tensor([0, 1, w, w + 1])
+        indices = repeat(
+            indices, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **axes_lengths
+        )
+        return indices
 
     def forward(
         self,
@@ -317,17 +379,27 @@ class FusedSelectiveTransformer(nn.Module):
         fw0 = btm_feat0.shape[3] // self.scale
         fh1 = btm_feat1.shape[2] // self.scale
         fw1 = btm_feat1.shape[3] // self.scale
-        kwargs0 = {"fh": fh0, "fw": fw0, "sh": self.scale, "sw": self.scale}
-        kwargs1 = {"fh": fh1, "fw": fw1, "sh": self.scale, "sw": self.scale}
+        axes_lengths0 = {
+            "fh": fh0,
+            "fw": fw0,
+            "sh": self.scale,
+            "sw": self.scale,
+        }
+        axes_lengths1 = {
+            "fh": fh1,
+            "fw": fw1,
+            "sh": self.scale,
+            "sw": self.scale,
+        }
 
         if btm_feat0.shape == btm_feat1.shape:
             btm_feat = torch.cat([btm_feat0, btm_feat1])
             top_feat = torch.cat([top_feat0, top_feat1])
-            feat = self._fuse_feats(btm_feat, top_feat, **kwargs0)
+            feat = self._fuse_feats(btm_feat, top_feat, **axes_lengths0)
             feat0, feat1 = feat.chunk(2)
         else:
-            feat0 = self._fuse_feats(btm_feat0, top_feat0, **kwargs0)
-            feat1 = self._fuse_feats(btm_feat1, top_feat1, **kwargs1)
+            feat0 = self._fuse_feats(btm_feat0, top_feat0, **axes_lengths0)
+            feat1 = self._fuse_feats(btm_feat1, top_feat1, **axes_lengths1)
 
         indices1_to_0 = indices1_to_0.transpose(1, 2)
         range = torch.arange(btm_feat0.shape[0], device=btm_feat0.device)
@@ -342,19 +414,27 @@ class FusedSelectiveTransformer(nn.Module):
 
         feat1_to_0, feat0_to_1 = feat0[_indices1_to_0], feat1[_indices0_to_1]
         feat0 = rearrange(
-            feat0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs0
+            feat0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **axes_lengths0
         )
         feat1 = rearrange(
-            feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **kwargs1
+            feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **axes_lengths1
         )
         feat0_to_1 = repeat(
-            feat0_to_1, "(n fh fw) k r c -> n (fh sh fw sw) (k r) c", **kwargs0
+            feat0_to_1,
+            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            **axes_lengths0,
         )
         feat1_to_0 = repeat(
-            feat1_to_0, "(n fh fw) k r c -> n (fh sh fw sw) (k r) c", **kwargs1
+            feat1_to_0,
+            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            **axes_lengths1,
         )
-        indices0_to_1 = self._map_indices(indices0_to_1, fw1, **kwargs0)
-        indices1_to_0 = self._map_indices(indices1_to_0, fw0, **kwargs1)
+        indices0_to_1 = self._upsample_indices(
+            indices0_to_1, fw1, **axes_lengths0
+        )
+        indices1_to_0 = self._upsample_indices(
+            indices1_to_0, fw0, **axes_lengths1
+        )
         indices1_to_0 = indices1_to_0.transpose(1, 2)
         return (
             feat0,

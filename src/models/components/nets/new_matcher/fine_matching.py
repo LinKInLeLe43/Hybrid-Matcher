@@ -7,7 +7,7 @@ from kornia.geometry.subpix.dsnt import spatial_expectation2d
 from kornia.utils.grid import create_meshgrid
 
 # TODO:
-# Change out keys
+# - Change output keys
 
 
 class FineMatching(nn.Module):

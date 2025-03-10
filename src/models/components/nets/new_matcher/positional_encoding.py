@@ -1,3 +1,6 @@
+# TODO:
+# - Change usage of fp16
+
 from math import log
 from typing import Optional, Tuple
 
@@ -6,8 +9,6 @@ import torch.nn as nn
 
 
 class SinePositionalEncoding(nn.Module):
-    # TODO:
-    # - Change usage of fp16
     def __init__(
         self,
         feat_dim: int,
@@ -18,8 +19,8 @@ class SinePositionalEncoding(nn.Module):
         super().__init__()
 
         max_shape = 256, 256
-        factors = torch.arange(feat_dim // 4)
-        factors = (-log(10000.0) / (feat_dim // 4) * factors).exp()
+        range = torch.arange(feat_dim // 4)
+        factors = (-log(10000.0) / (feat_dim // 4) * range).exp()
         y = factors * torch.ones(*max_shape, 1).cumsum(0)
         x = factors * torch.ones(*max_shape, 1).cumsum(1)
         if test_size is not None:
@@ -41,18 +42,18 @@ class SinePositionalEncoding(nn.Module):
 
     def _rotate_half(self, feat: torch.Tensor) -> torch.Tensor:
         feat0, feat1 = feat.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        out = torch.stack([-feat1, feat0], dim=-1).flatten(start_dim=-2)
-        return out
+        feat = torch.stack([-feat1, feat0], dim=-1).flatten(start_dim=-2)
+        return feat
 
     def forward(self, feat: torch.Tensor, type: str) -> torch.Tensor:
         if type == "abs":
             _, c, h, w = feat.shape
-            out = feat + self.pos_enc[:c, :h, :w]
+            feat = feat + self.pos_enc[:c, :h, :w]
         elif type == "rel":
             _, h, w, c = feat.shape
-            sin_part = self.sin[:h, :w, :c] * self._rotate_half(feat)
-            cos_part = self.cos[:h, :w, :c] * feat
-            out = sin_part + cos_part
+            sin_term = self.sin[:h, :w, :c] * self._rotate_half(feat)
+            cos_term = self.cos[:h, :w, :c] * feat
+            feat = sin_term + cos_term
         else:
             raise ValueError()
-        return out
+        return feat

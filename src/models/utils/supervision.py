@@ -1,9 +1,9 @@
 from typing import Any, Dict, Optional, Tuple
 
-import kornia as K
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
+from kornia.utils.grid import create_meshgrid
 
 from src.models.utils.metrics import _warp_point as _warp_point1
 
@@ -53,42 +53,38 @@ def create_coarse_supervision(
     scale1 = scale * scale1[:, None] if scale1 is not None else scale
     mask0, mask1 = batch.get(f"mask0_{scale}x"), batch.get(f"mask1_{scale}x")
 
-    coors0 = K.create_meshgrid(
-        h0, w0, normalized_coordinates=False, device=device)
-    coors1 = K.create_meshgrid(
-        h1, w1, normalized_coordinates=False, device=device)
-    coors0 = coors0.reshape(1, -1, 2).repeat(n, 1, 1)
-    coors1 = coors1.reshape(1, -1, 2).repeat(n, 1, 1)
-    points0 = scale0 * coors0
-    points1 = scale1 * coors1
-    if mask0 is not None:
-        points0[~mask0.flatten(start_dim=1)] = 0.0
-        points1[~mask1.flatten(start_dim=1)] = 0.0
-
+    coords0 = create_meshgrid(h0, w0, normalized_coordinates=False)
+    coords1 = create_meshgrid(h1, w1, normalized_coordinates=False)
+    coords0 = coords0.reshape(1, -1, 2).repeat(n, 1, 1)
+    coords1 = coords1.reshape(1, -1, 2).repeat(n, 1, 1)
+    points0, points1 = scale0 * coords0, scale1 * coords1
+    if mask0 is not None and mask1 is not None:
+        points0.masked_fill_(~mask0.reshape(n, -1, 1), 0.0)
+        points1.masked_fill_(~mask1.reshape(n, -1, 1), 0.0)
     points0_to_1 = _warp_point(
-        points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
+        points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"]
+    )
     points1_to_0 = _warp_point(
-        points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
-    flows0 = coors0_to_1 = points0_to_1 / scale1
-    flows1 = coors1_to_0 = points1_to_0 / scale0
+        points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"]
+    )
+    flows0_to_1, flows1_to_0 = points0_to_1 / scale1, points1_to_0 / scale0
+    coords0_to_1, coords1_to_0 = flows0_to_1.round(), flows1_to_0.round()
+    _mask_out_of_bound(coords0_to_1, h1, w1)
+    _mask_out_of_bound(coords1_to_0, h0, w0)
 
-    coors0_to_1 = coors0_to_1.round().long()
-    coors1_to_0 = coors1_to_0.round().long()
-    _mask_out_of_bound(coors0_to_1, h1, w1)
-    _mask_out_of_bound(coors1_to_0, h0, w0)
-    idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
-    idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
-    biprojection = torch.stack([idxes1_to_0[b, idx1]
-                                for b, idx1 in enumerate(idxes0_to_1)])
-    biprojection_mask = biprojection == torch.arange(l0, device=device)
-    biprojection_mask[:, 0] = False
-    b_idxes, i_idxes = biprojection_mask.nonzero(as_tuple=True)
-    j_idxes = idxes0_to_1[b_idxes, i_idxes]
-    gt_idxes = ((b_idxes, i_idxes, j_idxes) if len(b_idxes) != 0
-                else 3 * (torch.tensor([0], device=device),))
-    gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
-    gt_mask[b_idxes, i_idxes, j_idxes] = True
-    supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
+    indices0_to_1 = (w1 * coords0_to_1[..., 1] + coords0_to_1[..., 0]).long()
+    indices1_to_0 = (w0 * coords1_to_0[..., 1] + coords1_to_0[..., 0]).long()
+    biprojection = indices1_to_0.gather(1, indices0_to_1) == torch.arange(l0)
+    biprojection[:, 0] = False
+    gt_mask = torch.zeros(n, l0, l1, type=torch.bool)
+    gt_mask[biprojection, indices0_to_1[indices0_to_1]] = True
+    gt_indices = 3 * (torch.tensor([0], device=device),)
+    if gt_mask.any():
+        gt_indices = gt_mask.nonzero(as_tuple=True)
+
+    
+    
+    supervision = {"coarse_gt_idxes": gt_indices, "coarse_gt_mask": gt_mask}
 
     if extra_scale is not None:
         if extra_scale <= scale:
@@ -112,8 +108,8 @@ def create_coarse_supervision(
         supervision["points1"] = points1
 
     if return_flow:
-        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
-        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
+        supervision["gt_flows0"] = flows0_to_1[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1_to_0[gt_idxes[0], gt_idxes[2]]
     return supervision
 
 
@@ -145,9 +141,9 @@ def create_fine_supervision(
     scale0 = scale * scale0[b_idxes, None] if scale0 is not None else scale
     scale1 = scale * scale1[b_idxes, None] if scale1 is not None else scale
 
-    coors0 = K.create_meshgrid(
+    coors0 = create_meshgrid(
         h0, w0, normalized_coordinates=False, device=device)
-    coors1 = K.create_meshgrid(
+    coors1 = create_meshgrid(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
     coors1 = coors1.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)

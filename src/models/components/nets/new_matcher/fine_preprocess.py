@@ -1,13 +1,13 @@
+# TODO:
+# - Rename self.ups and self.downs
+# - Change weight init
+# - Check ``align_corners`` in ``_fpn_fuse``
+
 from typing import List, Tuple
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-# TODO:
-# - Rename self.ups and self.downs
-# - Change weight init
-# - Check ``align_corners`` in ``_fpn_fuse``
 
 
 class FinePreprocess(nn.Module):

@@ -104,17 +104,17 @@ class LocalCluster(nn.Module):
         if mask is not None:
             mask = repeat(
                 mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw)", **kwargs
-            )
-            sim.masked_fill_(~mask[..., None], -float("inf"))
+            )[..., None]
+            sim.masked_fill_(~mask, -float("inf"))
         sim = sim.sigmoid()
-        max_sim_values, max_sim_idxes = sim.max(dim=2)
+        max_sim_values, indices = sim.max(dim=-1)
 
         if self.type == "flattened_index":
             range = torch.arange(feat_sim.shape[0], device=feat.device)
-            max_sim_idxes = max_sim_idxes + self.fold_size**2 * range[:, None]
-            max_sim_values, max_sim_idxes, feat_val, anchor_val = (
+            indices = indices + self.fold_size**2 * range[:, None]
+            max_sim_values, indices, feat_val, anchor_val = (
                 x.flatten(end_dim=1)
-                for x in (max_sim_values, max_sim_idxes, feat_val, anchor_val)
+                for x in (max_sim_values, indices, feat_val, anchor_val)
             )
 
             cat_ones = torch.ones_like(feat_val[:, [0]])
@@ -122,10 +122,10 @@ class LocalCluster(nn.Module):
             cat_ones = torch.ones_like(anchor_val[:, [0]])
             cat_anchor_value = torch.cat([anchor_val, cat_ones], dim=1)
             aggregated = cat_anchor_value.index_add_(
-                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value
+                0, indices, max_sim_values[:, None] * cat_x_value
             )
             aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = max_sim_values[:, None] * aggregated[max_sim_idxes]
+            dispatched = max_sim_values[:, None] * aggregated[indices]
             dispatched = rearrange(
                 dispatched,
                 "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
@@ -133,7 +133,7 @@ class LocalCluster(nn.Module):
             )
         elif self.type == "original":
             mask = torch.zeros_like(sim)
-            mask = mask.scatter(2, max_sim_idxes[:, :, None], 1.0)
+            mask = mask.scatter(2, indices[:, :, None], 1.0)
             sim = (mask * sim)[..., None]
 
             aggregated = anchor_val + (sim * feat_val[:, :, None]).sum(dim=1)
