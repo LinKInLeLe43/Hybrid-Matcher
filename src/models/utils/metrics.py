@@ -215,7 +215,7 @@ def _estimate_pose_with_opencv_ransac(
     scale = torch.tensor([K0[0, 0], K1[1, 1], K0[0, 0], K1[1, 1]]).mean().item()
     threshold /= scale
     E, mask = cv2.findEssentialMat(
-        points0, points1, np.eye(3), method=cv2.RANSAC, prob=prob,
+        points0, points1, np.eye(3), method=cv2.USAC_MAGSAC, prob=prob,
         threshold=threshold)
     if E is None:
         return None

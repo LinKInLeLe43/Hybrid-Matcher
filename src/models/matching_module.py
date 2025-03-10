@@ -118,12 +118,72 @@ class MatchingModule(pl.LightningModule):
             extra_mask1=batch.get(f"mask1_{s0}x"))
         return result, loss
 
+    def model_step_by_or(
+        self,
+        batch: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        s0, (s1, s2) = self.net.extra_scale, self.net.scales
+        if self.net.type == "one_stage":
+            _supervision = utils.create_coarse_supervision(
+                batch, s1, extra_scale=s0, return_coor=True)
+            # coarse_points1 = supervision.pop("points1")
+            scale0, scale1 = batch.get("scale0"), batch.get("scale1")
+            scale0 = s1 * scale0[:, None] if scale0 is not None else s1
+            scale1 = s1 * scale1[:, None] if scale1 is not None else s1
+            supervision = {}
+            with torch.no_grad():
+                result = self.net(batch)
+            coarse_points0 = result["coarse_points0"]
+            coarse_points1 = result["coarse_points1"]
+            coarse_points0_to_1 = utils._warp_point(
+                coarse_points0, batch["depth0"], batch["K0"], batch["K1"],
+                batch["T0_to_1"])
+            coarse_points1_to_0 = utils._warp_point(
+                coarse_points1, batch["depth1"], batch["K1"], batch["K0"],
+                batch["T1_to_0"])
+            gt_biases0 = (coarse_points1_to_0 - coarse_points0) / scale0
+            gt_biases1 = (coarse_points0_to_1 - coarse_points1) / scale1
+            mask0 = (gt_biases0.norm(p=float("inf"), dim=-1) < 0.5)
+            mask1 = (gt_biases1.norm(p=float("inf"), dim=-1) < 0.5)
+
+            points0 = torch.cat([coarse_points0[mask0], coarse_points1_to_0[mask1]])
+            points1 = torch.cat([coarse_points0_to_1[mask0], coarse_points1[mask1]])
+            out = utils._estimate_pose_with_opencv_ransac(
+                points0, points1, batch["K0"][0], batch["K1"][0]
+            )
+            if out is not None:
+                _, _, mask = out
+
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+            supervision.update(utils.create_fine_supervision(
+                batch, (s1, 1), result["coarse_cls_idxes"],
+                offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+            supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
+                supervision.pop("points0_to_1"), supervision.pop("points1"),
+                result["fine_cls_idxes"], s2, self.net.reg_w)
+            supervision.update(utils.compute_dense_gt_biases(
+                batch, result, self.dense_matcher, coarse_points1,
+                result["coarse_cls_idxes"], s2, self.net.reg_w))
+        elif self.net.type == "two_stage":
+            raise ValueError()
+        else:
+            assert False
+        loss = self.loss(
+            **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
+            mask1=batch.get(f"mask1_{s1}x"),
+            extra_mask0=batch.get(f"mask0_{s0}x"),
+            extra_mask1=batch.get(f"mask1_{s0}x"))
+        return result, loss    
+
+
     def training_step(
         self,
         batch: Dict[str, Any],
         batch_idx: int
     ) -> Dict[str, Any]:
-        result, loss = self.model_step(batch)
+        result, loss = self.model_step_by_or(batch)
 
         for k, v in loss.pop("scalar").items():
             self.log("train_scalar/" + k, v)
