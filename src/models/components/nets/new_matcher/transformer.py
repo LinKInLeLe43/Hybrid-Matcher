@@ -50,10 +50,10 @@ class Attention(nn.Module):
                     enable_math=False,
                     enable_mem_efficient=False,
                 ):
-                    out = F.scaled_dot_product_attention(*args)
+                    message = F.scaled_dot_product_attention(*args)
             else:
                 # Automatically selects kernel
-                out = F.scaled_dot_product_attention(*args, attn_mask=mask)
+                message = F.scaled_dot_product_attention(*args, attn_mask=mask)
         else:
             scale = q.shape[-1] ** -0.5
             sim = torch.einsum("...ld,...sd->...ls", q, k) * scale
@@ -61,10 +61,10 @@ class Attention(nn.Module):
                 sim.masked_fill_(~mask, -float("inf"))
 
             attn = F.softmax(sim, dim=-1)
-            out = torch.einsum("...ls,...sc->...lc", attn, v)
+            message = torch.einsum("...ls,...sc->...lc", attn, v)
             if mask is not None:
-                out.nan_to_num_()
-        return out
+                message.nan_to_num_()
+        return message
 
 
 class TransformerLayer(nn.Module):
@@ -173,7 +173,9 @@ class AggregatedTransformerLayer(nn.Module):
         if rope is not None:
             q, k = rope(q, "rel"), rope(k, "rel")
         q, k, v = (
-            rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=self.num_heads)
+            rearrange(
+                x, "... h w (fc sc) -> ... fc (h w) sc", fc=self.num_heads
+            )
             for x in (q, k, v)
         )
         message = self.attention(q, k, v, q_mask=mask0, kv_mask=mask1)
@@ -251,13 +253,13 @@ class SelectiveTransformerLayer(nn.Module):
         message = torch.cat([feat0, message], dim=-1)
         message = rearrange(
             message,
-            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            "... (fh fw) (sh sw) c -> ... c (fh sh) (fw sw)",
             **axes_lengths,
         )
         message = self.mlp(message)
         message = rearrange(
             message,
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            "... c (fh sh) (fw sw) -> ... (fh fw) (sh sw) c",
             **axes_lengths,
         )
         feat0 = feat0 + self.norm2(message)
@@ -342,7 +344,7 @@ class FusedSelectiveTransformer(nn.Module):
         btm_feat = self.down(btm_feat)
         btm_feat = rearrange(
             btm_feat,
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            "... c (fh sh) (fw sw) -> ... (fh fw) (sh sw) c",
             **axes_lengths,
         )
         return btm_feat
@@ -404,29 +406,34 @@ class FusedSelectiveTransformer(nn.Module):
         indices1_to_0 = indices1_to_0.transpose(1, 2)
         range = torch.arange(btm_feat0.shape[0], device=btm_feat0.device)
         range = range[:, None, None]
-        _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
         for layer in self.layers:
-            feat0_to_1 = feat1[_indices0_to_1].flatten(start_dim=1, end_dim=2)
+            feat0_to_1 = feat1[range, indices0_to_1]
+            feat0_to_1 = feat0_to_1.flatten(start_dim=2, end_dim=3)
             feat0 = layer(feat0, feat0_to_1, (fh0, fw0))
-            feat1_to_0 = feat0[_indices1_to_0].flatten(start_dim=1, end_dim=2)
+            feat1_to_0 = feat0[range, indices1_to_0]
+            feat1_to_0 = feat1_to_0.flatten(start_dim=2, end_dim=3)
             feat1 = layer(feat1, feat1_to_0, (fh1, fw1))
+        feat0_to_1 = feat1[range, indices0_to_1]
+        feat0_to_1 = feat0_to_1.flatten(start_dim=2, end_dim=3)
 
-        feat1_to_0, feat0_to_1 = feat0[_indices1_to_0], feat1[_indices0_to_1]
         feat0 = rearrange(
-            feat0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **axes_lengths0
+            feat0,
+            "... (fh fw) (sh sw) c -> ... (fh sh fw sw) c",
+            **axes_lengths0,
         )
         feat1 = rearrange(
-            feat1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", **axes_lengths1
+            feat1,
+            "... (fh fw) (sh sw) c -> ... (fh sh fw sw) c",
+            **axes_lengths1,
         )
         feat0_to_1 = repeat(
             feat0_to_1,
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            "... (fh fw) k ss c -> ... (fh sh fw sw) (k ss) c",
             **axes_lengths0,
         )
         feat1_to_0 = repeat(
             feat1_to_0,
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            "... (fh fw) k ss c -> ... (fh sh fw sw) (k ss) c",
             **axes_lengths1,
         )
         indices0_to_1 = self._upsample_indices(

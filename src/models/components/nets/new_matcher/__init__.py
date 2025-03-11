@@ -1,4 +1,3 @@
-from .attention import Attention
 from .coarse_matching import CoarseMatching
 from .context_cluster import GlobalCoC, LocalCoC
 from .fine_matching import FineMatching
