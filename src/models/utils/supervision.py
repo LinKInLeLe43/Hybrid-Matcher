@@ -228,15 +228,13 @@ def compute_dense_gt_biases(
     fine_scale: int,
     window_size: int
 ) -> Dict[str, Any]:
-    b_idxes, i_idxes, j_idxes = idxes
+    b_idxes, _, _ = idxes
 
     dense_num = 2 * 1 + 1
     data = {"flow_predictions": result.pop("flow_predictions"),
             "mkpts0_c": result["coarse_points0"],
             "mkpts1_c": result["coarse_points1"],
-            "b_ids": b_idxes,
-            "i_ids": i_idxes,
-            "j_ids": j_idxes}
+            "b_ids": b_idxes}
     if "scale0" in batch:
         data["scale0"] = batch["scale0"]
         data["scale1"] = batch["scale1"]
@@ -263,7 +261,7 @@ def compute_dense_gt_biases(
         mkpts1_f_dense = mkpts1_f_dense / batch["scale1"][dense_b_idxes]
         points0_to_1 = points0_to_1 / batch["scale1"][dense_b_idxes]
 
-    points1 = points1[b_idxes, j_idxes].repeat_interleave(dense_num ** 2, dim=0)
+    points1 = points1.repeat_interleave(dense_num ** 2, dim=0)
     reg_biases = (mkpts1_f_dense - points1) / (fine_scale * (window_size // 2))
     gt_biases = (points0_to_1 - points1) / (fine_scale * (window_size // 2))
 

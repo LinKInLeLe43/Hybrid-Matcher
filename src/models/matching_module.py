@@ -94,6 +94,8 @@ class MatchingModule(pl.LightningModule):
             supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
                 supervision.pop("points0_to_1"), supervision.pop("points1"),
                 result["fine_cls_idxes"], s2, self.net.reg_w)
+            b_indices, i_indices, j_indices = result["coarse_cls_idxes"]
+            coarse_points1 = coarse_points1[i_indices, j_indices]
             supervision.update(utils.compute_dense_gt_biases(
                 batch, result, self.dense_matcher, coarse_points1,
                 result["coarse_cls_idxes"], s2, self.net.reg_w))
@@ -124,35 +126,62 @@ class MatchingModule(pl.LightningModule):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
-            _supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0, return_coor=True)
-            # coarse_points1 = supervision.pop("points1")
             scale0, scale1 = batch.get("scale0"), batch.get("scale1")
             scale0 = s1 * scale0[:, None] if scale0 is not None else s1
             scale1 = s1 * scale1[:, None] if scale1 is not None else s1
             supervision = {}
-            with torch.no_grad():
-                result = self.net(batch)
+            result = self.net(batch)
             coarse_points0 = result["coarse_points0"]
             coarse_points1 = result["coarse_points1"]
             coarse_points0_to_1 = utils._warp_point(
-                coarse_points0, batch["depth0"], batch["K0"], batch["K1"],
-                batch["T0_to_1"])
+                coarse_points0[None], batch["depth0"], batch["K0"], batch["K1"],
+                batch["T0_to_1"])[0]
             coarse_points1_to_0 = utils._warp_point(
-                coarse_points1, batch["depth1"], batch["K1"], batch["K0"],
-                batch["T1_to_0"])
-            gt_biases0 = (coarse_points1_to_0 - coarse_points0) / scale0
-            gt_biases1 = (coarse_points0_to_1 - coarse_points1) / scale1
+                coarse_points1[None], batch["depth1"], batch["K1"], batch["K0"],
+                batch["T1_to_0"])[0]
+            gt_biases0 = (coarse_points1_to_0 - coarse_points0) / scale0[0]
+            gt_biases1 = (coarse_points0_to_1 - coarse_points1) / scale1[0]
             mask0 = (gt_biases0.norm(p=float("inf"), dim=-1) < 0.5)
             mask1 = (gt_biases1.norm(p=float("inf"), dim=-1) < 0.5)
 
-            points0 = torch.cat([coarse_points0[mask0], coarse_points1_to_0[mask1]])
-            points1 = torch.cat([coarse_points0_to_1[mask0], coarse_points1[mask1]])
-            out = utils._estimate_pose_with_opencv_ransac(
-                points0, points1, batch["K0"][0], batch["K1"][0]
-            )
-            if out is not None:
-                _, _, mask = out
+            # points0 = torch.cat([coarse_points0[mask0], coarse_points1_to_0[mask1]])
+            # points1 = torch.cat([coarse_points0_to_1[mask0], coarse_points1[mask1]])
+            # out = utils._estimate_pose_with_opencv_ransac(
+            #     points0, points1, batch["K0"][0], batch["K1"][0]
+            # )
+            # if out is not None:
+            #     _, _, mask = out
+
+            mask = mask0 | mask1
+            result["fine_cls_heatmap"] = result["fine_cls_heatmap"][mask]
+            result["coarse_cls_idxes"] = (result["coarse_cls_idxes"][0][mask], result["coarse_cls_idxes"][1][mask], result["coarse_cls_idxes"][2][mask])
+            result["fine_cls_idxes"] = (result["fine_cls_idxes"][0][:mask.sum()], result["fine_cls_idxes"][1][mask], result["fine_cls_idxes"][2][mask])
+            supervision["coarse_gt_mask"] = torch.zeros_like(result["coarse_cls_heatmap"], dtype=torch.bool)
+            supervision["coarse_gt_mask"][result["coarse_cls_idxes"]] = True
+            if not mask.any():
+                mask[0] = True
+                result["coarse_cls_idxes"] = 3 * (torch.tensor([0], device=mask.device),)
+                result["fine_cls_idxes"] = 3 * (torch.tensor([0], device=mask.device),)
+            coarse_points1 = coarse_points0_to_1[mask]
+            if "scale1" in batch:
+                coarse_points1 = coarse_points1 / batch["scale1"][0]
+            result["coarse_points0"] = result["coarse_points0"][mask]
+            result["coarse_points1"] = result["coarse_points1"][mask]
+            result["flow_predictions"][0] = result["flow_predictions"][0][mask]
+            result["fine_reg_biases"] = result["fine_reg_biases"][mask]
+
+            n, _, h0, w0 = batch["image0"].shape
+            _, _, h1, w1 = batch["image1"].shape
+            h0, w0, h1, w1 = map(lambda x: x // s1, (h0, w0, h1, w1))
+            stride = s0 // s1
+            fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
+            gt_mask = supervision["coarse_gt_mask"].reshape(
+                -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+            gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+            gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+            gt_idxes = gt_mask.nonzero(as_tuple=True)
+            supervision["extra_coarse_gt_mask"] = gt_mask
+            supervision["extra_coarse_gt_idxes"] = gt_idxes
 
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"],
