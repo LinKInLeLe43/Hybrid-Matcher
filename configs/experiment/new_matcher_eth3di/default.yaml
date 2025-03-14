@@ -2,12 +2,17 @@
 
 defaults:
   - override /data: eth3di
+  - override /model: new_matcher_one_stage
   - override /trainer: ddp
   - _self_
 
-tags: ["eval-new_matcher_one_stage-eth3do"]
+tags: ["eval-new_matcher_one_stage-eth3di"]
 
 data:
+  train_dataset:
+    image_size: 832
+    image_factor: 32
+    mask_factors: [8, 16, 32]
   test_dataset:
     image_size: 1152
 

@@ -20,7 +20,7 @@ val_sampler: None
 
 test_npz_root: None
 
-test_list_path: None
+test_list_path: null
 
 test_dataset:
   _target_: src.data.components.datasets.ETH3DDataset
