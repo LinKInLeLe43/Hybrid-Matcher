@@ -128,7 +128,8 @@ class CoarseMatching(nn.Module):
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
-        if self.training:
+        score, idxes0_to_1, idxes1_to_0 = score
+        if self.training and gt_idxes is not None:
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1)
             mask &= ((score == score.amax(dim=2, keepdim=True)) &
@@ -138,7 +139,6 @@ class CoarseMatching(nn.Module):
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
-            score, idxes0_to_1, idxes1_to_0 = score
             n, l0, l1 = score.shape
             device = score.device
             r = torch.arange(n, device=device)[:, None, None]
@@ -205,15 +205,15 @@ class CoarseMatching(nn.Module):
 
         topk = 8
         result = {}
+        _similarity = similarity
         if self.training:
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_coarse_cls_heatmap"] = confidence
-            _similarity = similarity.clone()
-            _similarity[y_gt_idxes] = 1e9
-        else:
-            _similarity = similarity
+            if y_gt_idxes is not None:
+                _similarity = similarity.clone()
+                _similarity[y_gt_idxes] = 1e9
 
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
@@ -235,7 +235,7 @@ class CoarseMatching(nn.Module):
 
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
-            score = confidence = confidence0_to_1 * confidence1_to_0
+            confidence = confidence0_to_1 * confidence1_to_0
         else:
             similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
             similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
@@ -248,11 +248,11 @@ class CoarseMatching(nn.Module):
             confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
                 1, idxes1_to_0, confidence1_to_0)
             confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, idxes0_to_1, idxes1_to_0
+        score = confidence, idxes0_to_1, idxes1_to_0
 
         result.update(self._create_coarse_matching(
             score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
-        result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)),
-                          x1.transpose(1, 2).unflatten(2, (h1, w1)))
+        result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
+                          x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous())
         result["coarse_cls_heatmap"] = confidence
         return result

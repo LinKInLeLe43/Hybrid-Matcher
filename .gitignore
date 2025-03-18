@@ -2,4 +2,6 @@ __pycache__
 .idea
 .hydra
 logs
+_logs
+eval.log
 train*.log

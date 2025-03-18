@@ -5,9 +5,9 @@ defaults:
   - override /model: new_matcher_one_stage
   - _self_
 
-tags: ["eval-new_matcher_one_stage-scannet"]
+tags: ["train-new_matcher_one_stage-scannet"]
 
 model:
-  net:
-    coarse_matching:
-      border_removal: 0
+  loss:
+    coarse_cls_sparse: false
+    extra_coarse_cls_sparse: false

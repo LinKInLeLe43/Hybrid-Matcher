@@ -74,8 +74,14 @@ def create_coarse_supervision(
 
     coors0_to_1 = coors0_to_1.round().long()
     coors1_to_0 = coors1_to_0.round().long()
-    _mask_out_of_bound(coors0_to_1, h1, w1)
-    _mask_out_of_bound(coors1_to_0, h0, w0)
+    _h0, _w0, _h1, _w1 = h0, w0, h1, w1
+    if mask0 is not None:
+        _h0 = mask0.sum(dim=1).amax(dim=1).int()[:, None]
+        _w0 = mask0.sum(dim=2).amax(dim=1).int()[:, None]
+        _h1 = mask1.sum(dim=1).amax(dim=1).int()[:, None]
+        _w1 = mask1.sum(dim=2).amax(dim=1).int()[:, None]
+    _mask_out_of_bound(coors0_to_1, _h1, _w1)
+    _mask_out_of_bound(coors1_to_0, _h0, _w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
     idxes1_to_0 = w0 * coors1_to_0[:, :, 1] + coors1_to_0[:, :, 0]
     biprojection = torch.stack([idxes1_to_0[b, idx1]
@@ -105,11 +111,16 @@ def create_coarse_supervision(
         supervision["extra_coarse_gt_idxes"] = gt_idxes
 
     if return_coor:
+        if "scale0" in batch:
+            points1_to_0 = points1_to_0 / batch["scale0"][:, None]
+            points0 = points0 / batch["scale0"][:, None]
         if "scale1" in batch:
             points0_to_1 = points0_to_1 / batch["scale1"][:, None]
             points1 = points1 / batch["scale1"][:, None]
-        supervision["points0_to_1"] = points0_to_1
-        supervision["points1"] = points1
+        supervision["gt_points1_to_0"] = points1_to_0
+        supervision["gt_points0"] = points0
+        supervision["gt_points0_to_1"] = points0_to_1
+        supervision["gt_points1"] = points1
 
     if return_flow:
         supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
@@ -134,8 +145,8 @@ def create_fine_supervision(
             "fine_gt_mask": x.new_empty((0, ww, ww), dtype=torch.bool)}
 
         if return_coor:
-            supervision["points0_to_1"] = x.new_empty((0, ww, 2))
-            supervision["points1"] = x.new_empty((0, ww, 2))
+            supervision["gt_points0_to_1"] = x.new_empty((0, ww, 2))
+            supervision["gt_points1"] = x.new_empty((0, ww, 2))
         return supervision
 
     n, _, h0, w0 = batch["image0"].shape
@@ -199,8 +210,8 @@ def create_fine_supervision(
         if "scale1" in batch:
             points0_to_1 = points0_to_1 / batch["scale1"][b_idxes, None]
             points1 = points1 / batch["scale1"][b_idxes, None]
-        supervision["points0_to_1"] = points0_to_1
-        supervision["points1"] = points1
+        supervision["gt_points0_to_1"] = points0_to_1
+        supervision["gt_points1"] = points1
     return supervision
 
 
