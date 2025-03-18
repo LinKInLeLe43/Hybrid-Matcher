@@ -6,3 +6,8 @@ defaults:
   - _self_
 
 tags: ["eval-new_matcher_two_stage-scannet"]
+
+model:
+  net:
+    coarse_matching:
+      border_removal: 0
