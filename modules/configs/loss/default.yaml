@@ -1,0 +1,8 @@
+_target_: modules.src.models.components.losses.NewMatcherLoss
+coarse_cls_sparse: true
+coarse_cls_loss_pos_weight: 0.5
+coarse_cls_loss_neg_weight: 0.5
+extra_coarse_cls_sparse: true
+extra_coarse_cls_loss_pos_weight: 0.5
+extra_coarse_cls_loss_neg_weight: 0.5
+fine_reg_loss_weight: 1.0

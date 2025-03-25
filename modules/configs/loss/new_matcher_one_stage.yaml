@@ -1,0 +1,6 @@
+defaults:
+  - default
+  - _self_
+
+# coarse_cls_sparse: false
+# extra_coarse_cls_sparse: false

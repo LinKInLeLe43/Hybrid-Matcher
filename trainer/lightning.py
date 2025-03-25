@@ -10,14 +10,28 @@ import pytorch_lightning as pl
 from pathlib import Path
 from pytorch_lightning.callbacks import ModelCheckpoint, ModelSummary
 
-from modules.loftr import LoFTR
-from modules.loss import Loss
+# from modules.loftr import LoFTR
+# from modules.loss import Loss
 from modules.utils.supervision import spvs_coarse, spvs_fine
 from tools.comm import all_gather
 from tools.metrics import aggregate_metrics
 from tools.metrics import compute_symmetrical_epipolar_errors, compute_pose_errors
 from tools.misc import lower_config, flattenList
 from trainer.optimizer import build_optimizer
+
+import hydra
+import torch.nn.functional as F
+
+
+def get_model():
+    with hydra.initialize(version_base="1.3", config_path="../modules/configs/model"):
+        cfg = hydra.compose(config_name="new_matcher_one_stage.yaml")
+        return hydra.utils.instantiate(cfg)
+
+def get_loss():
+    with hydra.initialize(version_base="1.3", config_path="../modules/configs/loss"):
+        cfg = hydra.compose(config_name="new_matcher_one_stage.yaml")
+        return hydra.utils.instantiate(cfg)
 
 
 class Trainer(pl.LightningModule):
@@ -30,8 +44,8 @@ class Trainer(pl.LightningModule):
         self.tcfg = tcfg
         self.ncfg = ncfg
         ncfg = lower_config(ncfg)
-        self.model = LoFTR(ncfg['loftr'])
-        self.loss_func = Loss(ncfg)
+        self.model = get_model()
+        self.loss_func = get_loss()
 
         self.train_step = 0
         self.valid_step = 0
@@ -116,11 +130,31 @@ class Trainer(pl.LightningModule):
 
         config = self.ncfg['LOFTR']
 
-        if data['gt'].sum(): spvs_coarse(data, config['RESOLUTION'])
+        gt_idxes = extra_gt_idxes = None
+        if data['gt'].sum():
+            spvs_coarse(data, config['RESOLUTION'])
 
-        self.model(data)
+            gt_idxes = data["spv_b_ids"], data["spv_i_ids"], data["spv_j_ids"]
+            (h0, w0), (h1, w1) = data["image0"].shape[2:], data["image1"].shape[2:]
+            stride = self.model.extra_scale // self.model.backbone.scales[0]
+            fh0, fw0, fh1, fw1 = map(lambda x: x // self.model.extra_scale, (h0, w0, h1, w1))
+            extra_gt_mask = data["conf_matrix_gt"].reshape(
+                -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+            extra_gt_mask = extra_gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+            extra_gt_mask = extra_gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+            extra_gt_idxes = extra_gt_mask.nonzero(as_tuple=True)
+            data["extra_coarse_gt_mask"] = extra_gt_mask
+
+        result = self.model(data, gt_idxes=gt_idxes, extra_gt_idxes=extra_gt_idxes)
+
+        data['b_ids'], data['i_ids'], data['j_ids'] = result["coarse_cls_idxes"]
+        data['m_bids'] = result["idxes"][0]
+        data['mkpts0_f'] = result["points0"]
+        data['mkpts1_f'] = result["points1"]
 
         if data['gt'].sum(): spvs_fine(data, config['RESOLUTION'], config['FINE_WINDOW_SIZE'])
+
+        return result
 
     def compute_metrics(self, batch):
         compute_symmetrical_epipolar_errors(batch)  # compute epi_errs for each match
@@ -154,8 +188,28 @@ class Trainer(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         self.learning_rate_step()
-        self.forward(batch)
-        details = self.loss_func(batch)
+        result = self.forward(batch)
+
+        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
+        extra_mask0 = extra_mask1 = None
+        if mask0 is not None and mask1 is not None:
+            extra_mask0 = F.max_pool2d(mask0.float(), 2, stride=2).bool()
+            extra_mask1 = F.max_pool2d(mask1.float(), 2, stride=2).bool()
+
+        inputs = {
+            "coarse_cls_heatmap": result["coarse_cls_heatmap"],
+            "coarse_gt_mask": batch["conf_matrix_gt"].bool(),
+            "extra_coarse_cls_heatmap": result["extra_coarse_cls_heatmap"],
+            "extra_coarse_gt_mask": batch["extra_coarse_gt_mask"],
+            "fine_reg_biases": result["fine_reg_biases"],
+            "fine_gt_biases": batch["expec_f_gt"],
+            "mask0": mask0,
+            "mask1": mask1,
+            "extra_mask0": extra_mask0,
+            "extra_mask1": extra_mask1
+        }
+
+        details = self.loss_func(**inputs)
         self.train_log(batch_idx, batch, details)
         return details['loss']
 
@@ -170,8 +224,26 @@ class Trainer(pl.LightningModule):
         return dicts
 
     def validation_step(self, batch, batch_idx):
-        self.forward(batch)
-        details = self.loss_func(batch)
+        result = self.forward(batch)
+
+        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
+        extra_mask0 = extra_mask1 = None
+        if mask0 is not None and mask1 is not None:
+            extra_mask0 = F.max_pool2d(mask0.float(), 2, stride=2).bool()
+            extra_mask1 = F.max_pool2d(mask1.float(), 2, stride=2).bool()
+
+        inputs = {
+            "coarse_cls_heatmap": result["coarse_cls_heatmap"],
+            "coarse_gt_mask": batch["conf_matrix_gt"].bool(),
+            "fine_reg_biases": result["fine_reg_biases"],
+            "fine_gt_biases": batch["expec_f_gt"],
+            "mask0": mask0,
+            "mask1": mask1,
+            "extra_mask0": extra_mask0,
+            "extra_mask1": extra_mask1
+        }
+
+        details = self.loss_func(**inputs)
         metrics = self.compute_metrics(batch)
         dicts = self.valid_log(batch_idx, batch, details)
         return {'Metrics': metrics, 'Dicts': dicts}
@@ -200,7 +272,7 @@ class Trainer(pl.LightningModule):
 
         overall, details = self.aggregate_metrics(outputs)
 
-        self.log_dict({'Valid_Loss': dataset_dicts['MegaDepth']['Valid Total Loss']})
+        # self.log_dict({'Valid_Loss': dataset_dicts['MegaDepth']['Valid Total Loss']})
         self.log_dict({'Prec': details['MegaDepth']['Prec@5e-04']})
         self.log_dict({'AUC': details['MegaDepth']['AUC@5']})
 
