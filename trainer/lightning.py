@@ -80,7 +80,7 @@ class Trainer(pl.LightningModule):
         return [auc_callback, ModelSummary(max_depth=3)]
 
     def configure_optimizers(self):
-        optimizer = build_optimizer(self.model, self.tcfg, key='encode')
+        optimizer = build_optimizer(self.model, self.tcfg, key='backbone')
         return optimizer
 
     def learning_rate_step(self):
@@ -178,7 +178,7 @@ class Trainer(pl.LightningModule):
     def train_log(self, batch_idx, data, details):
         if batch_idx % self.log_every_n_steps == 0:
             # noinspection PyUnresolvedReferences
-            dicts = {'ResNet Learning rate': self.optimizers().param_groups[0]['lr'],
+            dicts = {'Pretrained Backbone Learning rate': self.optimizers().param_groups[0]['lr'],
                      'Others Learning rate': self.optimizers().param_groups[1]['lr'],
                      'step': self.train_step}
             dicts = {**dicts, **details['loss_scalars']}

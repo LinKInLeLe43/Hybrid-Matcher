@@ -1,9 +1,7 @@
 _target_: modules.src.models.components.nets.new_matcher.NewMatcherNet
 type: ???
 backbone:
-  _target_: modules.src.models.components.nets.new_matcher.backbones.RepVgg82
-  block_counts: [2, 4, 4]
-  layer_depths: [64, 128, 192]
+  _target_: modules.src.models.components.repvgg.create_RepVGG_B0
 rope:
   _target_: modules.src.models.components.nets.new_matcher.RoPESinePositionalEncoding
   depth: ${local_coc.layer_depths.0}
@@ -11,7 +9,7 @@ rope:
   fp16: false
 local_coc:
   _target_: modules.src.models.components.nets.new_matcher.LocalCoC
-  initial_depth: ${backbone.layer_depths.2}
+  initial_depth: 256
   scales: [2, 2]
   blocks_counts: [2, 2]
   layer_depths: [256, 256]
@@ -39,7 +37,7 @@ coarse_matching:
     _target_: modules.src.models.components.nets.new_matcher.FusedSelectiveTransformer
     scale: 2
     depths:
-      - ${backbone.layer_depths.2}
+      - 256
       - ${local_coc.layer_depths.0}
     encoder:
       _target_: modules.src.models.components.nets.new_matcher.ConvTransformerEncoder

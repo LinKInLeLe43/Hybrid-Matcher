@@ -25,6 +25,8 @@ class NewMatcherNet(nn.Module):
         super().__init__()
         self.type = type
         self.backbone = backbone
+        self.backbone.scales = (8, 2)
+        self.backbone.load_state_dict(torch.load('weights/RepVGG-B0-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -105,8 +107,8 @@ class NewMatcherNet(nn.Module):
             mask1_32x = F.max_pool2d(mask1_8x.float(), 4, stride=4).bool()
 
 
-        if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+        if batch["color0"].shape == batch["color1"].shape:
+            xs = self.backbone(torch.cat([batch["color0"], batch["color1"]]))
 
             x0s, x1s = [], []
             for x in xs:
@@ -114,8 +116,8 @@ class NewMatcherNet(nn.Module):
                 x0s.append(x0)
                 x1s.append(x1)
         else:
-            x0s = self.backbone(batch["image0"])
-            x1s = self.backbone(batch["image1"])
+            x0s = self.backbone(batch["color0"])
+            x1s = self.backbone(batch["color1"])
 
         if self.local_coc.scales[0] == 1:
             x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)

@@ -9,7 +9,7 @@ fine_preprocess:
   window_size: 5
   stride: 4
   padding: 2
-  depths: ${backbone.layer_depths}
+  depths: [64, 128, 256]
 # fine_module:
 #   _target_: src.models.components.nets.new_matcher.LoFTR
 #   encoder:
@@ -29,5 +29,5 @@ fine_preprocess:
 fine_reg_matching:
   _target_: modules.src.models.components.nets.new_matcher.FineMatching
   type: "regression_by_expectation"
-  depth: ${backbone.layer_depths.0}
+  depth: 64
   window_size: 5
