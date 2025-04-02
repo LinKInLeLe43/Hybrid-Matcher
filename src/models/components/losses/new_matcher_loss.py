@@ -179,6 +179,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         mask1: Optional[torch.Tensor] = None,
         extra_mask0: Optional[torch.Tensor] = None,
         extra_mask1: Optional[torch.Tensor] = None,
+        loss_type: str = "full",
         **kwargs
     ) -> Dict[str, Any]:
         total_loss = 0.0
@@ -212,49 +213,50 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 loss["scalar"]["extra_coarse_cls_loss"] = (
                     extra_coarse_cls_loss.detach().cpu())
 
-        if (self.fine_cls_sparse is not None and
-            self.fine_cls_loss_pos_weight is not None and
-            self.fine_cls_loss_neg_weight is not None):
-            if fine_cls_heatmap is not None and fine_gt_mask is not None:
-                fine_cls_loss = _compute_cls_loss(
-                    self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
-                    loss_pos_weight=self.fine_cls_loss_pos_weight,
-                    loss_neg_weight=self.fine_cls_loss_neg_weight)
-                total_loss += fine_cls_loss
-                loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
+        if loss_type == "full":
+            if (self.fine_cls_sparse is not None and
+                self.fine_cls_loss_pos_weight is not None and
+                self.fine_cls_loss_neg_weight is not None):
+                if fine_cls_heatmap is not None and fine_gt_mask is not None:
+                    fine_cls_loss = _compute_cls_loss(
+                        self.fine_cls_sparse, fine_cls_heatmap, fine_gt_mask,
+                        loss_pos_weight=self.fine_cls_loss_pos_weight,
+                        loss_neg_weight=self.fine_cls_loss_neg_weight)
+                    total_loss += fine_cls_loss
+                    loss["scalar"]["fine_cls_loss"] = fine_cls_loss.detach().cpu()
 
-        if self.fine_reg_loss_weight is not None:
-            if fine_reg_biases is not None and fine_gt_biases is not None:
-                fine_reg_loss = _compute_reg_loss(
-                    fine_reg_biases, fine_gt_biases, fine_reg_stds,
-                    loss_weight=self.fine_reg_loss_weight)
-                total_loss += fine_reg_loss
-                loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
+            if self.fine_reg_loss_weight is not None:
+                if fine_reg_biases is not None and fine_gt_biases is not None:
+                    fine_reg_loss = _compute_reg_loss(
+                        fine_reg_biases, fine_gt_biases, fine_reg_stds,
+                        loss_weight=self.fine_reg_loss_weight)
+                    total_loss += fine_reg_loss
+                    loss["scalar"]["fine_reg_loss"] = fine_reg_loss.detach().cpu()
 
-        if self.dense_reg_loss_weight is not None:
-            if (dense_reg_biases is not None and
-                dense_gt_biases is not None and
-                dense_valid_mask is not None):
-                dense_reg_loss = _compute_dense_loss(
-                    dense_reg_biases, dense_gt_biases, dense_valid_mask,
-                    loss_weight=self.dense_reg_loss_weight)
-                total_loss += dense_reg_loss
-                loss["scalar"]["dense_reg_loss"] = dense_reg_loss.detach().cpu()
+            if self.dense_reg_loss_weight is not None:
+                if (dense_reg_biases is not None and
+                    dense_gt_biases is not None and
+                    dense_valid_mask is not None):
+                    dense_reg_loss = _compute_dense_loss(
+                        dense_reg_biases, dense_gt_biases, dense_valid_mask,
+                        loss_weight=self.dense_reg_loss_weight)
+                    total_loss += dense_reg_loss
+                    loss["scalar"]["dense_reg_loss"] = dense_reg_loss.detach().cpu()
 
-        if self.flow_loss_weight is not None:
-            if (flows_with_uncertainties0 is not None and
-                flows_with_uncertainties1 is not None and
-                gt_flows0 is not None and
-                gt_flows1 is not None):
-                flow_loss0 = _compute_flow_loss(
-                    flows_with_uncertainties0, gt_flows0,
-                    loss_weight=self.flow_loss_weight)
-                flow_loss1 = _compute_flow_loss(
-                    flows_with_uncertainties1, gt_flows1,
-                    loss_weight=self.flow_loss_weight)
-                flow_loss = (flow_loss0 + flow_loss1) / 2
-                total_loss += flow_loss
-                loss["scalar"]["flow_loss"] = flow_loss.detach().cpu()
+            if self.flow_loss_weight is not None:
+                if (flows_with_uncertainties0 is not None and
+                    flows_with_uncertainties1 is not None and
+                    gt_flows0 is not None and
+                    gt_flows1 is not None):
+                    flow_loss0 = _compute_flow_loss(
+                        flows_with_uncertainties0, gt_flows0,
+                        loss_weight=self.flow_loss_weight)
+                    flow_loss1 = _compute_flow_loss(
+                        flows_with_uncertainties1, gt_flows1,
+                        loss_weight=self.flow_loss_weight)
+                    flow_loss = (flow_loss0 + flow_loss1) / 2
+                    total_loss += flow_loss
+                    loss["scalar"]["flow_loss"] = flow_loss.detach().cpu()
 
         loss["loss"] = total_loss
         loss["scalar"]["total_loss"] = total_loss.detach().cpu()

@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - new_matcher_megadepth_scannet/default
+  - override /model: new_matcher_one_stage
+  - _self_
+
+tags: ["train-new_matcher_one_stage-megadept-scannet"]
+
+model:
+  loss:
+    coarse_cls_sparse: false
+    extra_coarse_cls_sparse: false

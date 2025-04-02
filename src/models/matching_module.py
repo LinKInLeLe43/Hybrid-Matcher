@@ -9,7 +9,9 @@ from torch import distributed as dist
 from torch import nn
 
 from src.models import utils
-from src.models.components.nets.new_matcher.homo.utils.dense_match import DenseMatch
+from src.models.components.nets.new_matcher.homo.utils.dense_match import (
+    DenseMatch,
+)
 
 
 def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -78,7 +80,8 @@ class MatchingModule(pl.LightningModule):
 
     def model_step(
         self,
-        batch: Dict[str, Any]
+        batch: Dict[str, Any],
+        loss_type: str = "full"
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
@@ -115,7 +118,8 @@ class MatchingModule(pl.LightningModule):
             **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
             mask1=batch.get(f"mask1_{s1}x"),
             extra_mask0=batch.get(f"mask0_{s0}x"),
-            extra_mask1=batch.get(f"mask1_{s0}x"))
+            extra_mask1=batch.get(f"mask1_{s0}x"),
+            loss_type=loss_type)
         return result, loss
 
     def training_step(
@@ -123,10 +127,21 @@ class MatchingModule(pl.LightningModule):
         batch: Dict[str, Any],
         batch_idx: int
     ) -> Dict[str, Any]:
-        result, loss = self.model_step(batch)
+        total_loss = 0
+        for name, sub_batch in batch.items():
+            if name == "megadepth":
+                loss_weight = 0.5
+                loss_type = "full"
+            elif name == "scannet":
+                loss_weight = 1.0
+                loss_type = "only_coarse"
+            else:
+                raise ValueError()
+            result, loss = self.model_step(sub_batch, loss_type=loss_type)
 
-        for k, v in loss.pop("scalar").items():
-            self.log("train_scalar/" + k, v)
+            for k, v in loss.pop("scalar").items():
+                self.log(f"train_scalar_{name}/" + k, v)
+            total_loss += loss_weight * loss["loss"]
 
         if (self.hparams.train_plot_enabled and
             self.trainer.global_rank == 0 and
@@ -137,7 +152,7 @@ class MatchingModule(pl.LightningModule):
                 batch, result, error, self.hparams.epipolar_thresholds[0])
             self.logger.experiment.add_figure(
                 "train_plot", figures, global_step=self.global_step)
-        return loss
+        return total_loss
 
     def training_epoch_end(self, outputs: List[Dict[str, Any]]) -> None:
         avg_loss_on_epoch = torch.stack([o["loss"] for o in outputs]).mean()

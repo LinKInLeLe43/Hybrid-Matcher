@@ -1,5 +1,20 @@
 _target_: src.data.MatchingDataModule
 train_configs:
+  megadepth:
+    npz_root: "${paths.data_dir}/megadepth/index/scene_info_0.1_0.7"
+    list_path: "${paths.data_dir}/megadepth/index/trainvaltest_list/train_list.txt"
+    dataset:
+      _target_: src.data.components.datasets.MegaDepthDataset
+      _partial_: true
+      data_root: "${paths.data_dir}/megadepth/train"
+      image_size: 640
+      image_factor: 32
+      mask_factors: [8, 16, 32]
+    sampler:
+      _target_: src.data.components.samplers.RandomConcatSampler
+      _partial_: true
+      samples_count_per_subset: 100
+      seed: ${seed}
   scannet:
     npz_root: "${paths.data_dir}/scannet/index/scene_data/train"
     list_path: "${paths.data_dir}/scannet/index/scene_data/train_list/scannet_all.txt"

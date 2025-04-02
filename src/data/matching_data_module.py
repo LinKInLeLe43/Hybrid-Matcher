@@ -1,17 +1,15 @@
-import functools
 from os import path
-from typing import List
+from typing import Any, Callable, Dict, List
 
 import joblib
 import numpy as np
-from numpy import random
 import pytorch_lightning as pl
+from numpy import random
 from rich import progress
 from torch.utils import data
 
 from src import utils
 from src.data import utils as data_utils
-
 
 log = utils.get_pylogger(__name__)
 
@@ -19,19 +17,10 @@ log = utils.get_pylogger(__name__)
 class MatchingDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        train_npz_root: str,
-        train_list_path: str,
-        train_dataset: functools.partial,
-        train_sampler: functools.partial,
+        train_configs: Dict[str, Any],
         train_batch_size_per_gpu: int,
-        val_npz_root: str,
-        val_list_path: str,
-        val_dataset: functools.partial,
-        val_sampler: functools.partial,
-        test_npz_root: str,
-        test_list_path: str,
-        test_dataset: functools.partial,
-        test_sampler: functools.partial,
+        val_config: Dict[str, Any],
+        test_config: Dict[str, Any],
         workers_count: int,
         pin_memory: bool = True,
         seed: int = 66,
@@ -40,13 +29,13 @@ class MatchingDataModule(pl.LightningDataModule):
         super().__init__()
         self.save_hyperparameters(logger=False)
 
-        self.train_dataset = None
+        self.train_datasets = None
         self.val_dataset = None
         self.test_dataset = None
 
     def _create_concat_dataset(
         self,
-        dataset: functools.partial,
+        dataset: Callable[[str], data.Dataset],
         npz_paths: List[str]
     ) -> data.ConcatDataset:
         with progress.Progress(disable=self.trainer.global_rank != 0) as p:
@@ -84,7 +73,7 @@ class MatchingDataModule(pl.LightningDataModule):
         scene_list_path: str,
         split: bool
     ) -> List[str]:
-        with open(scene_list_path, "r") as f:
+        with open(scene_list_path) as f:
             names = [name for name in f.read().splitlines()]
         if split:
             names = self._split_names_per_rank(names)
@@ -99,47 +88,59 @@ class MatchingDataModule(pl.LightningDataModule):
 
     def setup(self, stage: str) -> None:
         if stage == "fit":
-            train_npz_paths = self._create_npz_paths(
-                self.hparams.train_npz_root, self.hparams.train_list_path, True)
-            self.train_dataset = self._create_concat_dataset(
-                self.hparams.train_dataset, train_npz_paths)
-            val_npz_paths = self._create_npz_paths(
-                self.hparams.val_npz_root, self.hparams.val_list_path, False)
+            self.train_datasets = {}
+            for name, config in self.hparams.train_configs.items():
+                npz_paths = self._create_npz_paths(
+                    config["npz_root"], config["list_path"], True)
+                self.train_datasets[name] = self._create_concat_dataset(
+                    config["dataset"], npz_paths)
+
+            config = self.hparams.val_config
+            npz_paths = self._create_npz_paths(
+                config["npz_root"], config["list_path"], False)
             self.val_dataset = self._create_concat_dataset(
-                self.hparams.val_dataset, val_npz_paths)
-            log.info(f"Train and validation `Dataset`s created.")
+                config["dataset"], npz_paths)
+            log.info("Train and validation `Dataset`s created.")
 
         if stage == "test":
-            test_npz_paths = self._create_npz_paths(
-                self.hparams.test_npz_root, self.hparams.test_list_path, False)
+            config = self.hparams.test_config
+            npz_paths = self._create_npz_paths(
+                config["npz_root"], config["list_path"], False)
             self.test_dataset = self._create_concat_dataset(
-                self.hparams.test_dataset, test_npz_paths)
-            log.info(f"Test `Dataset` created.")
+                config["dataset"], npz_paths)
+            log.info("Test `Dataset` created.")
 
     def train_dataloader(self) -> data.DataLoader:
-        dataloader = data.DataLoader(
-            self.train_dataset,
-            batch_size=self.hparams.train_batch_size_per_gpu,
-            sampler=self.hparams.train_sampler(self.train_dataset),
-            num_workers=self.hparams.workers_count,
-            pin_memory=self.hparams.pin_memory)
+        dataloader = {}
+        for name, config in self.hparams.train_configs.items():
+            dataloader[name] = data.DataLoader(
+                self.train_datasets[name],
+                batch_size=self.hparams.train_batch_size_per_gpu,
+                sampler=config["sampler"](self.train_datasets[name]),
+                num_workers=self.hparams.workers_count,
+                pin_memory=self.hparams.pin_memory)
         log.info("Train `Sampler` and `DataLoader` created. "
                  "(should not re-create between epochs)")
         return dataloader
 
     def val_dataloader(self) -> data.DataLoader:
+        config = self.hparams.val_config
         dataloader = data.DataLoader(
-            self.val_dataset, batch_size=1,
-            sampler=self.hparams.val_sampler(self.val_dataset),
+            self.val_dataset,
+            batch_size=1,
+            sampler=config["sampler"](self.val_dataset),
             num_workers=self.hparams.workers_count,
             pin_memory=self.hparams.pin_memory)
         log.info("Validation `Sampler` and `DataLoader` created.")
         return dataloader
 
     def test_dataloader(self) -> data.DataLoader:
+        config = self.hparams.test_config
         dataloader = data.DataLoader(
-            self.test_dataset, batch_size=1,
-            sampler=self.hparams.test_sampler(self.test_dataset),
-            num_workers=self.hparams.workers_count, pin_memory=True)
+            self.test_dataset,
+            batch_size=1,
+            sampler=config["sampler"](self.test_dataset),
+            num_workers=self.hparams.workers_count,
+            pin_memory=True)
         log.info("Test `Sampler` and `DataLoader` created.")
         return dataloader
