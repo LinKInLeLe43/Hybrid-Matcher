@@ -221,6 +221,20 @@ class MatchingModule(pl.LightningModule):
             result["coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = 1 - result["coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes]
             supervision["coarse_gt_mask"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = True
 
+            extra_neg_mask = torch.zeros_like(supervision["coarse_gt_mask"], dtype=torch.bool)
+            extra_neg_mask[neg_b_idxes, neg_i_idxes, neg_j_idxes] = True
+            _, _, h0, w0 = batch["image0"].shape
+            _, _, h1, w1 = batch["image1"].shape
+            stride = 2
+            fh0, fw0, fh1, fw1 = map(lambda x: x // 16, (h0, w0, h1, w1))
+            extra_neg_mask = extra_neg_mask.reshape(
+                -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
+            extra_neg_mask = extra_neg_mask.sum(dim=(2, 4, 6, 8)).bool()
+            extra_neg_mask = extra_neg_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+            neg_b_idxes, neg_i_idxes, neg_j_idxes = extra_neg_mask.nonzero(as_tuple=True)
+            result["extra_coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = 1 - result["extra_coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes]
+            supervision["extra_coarse_gt_mask"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = True
+
             supervision.update(utils.create_fine_supervision(
                 batch, (s1, 1), result["coarse_cls_idxes"],
                 offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
