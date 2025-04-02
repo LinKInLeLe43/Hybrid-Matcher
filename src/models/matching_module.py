@@ -11,6 +11,76 @@ from torch import nn
 from src.models import utils
 from src.models.components.nets.new_matcher.homo.utils.dense_match import DenseMatch
 
+import cv2
+from matplotlib import figure
+from matplotlib import lines
+from matplotlib import pyplot as plt
+import numpy as np
+def plot_matching_figure(
+    image0: np.ndarray,
+    image1: np.ndarray,
+    matching_points0: np.ndarray,
+    matching_points1: np.ndarray,
+    colors: np.ndarray,
+    key_points0: Optional[np.ndarray] = None,
+    key_points1: Optional[np.ndarray] = None,
+    dpi: int = 75,
+    text: Optional[List[str]] = None,
+    save_path: Optional[str] = None
+) -> Optional[figure.Figure]:
+    if not len(matching_points0) == len(matching_points1) == len(colors):
+        raise ValueError("")
+    if (key_points0 is None) == (key_points1 is not None):
+        raise ValueError("")
+
+    figure, axes = plt.subplots(1, 2, figsize=(10, 6), dpi=dpi)
+    axes[0].imshow(image0, cmap="gray")
+    axes[1].imshow(image1, cmap="gray")
+    for i in range(2):
+        axes[i].get_xaxis().set_ticks([])
+        axes[i].get_yaxis().set_ticks([])
+        for spine in axes[i].spines.values():
+            spine.set_visible(False)
+    plt.tight_layout(pad=1)
+
+    if key_points0 is not None:
+        axes[0].scatter(key_points0[:, 0], key_points0[:, 1], s=2, c="w")
+        axes[1].scatter(key_points1[:, 0], key_points1[:, 1], s=2, c="w")
+
+    n = len(matching_points0)
+    if n != 0:
+        figure.canvas.draw()
+        axes[0].scatter(
+            matching_points0[:, 0], matching_points0[:, 1], s=2, c=colors)
+        axes[1].scatter(
+            matching_points1[:, 0], matching_points1[:, 1], s=2, c=colors)
+
+        inv_figure_trans = figure.transFigure.inverted()
+        figure_points0 = axes[0].transData.transform(matching_points0)
+        figure_points1 = axes[1].transData.transform(matching_points1)
+        figure_points0 = inv_figure_trans.transform(figure_points0)
+        figure_points1 = inv_figure_trans.transform(figure_points1)
+        for i in range(n):
+            x_coors = [figure_points0[i, 0], figure_points1[i, 0]]
+            y_coors = [figure_points0[i, 1], figure_points1[i, 1]]
+            # line = lines.Line2D(
+            #     x_coors, y_coors, lw=1, c=colors[i],
+            #     transform=figure.transFigure)
+            # figure.lines.append(line)
+
+    if text is not None:
+        color = "k" if image0[:100, :200].mean() > 180 else "w"
+        text = "\n".join(text)
+        figure.text(
+            0.01, 0.99, text, size=15, c=color, va="top", ha="left",
+            transform=figure.axes[0].transAxes)
+
+    if save_path is not None:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        return figure
+
 
 def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
     def _append(in_dict: Dict[str, Any], out_dict: Dict[str, Any]) -> None:
@@ -118,12 +188,75 @@ class MatchingModule(pl.LightningModule):
             extra_mask1=batch.get(f"mask1_{s0}x"))
         return result, loss
 
+    def model_step_by_or(
+        self,
+        batch: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        s0, (s1, s2) = self.net.extra_scale, self.net.scales
+        if self.net.type == "one_stage":
+            supervision = utils.create_coarse_supervision(
+                batch, s1, extra_scale=s0, return_coor=True)
+            coarse_gt_points1 = supervision.pop("gt_points1")
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+
+            gt_b_idxes, gt_i_idxes, gt_j_idxes = supervision["coarse_gt_idxes"]
+            gt_points0 = supervision["gt_points0"][gt_b_idxes, gt_i_idxes]
+            gt_points1 = supervision["gt_points0_to_1"][gt_b_idxes, gt_i_idxes]
+            _b_idxes = torch.cat([gt_b_idxes, result["all_idxes"][0]])
+            _points0 = torch.cat([gt_points0, result["all_points0"]])
+            _points1 = torch.cat([gt_points1, result["all_points1"]])
+            or_mask = torch.zeros_like(_b_idxes, dtype=torch.bool)
+            for b in range(len(batch["image0"])):
+                b_mask = _b_idxes == b
+                try:
+                    _, _or_mask = cv2.findFundamentalMat(_points0[b_mask].cpu().numpy(), _points1[b_mask].cpu().numpy(), method=cv2.USAC_MAGSAC, ransacReprojThreshold=0.5, maxIters=10000, confidence=0.999999)
+                    or_mask[b_mask] = torch.from_numpy(_or_mask.ravel() == 1).to(_points0.device)
+                except:
+                    or_mask[b_mask] = torch.zeros(len(_points0[b_mask]), dtype=torch.bool, device=_points0.device)
+            or_mask = or_mask[len(gt_b_idxes):]
+
+            neg_b_idxes, neg_i_idxes, neg_j_idxes = result["all_idxes"][0][~or_mask], result["all_idxes"][1][~or_mask], result["all_idxes"][2][~or_mask]
+            result["coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = 1 - result["coarse_cls_heatmap"][neg_b_idxes, neg_i_idxes, neg_j_idxes]
+            supervision["coarse_gt_mask"][neg_b_idxes, neg_i_idxes, neg_j_idxes] = True
+
+            supervision.update(utils.create_fine_supervision(
+                batch, (s1, 1), result["coarse_cls_idxes"],
+                offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+            supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
+                supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
+                result["fine_cls_idxes"], s2, self.net.reg_w)
+            supervision.update(utils.compute_dense_gt_biases(
+                batch, result, self.dense_matcher, coarse_gt_points1,
+                result["coarse_cls_idxes"], s2, self.net.reg_w))
+        elif self.net.type == "two_stage":
+            supervision = utils.create_coarse_supervision(
+                batch, s1, extra_scale=s0)
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+            supervision.update(utils.create_fine_supervision(
+                batch, (s1, s2), result["coarse_cls_idxes"],
+                offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+            supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
+                supervision.pop("points0_to_1"), supervision.pop("points1"),
+                result["fine_cls_idxes"], s2, self.net.reg_w)
+        else:
+            assert False
+        loss = self.loss(
+            **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
+            mask1=batch.get(f"mask1_{s1}x"),
+            extra_mask0=batch.get(f"mask0_{s0}x"),
+            extra_mask1=batch.get(f"mask1_{s0}x"))
+        return result, loss
+
     def training_step(
         self,
         batch: Dict[str, Any],
         batch_idx: int
     ) -> Dict[str, Any]:
-        result, loss = self.model_step(batch)
+        result, loss = self.model_step_by_or(batch)
 
         for k, v in loss.pop("scalar").items():
             self.log("train_scalar/" + k, v)

@@ -110,11 +110,14 @@ class CoarseMatching(nn.Module):
         gt_subidxes = torch.randint(
             gt_count, (train_count - matching_count,), device=device)
 
-        matching_idxes = tuple(map(
-            lambda x: x[matching_subidxes], matching_idxes))
+        # matching_idxes = tuple(map(
+        #     lambda x: x[matching_subidxes], matching_idxes))
         train_idxes = tuple(map(
-            lambda x, y: torch.cat([x, y[gt_subidxes]]),
+            lambda x, y: torch.cat([x[matching_subidxes], y[gt_subidxes]]),
             matching_idxes, gt_idxes))
+        matching_idxes = tuple(map(
+            lambda x, y: torch.cat([x, y]),
+            train_idxes, matching_idxes))
         return train_idxes, matching_idxes
 
     @torch.no_grad()
@@ -136,7 +139,7 @@ class CoarseMatching(nn.Module):
                      (score == score.amax(dim=1, keepdim=True)))
             train_idxes, matching_idxes = self._sample_for_train(
                 max_count, mask.nonzero(as_tuple=True), gt_idxes)
-            b_idxes, i_idxes, j_idxes = train_idxes
+            b_idxes, i_idxes, j_idxes = matching_idxes
             scores = score[train_idxes]
         else:
             n, l0, l1 = score.shape
@@ -172,7 +175,7 @@ class CoarseMatching(nn.Module):
                   "points0": points0,
                   "points1": points1,
                   "scores": scores,
-                  "coarse_cls_idxes": train_idxes}
+                  "coarse_cls_idxes": matching_idxes}
         return result
 
     def forward(
