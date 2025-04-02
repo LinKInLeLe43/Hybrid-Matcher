@@ -64,16 +64,16 @@ class NewMatcherNet(nn.Module):
         scale0: Optional[torch.Tensor] = None,
         scale1: Optional[torch.Tensor] = None
     ) -> None:
-        m = len(result["points0"])
-        b_idxes = result["idxes"][0]
+        # m = len(result["points0"])
+        b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
 
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
-        biases0 = result.pop("fine_cls_biases0")[:m]
-        biases1 = result.pop("fine_cls_biases1")[:m]
+        biases0 = result.pop("fine_cls_biases0")
+        biases1 = result.pop("fine_cls_biases1")
         biases1 += (self.scales[1] * (self.reg_w // 2) *
-                    result["fine_reg_biases"][:m].detach())
+                    result["fine_reg_biases"].detach())
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
@@ -83,9 +83,23 @@ class NewMatcherNet(nn.Module):
             fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
             fine_points1 *= scale1[b_idxes]
-        result["coarse_points0"] = coarse_points0
-        result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = fine_points0, fine_points1
+
+        m = len(result["idxes"][0])
+        result["coarse_points0"] = coarse_points0[:m]
+        result["coarse_points1"] = coarse_points1[:m]
+        result["coarse_cls_idxes"] = b_idxes[:m], i_idxes[:m], j_idxes[:m]
+        result["all_idxes"] = b_idxes[m:], i_idxes[m:], j_idxes[m:]
+        result["points0"], result["all_points0"] = fine_points0[:m], fine_points0[m:]
+        result["points1"], result["all_points1"] = fine_points1[:m], fine_points1[m:]
+        b_idxes, i_idxes, j_idxes = result["fine_cls_idxes"]
+        result["fine_cls_idxes"] = b_idxes[:m], i_idxes[:m], j_idxes[:m]
+        result["flow_predictions"][0] = result["flow_predictions"][0][:m]
+        result["fine_cls_heatmap"] = result["fine_cls_heatmap"][:m]
+        result["fine_reg_biases"] = result["fine_reg_biases"][:m]
+
+        if scale0 is not None and scale1 is not None:
+            result["all_points0"] = result["all_points0"] / scale0[result["all_idxes"][0]]
+            result["all_points1"] = result["all_points1"] / scale1[result["all_idxes"][0]]
 
     def forward(
         self,
