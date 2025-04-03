@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Tuple, Union
 
+import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -217,6 +218,7 @@ class CoarseMatching(nn.Module):
 
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
+        result["extra_idxes0_to_1"] = idxes0_to_1
 
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
@@ -255,4 +257,8 @@ class CoarseMatching(nn.Module):
         result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
                           x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous())
         result["coarse_cls_heatmap"] = confidence
+        result["extra_idxes0_to_1"] = einops.repeat(
+            result["extra_idxes0_to_1"], "n (fh fw) k -> n (fh sh fw sw) k",
+            fh=h0//2, sh=2, fw=w0//2, sw=2
+        )[result["idxes"][0], result["idxes"][1]]
         return result

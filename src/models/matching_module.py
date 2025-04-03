@@ -206,6 +206,12 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "val_metric/inlier_coarse_3x3_precision",
                 metric.pop("inlier_coarse_3x3_precision"))
+            self.log(
+                "val_metric/extra_coarse_topk_precision",
+                metric.pop("extra_coarse_topk_precision"))
+            self.log(
+                "val_metric/inlier_extra_coarse_topk_precision",
+                metric.pop("inlier_extra_coarse_topk_precision"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):
@@ -291,6 +297,12 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/inlier_coarse_3x3_precision",
                 metric.pop("inlier_coarse_3x3_precision"))
+            self.log(
+                "test_metric/extra_coarse_topk_precision",
+                metric.pop("extra_coarse_topk_precision"))
+            self.log(
+                "test_metric/inlier_extra_coarse_topk_precision",
+                metric.pop("inlier_extra_coarse_topk_precision"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):
