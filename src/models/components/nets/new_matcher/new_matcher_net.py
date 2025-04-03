@@ -93,7 +93,8 @@ class NewMatcherNet(nn.Module):
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
         extra_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        loss_type: str = "full"
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
         mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
@@ -151,56 +152,106 @@ class NewMatcherNet(nn.Module):
         result = self.coarse_matching(
             x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
-            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
+            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes, loss_type=loss_type)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
-        x0_reg, x1_reg = self.fine_preprocess(
-            x0s, x1s, result["coarse_cls_idxes"])
+        if loss_type == "full":
+            x0_reg, x1_reg = self.fine_preprocess(
+                x0s, x1s, result["coarse_cls_idxes"])
 
-        # if self.type == "one_stage":
-        #     if len(x0_1x) != 0:
-        #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        # elif self.type == "two_stage":
-        #     if len(x0_1x) != 0:
-        #         w0, w1 = self.cls_w, self.fine_w
-        #         x0_1x, x1_1x = self.fine_module(
-        #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
-        #
-        #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
-        #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
-        #
-        #     result.update(self.fine_cls_matching(
-        #         x0_1x, x1_1x[:, self.fine_cls_mask]))
-        #
-        #     m_idxes, sub_i_idxes, sub_j_idxes = map(
-        #         lambda x: x[:, None], result["fine_cls_idxes"])
-        #     sub_j_idxes = (
-        #         self.fine_w *
-        #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
-        #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
-        #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
-        #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
-        # else:
-        #     assert False
+            # if self.type == "one_stage":
+            #     if len(x0_1x) != 0:
+            #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
+            # elif self.type == "two_stage":
+            #     if len(x0_1x) != 0:
+            #         w0, w1 = self.cls_w, self.fine_w
+            #         x0_1x, x1_1x = self.fine_module(
+            #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
+            #
+            #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
+            #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
+            #
+            #     result.update(self.fine_cls_matching(
+            #         x0_1x, x1_1x[:, self.fine_cls_mask]))
+            #
+            #     m_idxes, sub_i_idxes, sub_j_idxes = map(
+            #         lambda x: x[:, None], result["fine_cls_idxes"])
+            #     sub_j_idxes = (
+            #         self.fine_w *
+            #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
+            #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
+            #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
+            #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
+            # else:
+            #     assert False
 
-        (s1, s2), w = self.scales, self.reg_w
-        grid = K.create_meshgrid(
-            s1, s1, normalized_coordinates=False, device=x0_reg.device,
-            dtype=x0_reg.dtype)
-        grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
-        x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
-        x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
-        x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
+            (s1, s2), w = self.scales, self.reg_w
+            grid = K.create_meshgrid(
+                s1, s1, normalized_coordinates=False, device=x0_reg.device,
+                dtype=x0_reg.dtype)
+            grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
+            x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
+            x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
+            x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
 
-        result.update(self.fine_cls_matching(x0_cls, x1_cls))
+            result.update(self.fine_cls_matching(x0_cls, x1_cls))
 
-        local_matches = torch.cat([result["fine_cls_biases0"],
-                                   result["fine_cls_biases1"]], dim=1)
-        local_matches = local_matches / s2 + w // 2
-        result.update(self.fine_reg_matching(
-            x0_reg, x1_reg, 1, local_matches=local_matches))
+            local_matches = torch.cat([result["fine_cls_biases0"],
+                                    result["fine_cls_biases1"]], dim=1)
+            local_matches = local_matches / s2 + w // 2
+            result.update(self.fine_reg_matching(
+                x0_reg, x1_reg, 1, local_matches=local_matches))
 
-        self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+            self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+        else:
+            with torch.no_grad():
+                x0_reg, x1_reg = self.fine_preprocess(
+                x0s, x1s, result["coarse_cls_idxes"])
+
+                # if self.type == "one_stage":
+                #     if len(x0_1x) != 0:
+                #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
+                # elif self.type == "two_stage":
+                #     if len(x0_1x) != 0:
+                #         w0, w1 = self.cls_w, self.fine_w
+                #         x0_1x, x1_1x = self.fine_module(
+                #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
+                #
+                #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
+                #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
+                #
+                #     result.update(self.fine_cls_matching(
+                #         x0_1x, x1_1x[:, self.fine_cls_mask]))
+                #
+                #     m_idxes, sub_i_idxes, sub_j_idxes = map(
+                #         lambda x: x[:, None], result["fine_cls_idxes"])
+                #     sub_j_idxes = (
+                #         self.fine_w *
+                #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
+                #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
+                #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
+                #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
+                # else:
+                #     assert False
+
+                (s1, s2), w = self.scales, self.reg_w
+                grid = K.create_meshgrid(
+                    s1, s1, normalized_coordinates=False, device=x0_reg.device,
+                    dtype=x0_reg.dtype)
+                grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
+                x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
+                x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
+                x0_cls, x1_cls = x.flatten(start_dim=2).transpose(1, 2).chunk(2)
+
+                result.update(self.fine_cls_matching(x0_cls, x1_cls))
+
+                local_matches = torch.cat([result["fine_cls_biases0"],
+                                        result["fine_cls_biases1"]], dim=1)
+                local_matches = local_matches / s2 + w // 2
+                result.update(self.fine_reg_matching(
+                    x0_reg, x1_reg, 1, local_matches=local_matches))
+
+                self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
 
     def crop_by_mask(

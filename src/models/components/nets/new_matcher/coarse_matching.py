@@ -126,10 +126,11 @@ class CoarseMatching(nn.Module):
         size1: Tuple[int, int],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        loss_type: str = "full"
     ) -> Dict[str, Any]:
         score, idxes0_to_1, idxes1_to_0 = score
-        if self.training and gt_idxes is not None:
+        if self.training and gt_idxes is not None and loss_type == "full":
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1)
             mask &= ((score == score.amax(dim=2, keepdim=True)) &
@@ -188,7 +189,8 @@ class CoarseMatching(nn.Module):
         x_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
         y_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        loss_type: str = "full"
     ) -> Dict[str, Any]:
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
@@ -251,7 +253,7 @@ class CoarseMatching(nn.Module):
         score = confidence, idxes0_to_1, idxes1_to_0
 
         result.update(self._create_coarse_matching(
-            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
+            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes, loss_type))
         result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
                           x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous())
         result["coarse_cls_heatmap"] = confidence
