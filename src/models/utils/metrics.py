@@ -85,6 +85,7 @@ def _compute_end_point_errors(
     coarse_w1: int,
     j_idxes: torch.Tensor,
     extra_j_topk_idxes: torch.Tensor,
+    extra_coarse_topk_recall: torch.Tensor,
     inliers_per_batch: np.array,
     consistent_depth_ratio: float = 0.2,
     coarse_points0: Optional[torch.Tensor] = None,
@@ -103,6 +104,7 @@ def _compute_end_point_errors(
     inlier_coarse_3x3_precisions = []
     extra_coarse_topk_precisions = []
     inlier_extra_coarse_topk_precisions = []
+    extra_coarse_topk_recalls = []
     for b in range(n):
         b_mask = b_idxes == b
         b_scale1 = scale1 if isinstance(scale1, int) else scale1[b]
@@ -153,6 +155,8 @@ def _compute_end_point_errors(
         coarse_precisions.append(coarse_precision)
         coarse_3x3_precisions.append(coarse_3x3_precision)
         extra_coarse_topk_precisions.append(extra_coarse_topk_precision)
+        # missing b_mask
+        extra_coarse_topk_recalls.append(extra_coarse_topk_recall.mean().cpu().numpy())
 
         inlier_end_point_errors = end_point_errors.new_tensor([])
         inlier_true_coarse_count = 0.0
@@ -186,10 +190,12 @@ def _compute_end_point_errors(
     inlier_coarse_3x3_precisions = np.array(inlier_coarse_3x3_precisions)
     extra_coarse_topk_precisions = np.array(extra_coarse_topk_precisions)
     inlier_extra_coarse_topk_precisions = np.array(inlier_extra_coarse_topk_precisions)
+    extra_coarse_topk_recalls = np.array(extra_coarse_topk_recalls)
     return (end_point_errors_per_batch, inlier_end_point_errors_per_batch,
             true_coarse_counts, inlier_true_coarse_counts,
             coarse_precisions, inlier_coarse_precisions,
             coarse_3x3_precisions, inlier_coarse_3x3_precisions,
+            extra_coarse_topk_recalls,
             extra_coarse_topk_precisions, inlier_extra_coarse_topk_precisions)
 
 
@@ -377,12 +383,14 @@ def compute_error(
          error["coarse_3x3_precisions"],
          error["inlier_coarse_3x3_precisions"],
          error["extra_coarse_topk_precisions"],
-         error["inlier_extra_coarse_topk_precisions"]
+         error["inlier_extra_coarse_topk_precisions"],
+        error["extra_coarse_topk_recalls"]
          ) = _compute_end_point_errors(
             result["idxes"][0], result["points0"], result["points1"],
             batch["depth0"], batch["depth1"], batch["K0"], batch["K1"],
             batch["T0_to_1"], coarse_scale, scale1, coarse_w1,
-            result["idxes"][2], result["extra_idxes0_to_1"], inliers_per_batch,
+            result["idxes"][2], result["extra_idxes0_to_1"],
+            result["extra_coarse_topk_recall"], inliers_per_batch,
             coarse_points0=result.get("coarse_points0"))
     return error
 
@@ -451,4 +459,6 @@ def compute_metric(
             error["extra_coarse_topk_precisions"][idxes].mean())
         metric["inlier_extra_coarse_topk_precision"] = (
             error["inlier_extra_coarse_topk_precisions"][idxes].mean())
+        metric["extra_coarse_topk_recall"] = (
+            error["extra_coarse_topk_recalls"][idxes].mean())
     return metric
