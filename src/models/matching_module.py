@@ -212,6 +212,9 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "val_metric/inlier_extra_coarse_topk_precision",
                 metric.pop("inlier_extra_coarse_topk_precision"))
+            self.log(
+                "val_metric/extra_coarse_topk_recall",
+                metric.pop("extra_coarse_topk_recall"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):
@@ -246,7 +249,12 @@ class MatchingModule(pl.LightningModule):
             self.hparams.test_preparation_enabled = False
 
         with self.test_time_profiler.profile("net"):
-            result = self.net(batch)
+            s0, (s1, s2) = self.net.extra_scale, self.net.scales
+            supervision = utils.create_coarse_supervision(
+                batch, s1, extra_scale=s0, return_coor=True)
+            result = self.net(
+                batch, gt_idxes=supervision["coarse_gt_idxes"],
+                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
         with self.test_time_profiler.profile("error"):
             error = utils.compute_error(
                 batch, result, self.hparams.pose_ransac_count,
@@ -303,6 +311,9 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/inlier_extra_coarse_topk_precision",
                 metric.pop("inlier_extra_coarse_topk_precision"))
+            self.log(
+                "test_metric/extra_coarse_topk_recall",
+                metric.pop("extra_coarse_topk_recall"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):

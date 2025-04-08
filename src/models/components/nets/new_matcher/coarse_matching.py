@@ -176,6 +176,25 @@ class CoarseMatching(nn.Module):
                   "coarse_cls_idxes": train_idxes}
         return result
 
+    def create_bidirectional_mask(
+        self,
+        indices0_to_1: torch.Tensor,
+        indices1_to_0: torch.Tensor
+    ) -> torch.Tensor:
+        n, l0, _ = indices0_to_1.shape
+        _, _, l1 = indices1_to_0.shape
+        device = indices0_to_1.device
+
+        b_indices = torch.arange(n)[:, None, None]
+        i_indices = torch.arange(l0)[None, :, None]
+        j_indices = torch.arange(l1)[None, None, :]
+
+        mask = torch.zeros(n, l0, l1, device=device)
+        mask[b_indices, i_indices, indices0_to_1] += 0.5
+        mask[b_indices, indices1_to_0, j_indices] += 0.5
+        mask.eq_(1.0)
+        return mask
+
     def forward(
         self,
         x0: torch.Tensor,
@@ -219,6 +238,9 @@ class CoarseMatching(nn.Module):
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
         result["extra_idxes0_to_1"] = idxes0_to_1
+        mask = self.create_bidirectional_mask(idxes0_to_1, idxes1_to_0)
+        if y_gt_idxes is not None:
+            result["extra_coarse_topk_recall"] = mask[y_gt_idxes]
 
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
