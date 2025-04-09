@@ -11,8 +11,8 @@ data:
 model:
   net:
     rope:
-      train_size: [832, 832]
-      test_size: [832, 832]
+      train_size: [896, 896]
+      test_size: [896, 896]
     coarse_matching:
       threshold: 0.3
   optimizer:

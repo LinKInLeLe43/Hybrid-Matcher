@@ -9,5 +9,5 @@ tags: ["train-new_matcher_one_stage-megadepth"]
 
 model:
   loss:
-    coarse_cls_sparse: false
+    coarse_cls_sparse: true
     extra_coarse_cls_sparse: false

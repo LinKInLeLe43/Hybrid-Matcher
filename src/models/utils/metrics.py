@@ -318,11 +318,11 @@ def _compute_pose_errors(
         b_points0, b_points1 = points0[mask], points1[mask]
         b_K0, b_K1 = K0[b], K1[b]
 
-        for _ in range(ransac_count):
-            idxes = torch.from_numpy(
-                np.random.permutation(np.arange(len(b_points0))))
-            b_points0 = b_points0[idxes]
-            b_points1 = b_points1[idxes]
+        for _ in range(1):
+            # idxes = torch.from_numpy(
+            #     np.random.permutation(np.arange(len(b_points0))))
+            # b_points0 = b_points0[idxes]
+            # b_points1 = b_points1[idxes]
 
             if enable_loransac:
                 out = _estimate_pose_with_lo_ransac(

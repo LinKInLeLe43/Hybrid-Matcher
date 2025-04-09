@@ -225,13 +225,14 @@ class CoarseMatching(nn.Module):
 
         topk = 8
         result = {}
+
+        confidence0_to_1 = F.softmax(similarity, dim=2)
+        confidence1_to_0 = F.softmax(similarity, dim=1)
+        confidence = confidence0_to_1 * confidence1_to_0
+        result["extra_coarse_cls_heatmap"] = confidence
+
         _similarity = similarity
-        if self.training:
-            confidence0_to_1 = F.softmax(similarity, dim=2)
-            confidence1_to_0 = F.softmax(similarity, dim=1)
-            confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_coarse_cls_heatmap"] = confidence
-            if y_gt_idxes is not None:
+        if self.training and y_gt_idxes is not None:
                 _similarity = similarity.clone()
                 _similarity[y_gt_idxes] = 1e9
 
