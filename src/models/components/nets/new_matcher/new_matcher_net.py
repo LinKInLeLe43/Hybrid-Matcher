@@ -35,7 +35,7 @@ class NewMatcherNet(nn.Module):
         pretrained = depth_anything_v2.pretrained
         pretrained.load_state_dict(torch.load("weights/dinov2_vits14_pretrain.pth", map_location="cpu"))
         self.pretrained = [pretrained]
-        self.dpt_head = ExpandedDPTHead(pretrained.embed_dim, features=96, out_channels=[96, 192, 384, 384])   
+        self.dpt_head = ExpandedDPTHead(pretrained.embed_dim, features=96, out_channels=[192, 384, 384])   
 
         # self.backbone = backbone
         self.rope = rope
@@ -128,11 +128,11 @@ class NewMatcherNet(nn.Module):
                 n, _, h, w = batch["image0"].shape
                 x = torch.cat([batch["color0"], batch["color1"]])
                 x = F.interpolate(x, size=(h // 16 * 14, w // 16 * 14), mode="bilinear")
-                features = self.pretrained[0].get_intermediate_layers(x, self.intermediate_layer_idx, return_class_token=True)
-                x_16x, x_8x = self.dpt_head(features, h // 16, w // 16)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                x0_8x, x1_8x = x_8x.chunk(2)
-                del features
+            features = self.pretrained[0].get_intermediate_layers(x, self.intermediate_layer_idx, return_class_token=True)
+            x_16x, x_8x = self.dpt_head(features[1:], h // 16, w // 16)
+            x0_16x, x1_16x = x_16x.chunk(2)
+            x0_8x, x1_8x = x_8x.chunk(2)
+            del features
         else:
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])

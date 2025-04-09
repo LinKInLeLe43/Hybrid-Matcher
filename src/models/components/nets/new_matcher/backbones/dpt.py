@@ -177,19 +177,13 @@ class ExpandedDPTHead(nn.Module):
             nn.ConvTranspose2d(
                 in_channels=out_channels[0],
                 out_channels=out_channels[0],
-                kernel_size=4,
-                stride=4,
-                padding=0),
-            nn.ConvTranspose2d(
-                in_channels=out_channels[1],
-                out_channels=out_channels[1],
                 kernel_size=2,
                 stride=2,
                 padding=0),
             nn.Identity(),
             nn.Conv2d(
-                in_channels=out_channels[3],
-                out_channels=out_channels[3],
+                in_channels=out_channels[2],
+                out_channels=out_channels[2],
                 kernel_size=3,
                 stride=2,
                 padding=1)
@@ -204,20 +198,20 @@ class ExpandedDPTHead(nn.Module):
                         nn.GELU()))
         
         self.scratch = _make_scratch(
-            out_channels,
+            [96] + out_channels,
             features,
             groups=1,
             expand=True,
         )
-        self.scratch.layer4_rn = nn.Conv2d(out_channels[3], out_channels[3], kernel_size=3, stride=1, padding=1, bias=False)
+        self.scratch.layer4_rn = nn.Conv2d(out_channels[2], out_channels[2], kernel_size=3, stride=1, padding=1, bias=False)
         del self.scratch.layer1_rn
         # self.scratch.stem_transpose = None
         
         # self.scratch.refinenet1 = _make_fusion_block(features, use_bn)
         # self.scratch.refinenet2 = _make_fusion_block(features, use_bn)
-        self.scratch.refinenet3 = _make_fusion_block(out_channels[2], use_bn)
-        self.scratch.refinenet4 = _make_fusion_block(out_channels[3], use_bn)
-        
+        self.scratch.refinenet3 = _make_fusion_block(out_channels[1], use_bn)
+        self.scratch.refinenet4 = _make_fusion_block(out_channels[2], use_bn)
+        del self.scratch.refinenet4.resConfUnit1
         # head_features_1 = features
         # head_features_2 = 32
         
@@ -247,7 +241,7 @@ class ExpandedDPTHead(nn.Module):
             
             out.append(x)
         
-        layer_1, layer_2, layer_3, layer_4 = out
+        layer_2, layer_3, layer_4 = out
         
         # layer_1_rn = self.scratch.layer1_rn(layer_1)
         layer_2_rn = self.scratch.layer2_rn(layer_2)
