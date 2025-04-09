@@ -32,10 +32,15 @@ class ScanNetDataset(data.Dataset):
                 self.names = self.names[mask]
 
     def _read_image(self, path: str) -> np.ndarray:
-        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        image = cv2.resize(image, (640, 480))
-        image = image / 255
-        return image
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        color = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        image = cv2.resize(image, (672, 448)) / 255
+        color = cv2.resize(color, (672, 448)) / 255
+
+        scale = np.array([640 / 672, 480 / 448])
+        return color, image, scale
 
     def _read_depth(self, path: str) -> np.ndarray:
         depth = cv2.imread(path, cv2.IMREAD_UNCHANGED)
@@ -55,8 +60,10 @@ class ScanNetDataset(data.Dataset):
         image_name1 = path.join(scene_name, "color", f"{stem1_name}.jpg")
         image_path0 = path.join(self.data_root, image_name0)
         image_path1 = path.join(self.data_root, image_name1)
-        image0 = self._read_image(image_path0)[None]
-        image1 = self._read_image(image_path1)[None]
+        color0, image0, scale0 = self._read_image(image_path0)
+        color1, image1, scale1 = self._read_image(image_path1)
+        color0, color1 = color0.transpose(2, 0, 1), color1.transpose(2, 0, 1)
+        image0, image1 = image0[None], image1[None]
 
         K0 = K1 = self.intrinsics[scene_name].copy().reshape(3, 3)
 
@@ -71,6 +78,10 @@ class ScanNetDataset(data.Dataset):
                 "name1": image_name1,
                 "image0": image0,
                 "image1": image1,
+                "color0": color0,
+                "color1": color1,
+                "scale0": scale0,
+                "scale1": scale1,
                 "K0": K0,
                 "K1": K1,
                 "T0_to_1": T0_to_1,
@@ -86,7 +97,7 @@ class ScanNetDataset(data.Dataset):
 
         for key, value in data.items():
             if isinstance(value, np.ndarray):
-                if self.fp16 and key in ["image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
+                if self.fp16 and key in ["color0", "color1", "image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
                     data[key] = torch.from_numpy(value).half()
                 else:
                     data[key] = torch.from_numpy(value).float()
