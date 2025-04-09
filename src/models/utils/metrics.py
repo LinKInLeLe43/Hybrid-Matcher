@@ -128,7 +128,7 @@ def _compute_end_point_errors(
             b_scale1).norm(dim=1)
         end_point_errors_per_batch[b] = end_point_errors.cpu().numpy()
 
-        gt_coarse_grid1 = (gt_coarse_points1[mask] / coarse_scale / b_scale1).round().long()
+        gt_coarse_grid1 = ((gt_coarse_points1[mask] / b_scale1 - 3.5) / coarse_scale).round().long()
         gt_coarse_3x3_grid1 = (
             gt_coarse_grid1[:, None] +
             K.create_meshgrid(3, 3, device=device).reshape(-1, 2))
