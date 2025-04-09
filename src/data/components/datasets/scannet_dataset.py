@@ -36,8 +36,9 @@ class ScanNetDataset(data.Dataset):
         color = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-        image = cv2.resize(image, (672, 448)) / 255
-        color = cv2.resize(color, (672, 448)) / 255
+        image = cv2.resize(image, (672, 448)) / 255.0
+        color = cv2.resize(color, (672, 448)) / 255.0
+        color = (color - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
 
         scale = np.array([640 / 672, 480 / 448])
         return color, image, scale
