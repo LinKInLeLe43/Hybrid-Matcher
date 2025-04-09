@@ -142,9 +142,8 @@ class AggregatedEncoder(nn.Module):
         self.attention = attention
         self.nchw = True
 
-        self.down_q = nn.Conv2d(
-            depth, depth, scale, stride=scale, groups=depth, bias=False)
-        self.down_kv = nn.MaxPool2d(scale, stride=scale)
+        self.down_q = nn.Identity()
+        self.down_kv = nn.Identity()
 
         self.q_proj = nn.Linear(depth, depth, bias=False)
         self.k_proj = nn.Linear(depth, depth, bias=False)
@@ -187,8 +186,8 @@ class AggregatedEncoder(nn.Module):
 
         out = self.merge(out)
         out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // s, x.shape[3] // s))
-        out = F.interpolate(out, scale_factor=s, mode="bilinear")
+        out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
+        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
 
         out = torch.cat([x, out], dim=1)
         out = out.permute(0, 2, 3, 1)
@@ -220,24 +219,25 @@ class LoFTR(nn.Module):
         self,
         feature0: torch.Tensor,
         feature1: torch.Tensor,
+        rope,
         size0: Optional[Tuple[int, int]] = None,
         size1: Optional[Tuple[int, int]] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.nchw:
-            if size0 is None or size1 is None:
-                raise ValueError("")
+        # if self.nchw:
+        #     if size0 is None or size1 is None:
+        #         raise ValueError("")
 
-            feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
-            feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
+        #     feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
+        #     feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
 
         for layer, type in zip(self.layers, self.types):
             if type == "self":
                 feature0 = layer(
-                    feature0, feature0, x_mask=mask0, source_mask=mask0)
+                    feature0, feature0, rope, x_mask=mask0, source_mask=mask0)
                 feature1 = layer(
-                    feature1, feature1, x_mask=mask1, source_mask=mask1)
+                    feature1, feature1, rope, x_mask=mask1, source_mask=mask1)
             elif type == "cross":
                 feature0 = layer(
                     feature0, feature1, x_mask=mask0, source_mask=mask1)
@@ -246,9 +246,9 @@ class LoFTR(nn.Module):
             else:
                 raise ValueError("")
 
-        if self.nchw:
-            feature0 = feature0.flatten(start_dim=2).transpose(1, 2)
-            feature1 = feature1.flatten(start_dim=2).transpose(1, 2)
+        # if self.nchw:
+        #     feature0 = feature0.flatten(start_dim=2).transpose(1, 2)
+        #     feature1 = feature1.flatten(start_dim=2).transpose(1, 2)
         return feature0, feature1
 
 

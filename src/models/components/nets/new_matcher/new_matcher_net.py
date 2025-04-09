@@ -125,11 +125,11 @@ class NewMatcherNet(nn.Module):
 
             x0_16x, x1_16x = [], []
             for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
-                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
+                b_x0_16x = self.local_coc(b_x0_8x)
+                b_x1_16x = self.local_coc(b_x1_8x)
 
                 b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
+                    b_x0_16x, b_x1_16x, rope=self.rope)
 
                 x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
                 x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
@@ -137,17 +137,16 @@ class NewMatcherNet(nn.Module):
         else:
             if x0_8x.shape == x1_8x.shape:
                 x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
+                x_16x = self.local_coc(x_8x)
                 x0_16x, x1_16x = x_16x.chunk(2)
-                x0_32x, x1_32x = x_32x.chunk(2)
+                # x0_32x, x1_32x = x_32x.chunk(2)
             else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
+                x0_16x = self.local_coc(x0_8x)
+                x1_16x = self.local_coc(x1_8x)
 
             x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
-                y1_mask=mask1_32x)
+                x0_16x, x1_16x, rope=self.rope,
+                mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
             x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
