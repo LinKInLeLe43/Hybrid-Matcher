@@ -49,8 +49,8 @@ def create_coarse_supervision(
     h0, w0, h1, w1 = map(lambda x: x // scale, (h0, w0, h1, w1))
     l0, l1 = h0 * w0, h1 * w1
     scale0, scale1 = batch.get("scale0"), batch.get("scale1")
-    scale0 = scale * scale0[:, None] if scale0 is not None else scale
-    scale1 = scale * scale1[:, None] if scale1 is not None else scale
+    # scale0 = scale * scale0[:, None] if scale0 is not None else scale
+    # scale1 = scale * scale1[:, None] if scale1 is not None else scale
     mask0, mask1 = batch.get(f"mask0_{scale}x"), batch.get(f"mask1_{scale}x")
 
     coors0 = K.create_meshgrid(
@@ -59,8 +59,11 @@ def create_coarse_supervision(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.reshape(1, -1, 2).repeat(n, 1, 1)
     coors1 = coors1.reshape(1, -1, 2).repeat(n, 1, 1)
-    points0 = scale0 * coors0
-    points1 = scale1 * coors1
+    points0 = scale * coors0 + 3.5
+    points1 = scale * coors1 + 3.5
+    if scale0 is not None and scale1 is not None:
+        points0 = points0 * scale0[:, None]
+        points1 = points1 * scale1[:, None]
     if mask0 is not None:
         points0[~mask0.flatten(start_dim=1)] = 0.0
         points1[~mask1.flatten(start_dim=1)] = 0.0
@@ -69,8 +72,13 @@ def create_coarse_supervision(
         points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(
         points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
-    flows0 = coors0_to_1 = points0_to_1 / scale1
-    flows1 = coors1_to_0 = points1_to_0 / scale0
+    if scale0 is not None and scale1 is not None:
+        points0 = points0 / scale0[:, None]
+        points1 = points1 / scale1[:, None]
+        points1_to_0 = points1_to_0 / scale0[:, None]
+        points0_to_1 = points0_to_1 / scale1[:, None]
+    flows0 = coors0_to_1 = (points0_to_1 - 3.5) / scale
+    flows1 = coors1_to_0 = (points1_to_0 - 3.5) / scale
 
     coors0_to_1 = coors0_to_1.round().long()
     coors1_to_0 = coors1_to_0.round().long()
@@ -111,12 +119,12 @@ def create_coarse_supervision(
         supervision["extra_coarse_gt_idxes"] = gt_idxes
 
     if return_coor:
-        if "scale0" in batch:
-            points1_to_0 = points1_to_0 / batch["scale0"][:, None]
-            points0 = points0 / batch["scale0"][:, None]
-        if "scale1" in batch:
-            points0_to_1 = points0_to_1 / batch["scale1"][:, None]
-            points1 = points1 / batch["scale1"][:, None]
+        # if "scale0" in batch:
+        #     points1_to_0 = points1_to_0 / batch["scale0"][:, None]
+        #     points0 = points0 / batch["scale0"][:, None]
+        # if "scale1" in batch:
+        #     points0_to_1 = points0_to_1 / batch["scale1"][:, None]
+        #     points1 = points1 / batch["scale1"][:, None]
         supervision["gt_points1_to_0"] = points1_to_0
         supervision["gt_points0"] = points0
         supervision["gt_points0_to_1"] = points0_to_1

@@ -80,8 +80,8 @@ class NewMatcherNet(nn.Module):
         m = len(result["points0"])
         b_idxes = result["idxes"][0]
 
-        coarse_points0 = self.scales[0] * result["points0"]
-        coarse_points1 = self.scales[0] * result["points1"]
+        coarse_points0 = self.scales[0] * result["points0"] + 3.5
+        coarse_points1 = self.scales[0] * result["points1"] + 3.5
 
         # biases0 = result.pop("fine_cls_biases0")[:m]
         # biases1 = result.pop("fine_cls_biases1")[:m]
