@@ -3,10 +3,10 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   type: ???
-  backbone:
-    _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
-    block_counts: [2, 4, 4]
-    layer_depths: [64, 128, 192]
+  # backbone:
+  #   _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
+  #   block_counts: [2, 4, 4]
+  #   layer_depths: [64, 128, 192]
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
     depth: 384
@@ -39,7 +39,7 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - ${model.net.backbone.layer_depths.2}
+        - 192
         - 384
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder

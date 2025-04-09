@@ -5,14 +5,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .backbones.dpt import DepthAnythingV2
+from .backbones.dpt import DepthAnythingV2, ExpandedDPTHead
 
 
 class NewMatcherNet(nn.Module):
     def __init__(
         self,
         type: str,
-        backbone: nn.Module,
+        # backbone: nn.Module,
         rope: nn.Module,
         # local_coc: nn.Module,
         coarse_module: nn.Module,
@@ -27,19 +27,17 @@ class NewMatcherNet(nn.Module):
         super().__init__()
         self.type = type
 
-        model_configs = {
-            'vits': {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]},
-            'vitb': {'encoder': 'vitb', 'features': 128, 'out_channels': [96, 192, 384, 768]},
-            'vitl': {'encoder': 'vitl', 'features': 256, 'out_channels': [256, 512, 1024, 1024]},
-            'vitg': {'encoder': 'vitg', 'features': 384, 'out_channels': [1536, 1536, 1536, 1536]}
-        }
+        model_configs = {'encoder': 'vits', 'features': 64, 'out_channels': [48, 96, 192, 384]}
 
-        depth_anything_v2 = DepthAnythingV2(**model_configs["vits"]).eval()
+        self.intermediate_layer_idx = [2, 5, 8, 11]
+
+        depth_anything_v2 = DepthAnythingV2(**model_configs).eval()
         pretrained = depth_anything_v2.pretrained
         pretrained.load_state_dict(torch.load("weights/dinov2_vits14_pretrain.pth", map_location="cpu"))
-        self.dinov2_vits14 = [pretrained]
+        self.pretrained = [pretrained]
+        self.dpt_head = ExpandedDPTHead(pretrained.embed_dim, features=96, out_channels=[96, 192, 384, 384])   
 
-        self.backbone = backbone
+        # self.backbone = backbone
         self.rope = rope
         # self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -51,8 +49,7 @@ class NewMatcherNet(nn.Module):
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
 
-        self.scales = (backbone.scales[0],
-                       backbone.scales[1])
+        self.scales = (8, 2)
         # self.reg_w = fine_reg_matching.window_size
 
         # if type == "two_stage":
@@ -116,24 +113,26 @@ class NewMatcherNet(nn.Module):
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+            # xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
 
-            x0s, x1s = [], []
-            for x in xs:
-                x0, x1 = x.chunk(2)
-                x0s.append(x0)
-                x1s.append(x1)
+            # x0s, x1s = [], []
+            # for x in xs:
+            #     x0, x1 = x.chunk(2)
+            #     x0s.append(x0)
+            #     x1s.append(x1)
 
             with torch.no_grad():
-                if self.dinov2_vits14[0].cls_token.device != batch["image0"].device:
-                    self.dinov2_vits14[0] = self.dinov2_vits14[0].to(batch["image0"].device)
+                if self.pretrained[0].cls_token.device != batch["image0"].device:
+                    self.pretrained[0] = self.pretrained[0].to(batch["image0"].device)
                 
                 n, _, h, w = batch["image0"].shape
                 x = torch.cat([batch["color0"], batch["color1"]])
                 x = F.interpolate(x, size=(h // 16 * 14, w // 16 * 14), mode="bilinear")
-                dinov2_features_14 = self.dinov2_vits14[0].forward_features(x)
-                x0_16x, x1_16x = dinov2_features_14['x_norm_patchtokens'].permute(0,2,1).reshape(2 * n, -1, h // 16, w // 16).chunk(2)
-                del dinov2_features_14
+                features = self.pretrained[0].get_intermediate_layers(x, self.intermediate_layer_idx, return_class_token=True)
+                x_16x, x_8x = self.dpt_head(features, h // 16, w // 16)
+                x0_16x, x1_16x = x_16x.chunk(2)
+                x0_8x, x1_8x = x_8x.chunk(2)
+                del features
         else:
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])
@@ -175,10 +174,10 @@ class NewMatcherNet(nn.Module):
                 mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+            x0_8x, x1_8x, x0_16x, x1_16x, x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
+        x0_8x, x1_8x = result.pop("x_8x")
 
         # x0_reg, x1_reg = self.fine_preprocess(
         #     x0s, x1s, result["coarse_cls_idxes"])

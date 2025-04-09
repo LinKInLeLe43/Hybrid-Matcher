@@ -146,3 +146,71 @@ class FeatureFusionBlock(nn.Module):
         output = self.out_conv(output)
 
         return output
+
+
+class ExpandedFeatureFusionBlock(nn.Module):
+    """Feature fusion block.
+    """
+
+    def __init__(
+        self, 
+        features, 
+        activation, 
+        deconv=False, 
+        bn=False, 
+        expand=False, 
+        align_corners=True,
+        size=None
+    ):
+        """Init.
+        
+        Args:
+            features (int): number of features
+        """
+        super(FeatureFusionBlock, self).__init__()
+
+        self.deconv = deconv
+        self.align_corners = align_corners
+
+        self.groups=1
+
+        self.expand = expand
+        out_features = features
+        if self.expand == True:
+            out_features = features // 2
+        
+        self.out_conv = nn.Conv2d(features, out_features, kernel_size=1, stride=1, padding=0, bias=True, groups=1)
+
+        self.resConfUnit1 = ResidualConvUnit(features, activation, bn)
+        self.resConfUnit2 = ResidualConvUnit(features, activation, bn)
+        
+        self.skip_add = nn.quantized.FloatFunctional()
+
+        self.size=size
+
+    def forward(self, *xs, size=None):
+        """Forward pass.
+
+        Returns:
+            tensor: output
+        """
+        output = xs[0]
+
+        if len(xs) == 2:
+            res = self.resConfUnit1(xs[1])
+            output = self.skip_add.add(output, res)
+
+        output = self.resConfUnit2(output)
+
+        if (size is None) and (self.size is None):
+            modifier = {"scale_factor": 2}
+        elif size is None:
+            modifier = {"size": self.size}
+        else:
+            modifier = {"size": size}
+
+        output = nn.functional.interpolate(output, **modifier, mode="bilinear", align_corners=self.align_corners)
+        
+        output = self.out_conv(output)
+
+        return output
