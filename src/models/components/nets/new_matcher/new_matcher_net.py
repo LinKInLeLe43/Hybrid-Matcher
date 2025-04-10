@@ -34,7 +34,7 @@ class NewMatcherNet(nn.Module):
             block_chunks = 0,
         )
         dinov2_vits14 = vit_small(**vit_kwargs).eval()
-        dinov2_vits14.load_state_dict(torch.load("weights/dinov2_vits14_pretrain.pth", map_location="cpu"))
+        dinov2_vits14.load_state_dict(torch.load("weights/depth_anything_v2_vits.pth", map_location="cpu"))
         self.dinov2_vits14 = [dinov2_vits14]
 
         self.backbone = backbone

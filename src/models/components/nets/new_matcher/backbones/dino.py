@@ -295,6 +295,12 @@ class DinoVisionTransformer(nn.Module):
         else:
             return self.head(ret["x_norm_clstoken"])
 
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        for k in list(state_dict.keys()):
+            if k.startswith('pretrained.'):
+                state_dict[k.replace('pretrained.', '', 1)] = state_dict.pop(k)
+        return super().load_state_dict(state_dict, *args, **kwargs)
+
 
 def init_weights_vit_timm(module: nn.Module, name: str = ""):
     """ViT weight initialization, original timm impl (for reproducibility)"""
