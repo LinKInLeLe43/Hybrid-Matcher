@@ -130,6 +130,7 @@ class CoarseMatching(nn.Module):
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
         score, idxes0_to_1, idxes1_to_0 = score
+        coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1)
@@ -150,6 +151,8 @@ class CoarseMatching(nn.Module):
             sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
             idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
             idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
+            if gt_idxes is not None:
+                coarse_recall_mask = self.create_bidirectional_mask(idxes0_to_1[:, :, None], idxes1_to_0[:, None, :])
             idxes0_to_1 = self._remove_border_for_eval(
                 idxes0_to_1, size0, mask0)
             idxes1_to_0 = self._remove_border_for_eval(
@@ -174,6 +177,8 @@ class CoarseMatching(nn.Module):
                   "points1": points1,
                   "scores": scores,
                   "coarse_cls_idxes": train_idxes}
+        if coarse_recall_mask is not None:
+            result["coarse_recall"] = coarse_recall_mask[gt_idxes]
         return result
 
     def create_bidirectional_mask(
@@ -238,9 +243,9 @@ class CoarseMatching(nn.Module):
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
         result["extra_idxes0_to_1"] = idxes0_to_1
-        mask = self.create_bidirectional_mask(idxes0_to_1, idxes1_to_0)
         if y_gt_idxes is not None:
-            result["extra_coarse_topk_recall"] = mask[y_gt_idxes]
+            extra_coarse_topk_recall_mask = self.create_bidirectional_mask(idxes0_to_1, idxes1_to_0)
+            result["extra_coarse_topk_recall"] = extra_coarse_topk_recall_mask[y_gt_idxes]
 
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(

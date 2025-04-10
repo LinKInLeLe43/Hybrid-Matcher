@@ -213,6 +213,9 @@ class MatchingModule(pl.LightningModule):
                 "val_metric/inlier_extra_coarse_topk_precision",
                 metric.pop("inlier_extra_coarse_topk_precision"))
             self.log(
+                "val_metric/coarse_recall",
+                metric.pop("coarse_recall"))
+            self.log(
                 "val_metric/extra_coarse_topk_recall",
                 metric.pop("extra_coarse_topk_recall"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
@@ -311,6 +314,9 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/inlier_extra_coarse_topk_precision",
                 metric.pop("inlier_extra_coarse_topk_precision"))
+            self.log(
+                "test_metric/coarse_recall",
+                metric.pop("coarse_recall"))
             self.log(
                 "test_metric/extra_coarse_topk_recall",
                 metric.pop("extra_coarse_topk_recall"))
