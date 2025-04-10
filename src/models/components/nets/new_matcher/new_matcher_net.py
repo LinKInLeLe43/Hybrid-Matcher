@@ -34,10 +34,12 @@ class NewMatcherNet(nn.Module):
             block_chunks = 0,
         )
         dinov2_vits14 = vit_small(**vit_kwargs).eval()
-        dinov2_vits14.load_state_dict(torch.load("weights/depth_anything_v2_vits.pth", map_location="cpu"))
+        dinov2_vits14.load_state_dict(torch.load("weights/dinov2_vits14_pretrain.pth", map_location="cpu"))
         self.dinov2_vits14 = [dinov2_vits14]
 
         self.backbone = backbone
+        self.backbone.scales = (8, 2)
+        self.backbone.load_state_dict(torch.load('weights/RepVGG-A1-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         # self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -114,7 +116,7 @@ class NewMatcherNet(nn.Module):
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
         if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+            xs = self.backbone(torch.cat([batch["color0"], batch["color1"]]))
 
             x0s, x1s = [], []
             for x in xs:

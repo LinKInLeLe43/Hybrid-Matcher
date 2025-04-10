@@ -1,170 +1,249 @@
-from typing import List, Tuple
+# --------------------------------------------------------
+# RepVGG: Making VGG-style ConvNets Great Again (https://openaccess.thecvf.com/content/CVPR2021/papers/Ding_RepVGG_Making_VGG-Style_ConvNets_Great_Again_CVPR_2021_paper.pdf)
+# Github source: https://github.com/DingXiaoH/RepVGG
+# Licensed under The MIT License [see LICENSE for details]
+# Modified from: https://github.com/DingXiaoH/RepVGG/blob/main/repvgg.py
+# --------------------------------------------------------
+import copy
 
-import kornia as K
+import numpy as np
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+
+# from se_block import SEBlock
 
 
-def _create_conv_bn_branch(
-    in_depth: int,
-    out_depth: int,
-    kernel_size,
-    stride: int = 1,
-    padding: int = 0
-) -> nn.Module:
-    branch = nn.Sequential()
-    branch.add_module(
-        "conv",
-        nn.Conv2d(
-            in_depth, out_depth, kernel_size, stride=stride, padding=padding,
-            bias=False))
-    branch.add_module("bn", nn.BatchNorm2d(out_depth))
-    return branch
+def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups=1):
+    result = nn.Sequential()
+    result.add_module('conv', nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
+                                                  kernel_size=kernel_size, stride=stride, padding=padding, groups=groups, bias=False))
+    result.add_module('bn', nn.BatchNorm2d(num_features=out_channels))
+    return result
 
+class RepVGGBlock(nn.Module):
 
-class RepVggBlock(nn.Module):
-    def __init__(
-        self,
-        in_depth: int,
-        out_depth: int,
-        stride: int = 1,
-        deploy: bool = False
-    ) -> None:
-        super().__init__()
+    def __init__(self, in_channels, out_channels, kernel_size,
+                 stride=1, padding=0, dilation=1, groups=1, padding_mode='zeros', deploy=False, use_se=False):
+        super(RepVGGBlock, self).__init__()
         self.deploy = deploy
+        self.groups = groups
+        self.in_channels = in_channels
+
+        assert kernel_size == 3
+        assert padding == 1
+
+        padding_11 = padding - kernel_size // 2
+
+        self.nonlinearity = nn.ReLU()
+
+        if use_se:
+            #   Note that RepVGG-D2se uses SE before nonlinearity. But RepVGGplus models uses SE after nonlinearity.
+            # self.se = SEBlock(out_channels, internal_neurons=out_channels // 16)
+            raise ValueError("SEBlock is not supported.")
+        else:
+            self.se = nn.Identity()
 
         if deploy:
-            self.branch_reparam = nn.Conv2d(
-                in_depth,  out_depth, 3, stride=stride, padding=1)
-        else:
-            self.branch_3x3 = _create_conv_bn_branch(
-                in_depth, out_depth, 3, stride=stride, padding=1)
-            self.branch_1x1 = _create_conv_bn_branch(
-                in_depth, out_depth, 1, stride=stride)
-            self.branch_identity = None
-            if out_depth == in_depth and stride == 1:
-                self.branch_identity = nn.BatchNorm2d(in_depth)
-        self.relu = nn.ReLU(inplace=True)
+            self.rbr_reparam = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride,
+                                      padding=padding, dilation=dilation, groups=groups, bias=True, padding_mode=padding_mode)
 
-    def _fuse_bn(
-        self,
-        branch: nn.Module
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        else:
+            self.rbr_identity = nn.BatchNorm2d(num_features=in_channels) if out_channels == in_channels and stride == 1 else None
+            self.rbr_dense = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, groups=groups)
+            self.rbr_1x1 = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=stride, padding=padding_11, groups=groups)
+            # print('RepVGG Block, identity = ', self.rbr_identity)
+
+
+    def forward(self, inputs):
+        if hasattr(self, 'rbr_reparam'):
+            return self.nonlinearity(self.se(self.rbr_reparam(inputs)))
+
+        if self.rbr_identity is None:
+            id_out = 0
+        else:
+            id_out = self.rbr_identity(inputs)
+
+        return self.nonlinearity(self.se(self.rbr_dense(inputs) + self.rbr_1x1(inputs) + id_out))
+
+
+    #   Optional. This may improve the accuracy and facilitates quantization in some cases.
+    #   1.  Cancel the original weight decay on rbr_dense.conv.weight and rbr_1x1.conv.weight.
+    #   2.  Use like this.
+    #       loss = criterion(....)
+    #       for every RepVGGBlock blk:
+    #           loss += weight_decay_coefficient * 0.5 * blk.get_cust_L2()
+    #       optimizer.zero_grad()
+    #       loss.backward()
+    def get_custom_L2(self):
+        K3 = self.rbr_dense.conv.weight
+        K1 = self.rbr_1x1.conv.weight
+        t3 = (self.rbr_dense.bn.weight / ((self.rbr_dense.bn.running_var + self.rbr_dense.bn.eps).sqrt())).reshape(-1, 1, 1, 1).detach()
+        t1 = (self.rbr_1x1.bn.weight / ((self.rbr_1x1.bn.running_var + self.rbr_1x1.bn.eps).sqrt())).reshape(-1, 1, 1, 1).detach()
+
+        l2_loss_circle = (K3 ** 2).sum() - (K3[:, :, 1:2, 1:2] ** 2).sum()      # The L2 loss of the "circle" of weights in 3x3 kernel. Use regular L2 on them.
+        eq_kernel = K3[:, :, 1:2, 1:2] * t3 + K1 * t1                           # The equivalent resultant central point of 3x3 kernel.
+        l2_loss_eq_kernel = (eq_kernel ** 2 / (t3 ** 2 + t1 ** 2)).sum()        # Normalize for an L2 coefficient comparable to regular L2.
+        return l2_loss_eq_kernel + l2_loss_circle
+
+
+
+#   This func derives the equivalent kernel and bias in a DIFFERENTIABLE way.
+#   You can get the equivalent kernel and bias at any time and do whatever you want,
+    #   for example, apply some penalties or constraints during training, just like you do to the other models.
+#   May be useful for quantization or pruning.
+    def get_equivalent_kernel_bias(self):
+        kernel3x3, bias3x3 = self._fuse_bn_tensor(self.rbr_dense)
+        kernel1x1, bias1x1 = self._fuse_bn_tensor(self.rbr_1x1)
+        kernelid, biasid = self._fuse_bn_tensor(self.rbr_identity)
+        return kernel3x3 + self._pad_1x1_to_3x3_tensor(kernel1x1) + kernelid, bias3x3 + bias1x1 + biasid
+
+    def _pad_1x1_to_3x3_tensor(self, kernel1x1):
+        if kernel1x1 is None:
+            return 0
+        else:
+            return torch.nn.functional.pad(kernel1x1, [1,1,1,1])
+
+    def _fuse_bn_tensor(self, branch):
+        if branch is None:
+            return 0, 0
         if isinstance(branch, nn.Sequential):
-            bn = branch.bn
-            weight = branch.conv.weight
-            if branch.conv.kernel_size == (1, 1):
-                weight = F.pad(weight, (1, 1, 1, 1))
-        elif isinstance(branch, nn.BatchNorm2d):
-            assert isinstance(branch, nn.BatchNorm2d)
-            bn = branch
-            if not hasattr(self, "template_identity"):
-                depth = bn.num_features
-                self.template_identity = torch.zeros(
-                    (depth, depth, 3, 3), device=bn.weight.device)
-                self.template_identity[range(depth), range(depth), 1, 1] = 1.0
-            weight = self.template_identity
+            kernel = branch.conv.weight
+            running_mean = branch.bn.running_mean
+            running_var = branch.bn.running_var
+            gamma = branch.bn.weight
+            beta = branch.bn.bias
+            eps = branch.bn.eps
         else:
-            assert False
-        std = (bn.running_var + bn.eps).sqrt()
-        fused_weight = (bn.weight / std)[:, None, None, None] * weight
-        fused_bias = bn.bias - bn.running_mean * bn.weight / std
-        return fused_weight, fused_bias
+            assert isinstance(branch, nn.BatchNorm2d)
+            if not hasattr(self, 'id_tensor'):
+                input_dim = self.in_channels // self.groups
+                kernel_value = np.zeros((self.in_channels, input_dim, 3, 3), dtype=np.float32)
+                for i in range(self.in_channels):
+                    kernel_value[i, i % input_dim, 1, 1] = 1
+                self.id_tensor = torch.from_numpy(kernel_value).to(branch.weight.device)
+            kernel = self.id_tensor
+            running_mean = branch.running_mean
+            running_var = branch.running_var
+            gamma = branch.weight
+            beta = branch.bias
+            eps = branch.eps
+        std = (running_var + eps).sqrt()
+        t = (gamma / std).reshape(-1, 1, 1, 1)
+        return kernel * t, beta - running_mean * gamma / std
 
-    def _get_eq_weight_bias(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        weight_3x3, bias_3x3 = self._fuse_bn(self.branch_3x3)
-        weight_1x1, bias_1x1 = self._fuse_bn(self.branch_1x1)
-        weight = weight_3x3 + weight_1x1
-        bias = bias_3x3 + bias_1x1
-
-        if self.branch_identity is not None:
-            weight_identity, bias_identity = self._fuse_bn(self.branch_identity)
-            weight += weight_identity
-            bias += bias_identity
-        return weight, bias
-
-    def switch_to_deploy(self) -> None:
-        if hasattr(self, "branch_reparam"):
+    def switch_to_deploy(self):
+        if hasattr(self, 'rbr_reparam'):
             return
-
-        conv_3x3 = self.branch_3x3.conv
-        self.branch_reparam = nn.Conv2d(
-            conv_3x3.in_channels, conv_3x3.out_channels, conv_3x3.kernel_size,
-            stride=conv_3x3.stride, padding=conv_3x3.padding)
-        (self.branch_reparam.weight.data,
-         self.branch_reparam.bias.data) = self._get_eq_weight_bias()
-
-        del self.branch_3x3
-        del self.branch_1x1
-        del self.branch_identity
-        if hasattr(self, "template_identity"):
-            del self.template_identity
+        kernel, bias = self.get_equivalent_kernel_bias()
+        self.rbr_reparam = nn.Conv2d(in_channels=self.rbr_dense.conv.in_channels, out_channels=self.rbr_dense.conv.out_channels,
+                                     kernel_size=self.rbr_dense.conv.kernel_size, stride=self.rbr_dense.conv.stride,
+                                     padding=self.rbr_dense.conv.padding, dilation=self.rbr_dense.conv.dilation, groups=self.rbr_dense.conv.groups, bias=True)
+        self.rbr_reparam.weight.data = kernel
+        self.rbr_reparam.bias.data = bias
+        self.__delattr__('rbr_dense')
+        self.__delattr__('rbr_1x1')
+        if hasattr(self, 'rbr_identity'):
+            self.__delattr__('rbr_identity')
+        if hasattr(self, 'id_tensor'):
+            self.__delattr__('id_tensor')
         self.deploy = True
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.deploy:
-            out = self.branch_reparam(x)
-        else:
-            out = self.branch_3x3(x) + self.branch_1x1(x)
-            if self.branch_identity is not None:
-                out += self.branch_identity(x)
-        out = self.relu(out)
-        return out
 
 
-class RepVgg82(nn.Module):
-    def __init__(
-        self,
-        block_counts: List[int],
-        layer_depths: List[int],
-        deploy: bool = False
-    ) -> None:
-        super().__init__()
+class RepVGG(nn.Module):
+
+    def __init__(self, num_blocks, num_classes=1000, width_multiplier=None, override_groups_map=None, deploy=False, use_se=False, use_checkpoint=False):
+        super(RepVGG, self).__init__()
+        assert len(width_multiplier) == 4
         self.deploy = deploy
-        self.in_depth = layer_depths[0]
-        self.scales = (8, 2)
+        self.override_groups_map = override_groups_map or dict()
+        assert 0 not in self.override_groups_map
+        self.use_se = use_se
+        self.use_checkpoint = use_checkpoint
 
-        self.conv = nn.Conv2d(
-            1, self.in_depth, 7, stride=2, padding=3, bias=False)
-        self.norm = nn.BatchNorm2d(layer_depths[0])
-        self.relu = nn.ReLU(inplace=True)
+        self.in_planes = min(64, int(64 * width_multiplier[0]))
+        self.stage0 = RepVGGBlock(in_channels=3, out_channels=self.in_planes, kernel_size=3, stride=2, padding=1, deploy=self.deploy, use_se=self.use_se)
+        self.cur_layer_idx = 1
+        self.stage1 = self._make_stage(int(64 * width_multiplier[0]), num_blocks[0], stride=1)
+        self.stage2 = self._make_stage(int(128 * width_multiplier[1]), num_blocks[1], stride=2)
+        self.stage3 = self._make_stage(int(256 * width_multiplier[2]), num_blocks[2], stride=2)
+        # self.stage4 = self._make_stage(int(512 * width_multiplier[3]), num_blocks[3], stride=2)
+        # self.gap = nn.AdaptiveAvgPool2d(output_size=1)
+        # self.linear = nn.Linear(int(512 * width_multiplier[3]), num_classes)
 
-        self.layer0 = self._make_layer(  # 1/2
-            layer_depths[0], block_counts[0])
-        self.layer1 = self._make_layer(  # 1/4
-            layer_depths[1], block_counts[1], stride=2)
-        self.layer2 = self._make_layer(  # 1/8
-            layer_depths[2], block_counts[2], stride=2)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(
-                    m.weight, mode="fan_out", nonlinearity="relu")
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.constant_(m.weight, 1.0)
-                nn.init.constant_(m.bias, 0.0)
-
-    def _make_layer(
-        self,
-        out_depth: int,
-        block_count: int,
-        stride: int = 1
-    ) -> nn.Module:
-        strides = [stride] + (block_count - 1) * [1]
-        layer = nn.Sequential()
+    def _make_stage(self, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        blocks = []
         for stride in strides:
-            layer.append(RepVggBlock(
-                self.in_depth, out_depth, stride=stride, deploy=self.deploy))
-            self.in_depth = out_depth
-        return layer
+            cur_groups = self.override_groups_map.get(self.cur_layer_idx, 1)
+            blocks.append(RepVGGBlock(in_channels=self.in_planes, out_channels=planes, kernel_size=3,
+                                      stride=stride, padding=1, groups=cur_groups, deploy=self.deploy, use_se=self.use_se))
+            self.in_planes = planes
+            self.cur_layer_idx += 1
+        return nn.ModuleList(blocks)
 
-    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
-        x = self.conv(x)
-        x = self.norm(x)
-        x = self.relu(x)
+    def forward(self, x):
+        # out = self.stage0(x)
+        # for stage in (self.stage1, self.stage2, self.stage3, self.stage4):
+        #     for block in stage:
+        #         if self.use_checkpoint:
+        #             out = checkpoint.checkpoint(block, out)
+        #         else:
+        #             out = block(out)
+        # out = self.gap(out)
+        # out = out.view(out.size(0), -1)
+        # out = self.linear(out)
+        # return out
 
-        x0 = self.layer0(x)
-        x1 = self.layer1(x0)
-        x2 = self.layer2(x1)
-        return [x0, x1, x2]
+        out = self.stage0(x) # 1/2
+        for module in self.stage1:
+            out = module(out) # 1/2
+        x1 = out
+        for module in self.stage2:
+            out = module(out) # 1/4
+        x2 = out
+        for module in self.stage3:
+            out = module(out) # 1/8
+        x3 = out
+
+        return x1, x2, x3
+
+
+optional_groupwise_layers = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26]
+g2_map = {l: 2 for l in optional_groupwise_layers}
+g4_map = {l: 4 for l in optional_groupwise_layers}
+
+def create_RepVGG_A1(deploy=False, use_checkpoint=False):
+    return RepVGG(num_blocks=[2, 4, 14, 1], num_classes=1000,
+                  width_multiplier=[1, 1, 1, 2.5], override_groups_map=None, deploy=deploy, use_checkpoint=use_checkpoint)
+
+def create_RepVGG_B0(deploy=False, use_checkpoint=False):
+    return RepVGG(num_blocks=[4, 6, 16, 1], num_classes=1000,
+                  width_multiplier=[1, 1, 1, 2.5], override_groups_map=None, deploy=deploy, use_checkpoint=use_checkpoint)
+
+
+#   Use this for converting a RepVGG model or a bigger model with RepVGG as its component
+#   Use like this
+#   model = create_RepVGG_A0(deploy=False)
+#   train model or load weights
+#   repvgg_model_convert(model, save_path='repvgg_deploy.pth')
+#   If you want to preserve the original model, call with do_copy=True
+
+#   ====================== for using RepVGG as the backbone of a bigger model, e.g., PSPNet, the pseudo code will be like
+#   train_backbone = create_RepVGG_B2(deploy=False)
+#   train_backbone.load_state_dict(torch.load('RepVGG-B2-train.pth'))
+#   train_pspnet = build_pspnet(backbone=train_backbone)
+#   segmentation_train(train_pspnet)
+#   deploy_pspnet = repvgg_model_convert(train_pspnet)
+#   segmentation_test(deploy_pspnet)
+#   =====================   example_pspnet.py shows an example
+
+def repvgg_model_convert(model:torch.nn.Module, save_path=None, do_copy=True):
+    if do_copy:
+        model = copy.deepcopy(model)
+    for module in model.modules():
+        if hasattr(module, 'switch_to_deploy'):
+            module.switch_to_deploy()
+    if save_path is not None:
+        torch.save(model.state_dict(), save_path)
+    return model
