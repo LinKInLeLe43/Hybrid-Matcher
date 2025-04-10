@@ -127,9 +127,10 @@ class NewMatcherNet(nn.Module):
                     self.dinov2_vits14[0] = self.dinov2_vits14[0].to(batch["image0"].device)
                 
                 n, _, h, w = batch["image0"].shape
-                dinov2_features_14 = self.dinov2_vits14[0].forward_features(torch.cat([batch["color0"], batch["color1"]]))
-                x_14x = dinov2_features_14['x_norm_patchtokens'].permute(0,2,1).reshape(2 * n, -1, h // 14, w // 14)
-                x0_16x, x1_16x = F.interpolate(x_14x, size=(h // 16, w // 16), mode="bilinear").chunk(2)
+                x = torch.cat([batch["color0"], batch["color1"]])
+                x = F.interpolate(x, size=(h // 16 * 14, w // 16 * 14), mode="bilinear")
+                dinov2_features_14 = self.dinov2_vits14[0].forward_features(x)
+                x0_16x, x1_16x = dinov2_features_14['x_norm_patchtokens'].permute(0,2,1).reshape(2 * n, -1, h // 16, w // 16).chunk(2)
                 del dinov2_features_14
         else:
             x0s = self.backbone(batch["image0"])
