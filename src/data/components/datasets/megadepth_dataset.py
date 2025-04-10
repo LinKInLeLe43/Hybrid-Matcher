@@ -39,7 +39,9 @@ class MegaDepthDataset(data.Dataset):
         self,
         path: str
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        color = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         h, w = image.shape
 
         k = self.image_size / max(w, h)
@@ -47,16 +49,20 @@ class MegaDepthDataset(data.Dataset):
         new_w = int(new_w // self.image_factor * self.image_factor)
         new_h = int(new_h // self.image_factor * self.image_factor)
         image = cv2.resize(image, (new_w, new_h))
+        color = cv2.resize(color, (new_w, new_h))
         scale = np.array([w / new_w, h / new_h])
 
         length = max(new_w, new_h)
+        padded_color = np.zeros((length, length, 3), dtype=image.dtype)
+        padded_color[:new_h, :new_w] = color
+        padded_color = padded_color / 255
         padded_image = np.zeros((length, length), dtype=image.dtype)
         padded_image[:new_h, :new_w] = image
         padded_image = padded_image / 255
 
         mask = np.zeros((length, length), dtype=np.bool_)
         mask[:new_h, :new_w] = True
-        return padded_image, mask, scale
+        return padded_color, padded_image, mask, scale
 
     def _read_depth(self, path: str) -> np.ndarray:
         depth = np.array(h5py.File(path, "r")["depth"])
@@ -73,8 +79,9 @@ class MegaDepthDataset(data.Dataset):
         image_name0, image_name1 = self.scene_info["image_paths"][idxes]
         image_path0 = path.join(self.data_root, image_name0)
         image_path1 = path.join(self.data_root, image_name1)
-        image0, mask0, scale0 = self._read_image(image_path0)
-        image1, mask1, scale1 = self._read_image(image_path1)
+        color0, image0, mask0, scale0 = self._read_image(image_path0)
+        color1, image1, mask1, scale1 = self._read_image(image_path1)
+        color0, color1 = color0.transpose(2, 0, 1), color1.transpose(2, 0, 1)
         image0, image1 = image0[None], image1[None]
 
         K0, K1 = self.scene_info["intrinsics"][idxes].copy()
@@ -84,6 +91,8 @@ class MegaDepthDataset(data.Dataset):
 
         data = {"name0": image_name0,
                 "name1": image_name1,
+                "color0": color0,
+                "color1": color1,
                 "image0": image0,
                 "image1": image1,
                 "mask0": mask0,
@@ -104,7 +113,7 @@ class MegaDepthDataset(data.Dataset):
 
         for key, value in data.items():
             if isinstance(value, np.ndarray):
-                if self.fp16 and key in ["image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
+                if self.fp16 and key in ["color0", "color1", "image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
                     data[key] = torch.from_numpy(value).half()
                 else:
                     data[key] = torch.from_numpy(value).float()
