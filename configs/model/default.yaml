@@ -16,25 +16,21 @@ net:
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
     initial_depth: ${model.net.backbone.layer_depths.2}
-    scales: [2, 2]
-    blocks_counts: [2, 2]
-    layer_depths: [256, 256]
-    hidden_depths: [256, 256]
-    heads_counts: [8, 8]
-    center_sizes: [4, 2]
-    fold_sizes: [1, 1]
+    scales: [2]
+    blocks_counts: [2]
+    layer_depths: [256]
+    hidden_depths: [256]
+    heads_counts: [8]
+    center_sizes: [4]
+    fold_sizes: [1]
   coarse_module:
-    _target_: src.models.components.nets.new_matcher.GlobalCoC
-    scale: 2
-    in_depth: ${model.net.local_coc.layer_depths.0}
-    hidden_depth: ${model.net.coarse_module.in_depth}
-    heads_count: 8
-    layer_count: 2
-    attention_block:
+    _target_: src.models.components.nets.new_matcher.LoFTR
+    types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
+    encoder:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
-      depth: ${model.net.coarse_module.in_depth}
-      heads_count: ${model.net.coarse_module.heads_count}
-      scale: ${model.net.coarse_module.scale}
+      depth: 256
+      heads_count: 8
+      scale: 2
       attention:
         _target_: src.models.components.nets.new_matcher.Attention
   coarse_matching:
@@ -44,7 +40,7 @@ net:
       scale: 2
       depths:
         - ${model.net.backbone.layer_depths.2}
-        - ${model.net.local_coc.layer_depths.0}
+        - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
