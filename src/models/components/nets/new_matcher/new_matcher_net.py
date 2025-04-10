@@ -39,7 +39,7 @@ class NewMatcherNet(nn.Module):
 
         self.backbone = backbone
         self.backbone.scales = (8, 2)
-        self.backbone.load_state_dict(torch.load('weights/RepVGG-A1-train.pth', map_location='cpu'), strict=False)
+        self.backbone.load_state_dict(torch.load('weights/RepVGG-A2-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         # self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -72,6 +72,11 @@ class NewMatcherNet(nn.Module):
         #         dtype=torch.long)
         #     delta = delta.reshape(-1, 2)
         #     self.register_buffer("fine_reg_delta", delta, persistent=False)
+
+        self.ffn = nn.Sequential(
+            nn.Conv2d(384 + 384, 384 + 384, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(384 + 384, 384, 1, bias=False))
 
     def _scale_points(
         self,
@@ -134,6 +139,9 @@ class NewMatcherNet(nn.Module):
                 dinov2_features_14 = self.dinov2_vits14[0].forward_features(x)
                 x0_16x, x1_16x = dinov2_features_14['x_norm_patchtokens'].permute(0,2,1).reshape(2 * n, -1, h // 16, w // 16).chunk(2)
                 del dinov2_features_14
+            
+            x0_16x = self.ffn(torch.cat([x0_16x, x0s.pop(-1)], dim=1))
+            x1_16x = self.ffn(torch.cat([x1_16x, x1s.pop(-1)], dim=1))
         else:
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])

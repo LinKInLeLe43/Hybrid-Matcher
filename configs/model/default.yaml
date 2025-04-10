@@ -4,7 +4,7 @@ net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   type: ???
   backbone:
-    _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A1
+    _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A2
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
     depth: 384
@@ -37,7 +37,7 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - 256
+        - 192
         - 384
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder

@@ -164,7 +164,7 @@ class RepVGG(nn.Module):
         self.in_planes = min(64, int(64 * width_multiplier[0]))
         self.stage0 = RepVGGBlock(in_channels=3, out_channels=self.in_planes, kernel_size=3, stride=2, padding=1, deploy=self.deploy, use_se=self.use_se)
         self.cur_layer_idx = 1
-        self.stage1 = self._make_stage(int(64 * width_multiplier[0]), num_blocks[0], stride=1)
+        self.stage1 = self._make_stage(int(64 * width_multiplier[0]), num_blocks[0], stride=2)
         self.stage2 = self._make_stage(int(128 * width_multiplier[1]), num_blocks[1], stride=2)
         self.stage3 = self._make_stage(int(256 * width_multiplier[2]), num_blocks[2], stride=2)
         # self.stage4 = self._make_stage(int(512 * width_multiplier[3]), num_blocks[3], stride=2)
@@ -213,9 +213,9 @@ optional_groupwise_layers = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26]
 g2_map = {l: 2 for l in optional_groupwise_layers}
 g4_map = {l: 4 for l in optional_groupwise_layers}
 
-def create_RepVGG_A1(deploy=False, use_checkpoint=False):
+def create_RepVGG_A2(deploy=False, use_checkpoint=False):
     return RepVGG(num_blocks=[2, 4, 14, 1], num_classes=1000,
-                  width_multiplier=[1, 1, 1, 2.5], override_groups_map=None, deploy=deploy, use_checkpoint=use_checkpoint)
+                  width_multiplier=[1.5, 1.5, 1.5, 2.75], override_groups_map=None, deploy=deploy, use_checkpoint=use_checkpoint)
 
 def create_RepVGG_B0(deploy=False, use_checkpoint=False):
     return RepVGG(num_blocks=[4, 6, 16, 1], num_classes=1000,
