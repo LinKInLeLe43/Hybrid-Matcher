@@ -123,7 +123,8 @@ def _compute_end_point_errors(
             b_scale1).norm(dim=1)
         end_point_errors_per_batch[b] = end_point_errors.cpu().numpy()
 
-        gt_coarse_grid1 = (gt_coarse_points1[mask] / coarse_scale / b_scale1)
+        offset = (coarse_scale - 1) / 2
+        gt_coarse_grid1 = ((gt_coarse_points1[mask] / b_scale1 - offset) / coarse_scale)
         gt_coarse_3x3_grid1 = (
             gt_coarse_grid1[:, None].round().long() +
             K.create_meshgrid(3, 3, device=device).reshape(-1, 2))
@@ -292,11 +293,11 @@ def _compute_pose_errors(
         b_points0, b_points1 = points0[mask], points1[mask]
         b_K0, b_K1 = K0[b], K1[b]
 
-        for _ in range(ransac_count):
-            idxes = torch.from_numpy(
-                np.random.permutation(np.arange(len(b_points0))))
-            b_points0 = b_points0[idxes]
-            b_points1 = b_points1[idxes]
+        for _ in range(1):
+            # idxes = torch.from_numpy(
+            #     np.random.permutation(np.arange(len(b_points0))))
+            # b_points0 = b_points0[idxes]
+            # b_points1 = b_points1[idxes]
 
             if enable_loransac:
                 out = _estimate_pose_with_lo_ransac(

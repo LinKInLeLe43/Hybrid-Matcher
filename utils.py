@@ -16,16 +16,16 @@ def get_outdoor_hybrid_matcher(overrides: List[str]) -> nn.Module:
 
 
 if __name__ == "__main__":
-    net = get_outdoor_hybrid_matcher([]).cuda()
+    net = get_outdoor_hybrid_matcher([])
     data = {
-        "image0": torch.rand((1, 1, 480, 640)).cuda(),
-        "image1": torch.rand((1, 1, 480, 640)).cuda(),
-        "mask0_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask1_8x": torch.rand((1, 60, 80)).bool().cuda(),
-        "mask0_16x": torch.rand((1, 30, 40)).bool().cuda(),
-        "mask1_16x": torch.rand((1, 30, 40)).bool().cuda(),
-        "mask0_32x": torch.rand((1, 15, 20)).bool().cuda(),
-        "mask1_32x": torch.rand((1, 15, 20)).bool().cuda()}
+        "image0": torch.rand((1, 3, 480, 640)),
+        "image1": torch.rand((1, 3, 480, 640)),
+        "mask0_8x": torch.rand((1, 60, 80)).bool(),
+        "mask1_8x": torch.rand((1, 60, 80)).bool(),
+        "mask0_16x": torch.rand((1, 30, 40)).bool(),
+        "mask1_16x": torch.rand((1, 30, 40)).bool(),
+        "mask0_32x": torch.rand((1, 15, 20)).bool(),
+        "mask1_32x": torch.rand((1, 15, 20)).bool()}
     with torch.no_grad():
         r = net(data)
     a = 1

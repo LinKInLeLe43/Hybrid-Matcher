@@ -32,9 +32,12 @@ class ScanNetDataset(data.Dataset):
                 self.names = self.names[mask]
 
     def _read_image(self, path: str) -> np.ndarray:
-        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        image = cv2.resize(image, (640, 480))
-        image = image / 255
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (640, 480)) / 255.0
+        image = (image - np.array([0.485, 0.456, 0.406])) / np.array(
+            [0.229, 0.224, 0.225]
+        )
         return image
 
     def _read_depth(self, path: str) -> np.ndarray:
@@ -55,8 +58,8 @@ class ScanNetDataset(data.Dataset):
         image_name1 = path.join(scene_name, "color", f"{stem1_name}.jpg")
         image_path0 = path.join(self.data_root, image_name0)
         image_path1 = path.join(self.data_root, image_name1)
-        image0 = self._read_image(image_path0)[None]
-        image1 = self._read_image(image_path1)[None]
+        image0 = self._read_image(image_path0).transpose(2, 0, 1)
+        image1 = self._read_image(image_path1).transpose(2, 0, 1)
 
         K0 = K1 = self.intrinsics[scene_name].copy().reshape(3, 3)
 
