@@ -50,7 +50,7 @@ class NewMatcherNet(nn.Module):
         self.vit = [vit]
 
         self.backbone = backbone
-        self.backbone.scales = (8, 2)
+        self.backbone.scales = (4, 2)
         self.backbone.load_state_dict(torch.load('weights/RepVGG-A2-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         # self.local_coc = local_coc
@@ -126,9 +126,12 @@ class NewMatcherNet(nn.Module):
         batch: Dict[str, Any],
         gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        refined_gt_idxes:
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
         extra_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
     ) -> Dict[str, Any]:
+        mask0_4x, mask1_4x = batch.get("mask0_4x"), batch.get("mask1_4x")
         mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
         mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
@@ -203,10 +206,11 @@ class NewMatcherNet(nn.Module):
                 mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
-            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
-            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
+            x0s[-2], x1s[-2], x0s[-1], x1s[-1], x0_16x, x1_16x,
+            z0_mask=mask0_4x, z1_mask=mask1_4x, x0_mask=mask0_8x, x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
+            z_gt_idxes=gt_idxes, x_gt_idxes=refined_gt_idxes, y_gt_idxes=extra_gt_idxes)
+        x0s.pop(-1), x1s.pop(-1)
+        x0s[-1], x1s[-1] = result.pop("x_4x")
 
         # x0_reg, x1_reg = self.fine_preprocess(
         #     x0s, x1s, result["coarse_cls_idxes"])

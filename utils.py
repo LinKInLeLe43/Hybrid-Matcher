@@ -20,6 +20,8 @@ if __name__ == "__main__":
     data = {
         "image0": torch.rand((1, 3, 480, 640)),
         "image1": torch.rand((1, 3, 480, 640)),
+        "mask0_4x": torch.rand((1, 120, 160)).bool(),
+        "mask1_4x": torch.rand((1, 120, 160)).bool(),
         "mask0_8x": torch.rand((1, 60, 80)).bool(),
         "mask1_8x": torch.rand((1, 60, 80)).bool(),
         "mask0_16x": torch.rand((1, 30, 40)).bool(),

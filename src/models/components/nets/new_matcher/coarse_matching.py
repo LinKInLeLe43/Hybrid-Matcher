@@ -9,6 +9,7 @@ class CoarseMatching(nn.Module):
     def __init__(
         self,
         fused_selective_module: nn.Module,
+        refined_fused_selective_module: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -17,6 +18,7 @@ class CoarseMatching(nn.Module):
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
+        self.refined_fused_selective_module = refined_fused_selective_module
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -177,14 +179,20 @@ class CoarseMatching(nn.Module):
 
     def forward(
         self,
+        z0: torch.Tensor,
+        z1: torch.Tensor,
         x0: torch.Tensor,
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        z0_mask: Optional[torch.Tensor] = None,
+        z1_mask: Optional[torch.Tensor] = None,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
         y1_mask: Optional[torch.Tensor] = None,
+        z_gt_idxes:
+            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
         x_gt_idxes:
             Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
         y_gt_idxes:
@@ -248,11 +256,54 @@ class CoarseMatching(nn.Module):
             confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
                 1, idxes1_to_0, confidence1_to_0)
             confidence = confidence0_to_1 * confidence1_to_0
+        result["refined_coarse_cls_heatmap"] = confidence
+
+        _confidence = confidence
+        if self.training and x_gt_idxes is not None:
+            _confidence = similarity.clone()
+            _confidence[x_gt_idxes] = 1e9
+
+        _, idxes0_to_1 = _confidence.topk(topk, dim=2)
+        _, idxes1_to_0 = _confidence.topk(topk, dim=1)
+
+        x0 = x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous()
+        x1 = x1.transpose(1, 2).unflatten(2, (h0, w0)).contiguous()
+
+        (z0, z1, selective0, selective1,
+         idxes0_to_1, idxes1_to_0) = self.refined_fused_selective_module(
+            z0, z1, x0, x1, idxes0_to_1, idxes1_to_0)
+        _z0, _z1 = z0 / c ** 0.5, z1 / c ** 0.5
+        _selective0 = selective0 / c ** 0.5
+        _selective1 = selective1 / c ** 0.5
+
+        if self.training:
+            similarity = torch.einsum("nlc,nsc->nls", _z0, _z1)
+            similarity /= self.temperature
+            if z0_mask is not None and z1_mask is not None:
+                mask = (z0_mask.flatten(start_dim=1)[:, :, None] &
+                        z1_mask.flatten(start_dim=1)[:, None, :])
+                similarity.masked_fill_(~mask, -1e9)
+
+            confidence0_to_1 = F.softmax(similarity, dim=2)
+            confidence1_to_0 = F.softmax(similarity, dim=1)
+            confidence = confidence0_to_1 * confidence1_to_0
+        else:
+            similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _z0, _selective1)
+            similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _z1)
+            similarity0_to_1 /= self.temperature
+            similarity1_to_0 /= self.temperature
+            confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
+            confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
+            confidence0_to_1 = z0.new_zeros((n, 4 * h0 * w0, 4 * h1 * w1)).scatter_(
+                2, idxes0_to_1, confidence0_to_1)
+            confidence1_to_0 = z0.new_zeros((n, 4 * h0 * w0, 4 * h1 * w1)).scatter_(
+                1, idxes1_to_0, confidence1_to_0)
+            confidence = confidence0_to_1 * confidence1_to_0
         score = confidence, idxes0_to_1, idxes1_to_0
 
         result.update(self._create_coarse_matching(
-            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
-        result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
-                          x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous())
+            score, (2 * h0, 2 * w0), (2 * h1, 2 * w1), z0_mask, z1_mask, z_gt_idxes))
+        result["x_4x"] = (z0.transpose(1, 2).unflatten(2, (2 * h0, 2 * w0)).contiguous(),
+                          z1.transpose(1, 2).unflatten(2, (2 * h1, 2 * w1)).contiguous())
         result["coarse_cls_heatmap"] = confidence
         return result

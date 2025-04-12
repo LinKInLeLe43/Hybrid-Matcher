@@ -48,6 +48,20 @@ net:
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
+    refined_fused_selective_module:
+      _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
+      scale: 2
+      depths:
+        - 96
+        - 192
+      encoder:
+        _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
+        scale: ${model.net.coarse_matching.fused_selective_module.scale}
+        depth: 96
+        heads_count: 4
+        attention:
+          _target_: src.models.components.nets.new_matcher.Attention
+      layer_count: 2
     temperature: 0.1
   # fine_preprocess: ???
 #  fine_module: ???

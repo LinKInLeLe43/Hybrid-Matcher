@@ -10,7 +10,7 @@ train_dataset:
   data_root: "${paths.data_dir}/megadepth/train"
   image_size: 832
   image_factor: 32
-  mask_factors: [8, 16, 32]
+  mask_factors: [4, 8, 16, 32]
 
 train_sampler:
   _target_: src.data.components.samplers.RandomConcatSampler

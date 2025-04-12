@@ -38,6 +38,9 @@ loss:
   extra_coarse_cls_sparse: true
   extra_coarse_cls_loss_pos_weight: 0.5
   extra_coarse_cls_loss_neg_weight: 0.5
+  refined_coarse_cls_sparse: true
+  refined_coarse_cls_loss_pos_weight: 1.0
+  refined_coarse_cls_loss_neg_weight: 1.0
   # fine_cls_sparse: true
   # fine_cls_loss_pos_weight: 0.25
   # fine_cls_loss_neg_weight: 0.25

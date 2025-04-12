@@ -83,10 +83,17 @@ class MatchingModule(pl.LightningModule):
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
             supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0, return_coor=True)
+                batch, s1 * 2, extra_scale=s0, return_coor=True)
+            _supervision = utils.create_coarse_supervision(
+                batch, s1)
+            supervision["refined_coarse_gt_idxes"] = supervision["coarse_gt_idxes"]
+            supervision["refined_coarse_gt_mask"] = supervision["coarse_gt_mask"]
+            supervision["coarse_gt_idxes"] = _supervision["coarse_gt_idxes"]
+            supervision["coarse_gt_mask"] = _supervision["coarse_gt_mask"]
             # coarse_gt_points1 = supervision.pop("gt_points1")
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"],
+                refined_gt_idxes=supervision.get("refined_coarse_gt_idxes"),
                 extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
             # supervision.update(utils.create_fine_supervision(
             #     batch, (s1, 1), result["coarse_cls_idxes"],
@@ -114,6 +121,8 @@ class MatchingModule(pl.LightningModule):
         loss = self.loss(
             **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
             mask1=batch.get(f"mask1_{s1}x"),
+            refined_mask0=batch.get(f"mask0_{s1 * 2}x"),
+            refined_mask1=batch.get(f"mask1_{s1 * 2}x"),
             extra_mask0=batch.get(f"mask0_{s0}x"),
             extra_mask1=batch.get(f"mask1_{s0}x"))
         return result, loss
