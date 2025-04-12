@@ -38,12 +38,12 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - 192
+        - 256
         - 384
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
-        depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        depth: 192
         heads_count: 8
         attention:
           _target_: src.models.components.nets.new_matcher.Attention

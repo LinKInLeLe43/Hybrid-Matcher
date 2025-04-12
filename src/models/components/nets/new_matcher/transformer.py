@@ -275,7 +275,7 @@ class FusedSelectiveTransformer(nn.Module):
             nn.Conv2d(depths[1], depths[1], 3, padding=1, bias=False),
             nn.BatchNorm2d(depths[1]),
             nn.LeakyReLU(inplace=True),
-            nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False))
+            nn.Conv2d(depths[1], 192, 3, padding=1, bias=False))
 
         self.layers = nn.ModuleList([copy.deepcopy(encoder)
                                      for _ in range(layer_count)])

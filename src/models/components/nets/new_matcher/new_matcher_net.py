@@ -38,6 +38,7 @@ class NewMatcherNet(nn.Module):
                 ),
             )
             vit = depth_anything_v2.pretrained
+            depth_head = depth_anything_v2.depth_head
         elif vit_type == "dinov2":
             vit = depth_anything_v2.pretrained
             vit.load_state_dict(
@@ -45,9 +46,11 @@ class NewMatcherNet(nn.Module):
                     "weights/dinov2_vits14_pretrain.pth", map_location="cpu"
                 )
             )
+            depth_head = None
         else:
             raise ValueError()
         self.vit = [vit]
+        self.depth_head = [depth_head]
 
         self.backbone = backbone
         self.backbone.scales = (8, 2)
@@ -146,22 +149,33 @@ class NewMatcherNet(nn.Module):
             with torch.no_grad():
                 if self.vit[0].cls_token.device != batch["image0"].device:
                     self.vit[0] = self.vit[0].to(batch["image0"].device)
+                    if self.depth_head[0] is not None:
+                        self.depth_head[0] = self.depth_head[0].to(batch["image0"].device)
 
                 h, w = image.shape[2:]
                 x = F.interpolate(
                     image, size=(h // 16 * 14, w // 16 * 14), mode="bilinear"
                 )
-                vit_features = self.vit[0].forward_features(x)
+                vit_features = self.vit[0].get_intermediate_layers(x, [2, 5, 8, 11], return_class_token=True)
+                depth = self.depth_head[0](vit_features, h // 16, w // 16)
                 x0_16x, x1_16x = (
-                    vit_features["x_norm_patchtokens"]
+                    vit_features[-1][0]
                     .permute(0, 2, 1)
                     .unflatten(2, (h // 16, w // 16))
                     .chunk(2)
                 )
+                depth = None
+                if self.depth_head[0] is not None:
+                    depth = self.depth_head[0](vit_features, h // 16, w // 16)
                 del vit_features
 
             x0_16x = self.ffn(torch.cat([x0_16x, x0s.pop(-1)], dim=1))
             x1_16x = self.ffn(torch.cat([x1_16x, x1s.pop(-1)], dim=1))
+
+            if depth is not None:
+                depth0, depth1 = depth.chunk(2)
+                x0s[-1] = torch.cat([x0s[-1], depth0], dim=1)
+                x1s[-1] = torch.cat([x1s[-1], depth1], dim=1)
         else:
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])
