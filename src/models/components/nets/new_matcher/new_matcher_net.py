@@ -18,10 +18,10 @@ class NewMatcherNet(nn.Module):
         # local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
-        # fine_preprocess: nn.Module,
+        fine_preprocess: nn.Module,
         # fine_module: nn.Module,
         # fine_cls_matching: nn.Module,
-        # fine_reg_matching: nn.Module,
+        fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
         enable_crop: bool = False
     ) -> None:
@@ -56,16 +56,16 @@ class NewMatcherNet(nn.Module):
         # self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
-        # self.fine_preprocess = fine_preprocess
+        self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
         # self.fine_cls_matching = fine_cls_matching
-        # self.fine_reg_matching = fine_reg_matching
+        self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1])
-        # self.reg_w = fine_reg_matching.window_size
+        self.reg_w = fine_reg_matching.window_size
 
         # if type == "two_stage":
         #     self.cls_w = fine_cls_matching.window_size
@@ -105,21 +105,20 @@ class NewMatcherNet(nn.Module):
 
         # biases0 = result.pop("fine_cls_biases0")[:m]
         # biases1 = result.pop("fine_cls_biases1")[:m]
-        # biases1 += (self.scales[1] * (self.reg_w // 2) *
-        #             result["fine_reg_biases"][:m].detach())
+        biases1 = (self.scales[1] * (self.reg_w // 2) *
+                   result["fine_reg_biases"][:m].detach())
 
-        # fine_points0 = coarse_points0 + biases0
-        # fine_points1 = coarse_points1 + biases1
+        fine_points0 = coarse_points0.clone()
+        fine_points1 = (coarse_points1 + biases1).clone()
 
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
-            # fine_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
-            # fine_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
         result["coarse_points1"] = coarse_points1
-        # result["points0"], result["points1"] = fine_points0, fine_points1
-        result["points0"], result["points1"] = coarse_points0, coarse_points1
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -208,8 +207,8 @@ class NewMatcherNet(nn.Module):
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")
 
-        # x0_reg, x1_reg = self.fine_preprocess(
-        #     x0s, x1s, result["coarse_cls_idxes"])
+        x0_reg, x1_reg = self.fine_preprocess(
+            x0s, x1s, result["coarse_cls_idxes"])
 
         # if self.type == "one_stage":
         #     if len(x0_1x) != 0:
@@ -253,6 +252,7 @@ class NewMatcherNet(nn.Module):
         # local_matches = local_matches / s2 + w // 2
         # result.update(self.fine_reg_matching(
         #     x0_reg, x1_reg, 1, local_matches=local_matches))
+        result.update(self.fine_reg_matching(x0_reg, x1_reg))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
