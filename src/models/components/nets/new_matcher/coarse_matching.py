@@ -276,7 +276,7 @@ class CoarseMatching(nn.Module):
         _selective0 = selective0 / c ** 0.5
         _selective1 = selective1 / c ** 0.5
 
-        if self.training:
+        if False:
             similarity = torch.einsum("nlc,nsc->nls", _z0, _z1)
             similarity /= self.temperature
             if z0_mask is not None and z1_mask is not None:
