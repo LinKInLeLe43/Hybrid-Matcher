@@ -1,278 +1,273 @@
-import copy
-from typing import List, Optional, Tuple
+# TODO:
+# - Detect NaN
+# - Change weight init
+# - Change variable name
 
-import einops
+from copy import deepcopy
+from typing import Dict, Optional, Tuple
+from warnings import warn
+
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn as nn
+import torch.nn.functional as F
+from einops import rearrange, repeat
+from kornia.utils import create_meshgrid
+
+try:
+    # deprecated after torch 2.3.0, see https://github.com/pytorch/pytorch/releases/tag/v2.3.0
+    from torch.backends.cuda import sdp_kernel
+    from torch.nn.functional import scaled_dot_product_attention as sdpa
+
+    SDPA_AVAILABLE = True
+except ImportError:
+    SDPA_AVAILABLE = False
 
 
-class TransformerEncoder(nn.Module):
+class Attention(nn.Module):
     def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-        attention: nn.Module
+        self, enable_sdpa: bool = False, enable_flash: bool = False
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
-        self.attention = attention
-        self.nchw = False
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
+        if enable_sdpa and not SDPA_AVAILABLE:
+            warn("", stacklevel=2)
+        self.enable_sdpa = enable_sdpa and SDPA_AVAILABLE
 
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
+        if enable_flash and not self.enable_sdpa:
+            warn("", stacklevel=2)
+        self.enable_flash = enable_flash and self.enable_sdpa
 
+    def forward(
+        self,
+        q: torch.Tensor,
+        k: torch.Tensor,
+        v: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if self.enable_sdpa:
+            if self.enable_flash:
+                if mask is not None:
+                    raise ValueError("")
+
+                q, k, v = [x.half().contiguous() for x in [q, k, v]]
+                with sdp_kernel(
+                    enable_flash=True,
+                    enable_math=False,
+                    enable_mem_efficient=False,
+                ):
+                    message = sdpa(q, k, v).to(q.dtype)
+            else:
+                q, k, v = [x.contiguous() for x in [q, k, v]]
+                message = sdpa(q, k, v, attn_mask=mask)
+        else:
+            q = q * q.shape[-1] ** -0.5
+            similarity = torch.einsum("...ld,...sd->...ls", q, k)
+            if mask is not None:
+                similarity.masked_fill_(~mask, -float("inf"))
+
+            attention = similarity.softmax(dim=-1)
+            message = torch.einsum("...ls,...sd->...ld", attention, v)
+
+        if mask is not None:
+            message.nan_to_num_()
+        return message
+
+
+class VanillaTransformerLayer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
+    ) -> None:
+        super().__init__()
+        self.num_heads = num_heads
+
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
+        self.merge = nn.Linear(dim, dim, bias=False)
+        self.norm1 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.Linear(2 * dim, 2 * dim, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Linear(2 * dim, dim, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(dim)
 
     def forward(
         self,
         x: torch.Tensor,
-        source: torch.Tensor,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
+        y: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        fc = self.heads_count
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-
-        out = torch.cat([x, out], dim=2)
-        out = self.mlp(out)
-        out = self.norm2(out)
-
-        out += x
-        return out
+        q, k, v = self.q_proj(x), self.k_proj(y), self.v_proj(y)
+        q, k, v = [
+            rearrange(x, "n l (fc sc) -> n fc l sc", fc=self.num_heads)
+            for x in [q, k, v]
+        ]
+        message = self.attention(
+            q, k, v, mask=mask[:, None] if mask is not None else None
+        )
+        message = rearrange(message, "n fc l sc -> n l (fc sc)")
+        message = self.norm1(self.merge(message))
+        message = torch.cat([x, message], dim=-1)
+        x = x + self.norm2(self.mlp(message))
+        return x
 
 
-class ConvTransformerEncoder(nn.Module):
+class AggregatedTransformerLayer(nn.Module):
     def __init__(
         self,
         scale: int,
-        depth: int,
-        heads_count: int,
-        attention: nn.Module
+        dim: int,
+        num_heads: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
     ) -> None:
         super().__init__()
         self.scale = scale
-        self.heads_count = heads_count
-        self.attention = attention
-        self.nchw = False
+        self.num_heads = num_heads
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
-
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
-
+        if scale > 1:
+            self.down_q = nn.Conv2d(
+                dim, dim, scale, stride=scale, groups=dim, bias=False
+            )
+            self.down_kv = nn.MaxPool2d(scale, stride=scale)
+        else:
+            self.down_q = self.down_kv = nn.Identity()
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
+        self.merge = nn.Linear(dim, dim, bias=False)
+        self.norm1 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
-            nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
+            nn.Linear(2 * dim, 2 * dim, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Linear(2 * dim, dim, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(dim)
 
     def forward(
         self,
         x: torch.Tensor,
-        source: torch.Tensor,
-        size: Tuple[int, int],
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        sh, sw, fc = self.scale, self.scale, self.heads_count
-        fh, fw = size[0] // sh, size[1] // sw
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-
-        out = torch.cat([x, out], dim=2)
-        out = einops.rearrange(
-            out, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", fh=fh, sh=sh,
-            fw=fw, sw=sw)
-        out = self.mlp(out)
-        out = einops.rearrange(
-            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw)
-        out = self.norm2(out)
-
-        out += x
-        return out
-
-
-class AggregatedEncoder(nn.Module):
-    def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-        scale: int,
-        attention: nn.Module
-    ) -> None:
-        super().__init__()
-        self.heads_count = heads_count
-        self.scale = scale
-        self.attention = attention
-        self.nchw = True
-
-        self.down_q = nn.Conv2d(
-            depth, depth, scale, stride=scale, groups=depth, bias=False)
-        self.down_kv = nn.MaxPool2d(scale, stride=scale)
-
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
-
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
-
-        self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
-            nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        source: torch.Tensor,
+        y: torch.Tensor,
         rope: Optional[nn.Module] = None,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
+        mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        s, fc = self.scale, self.heads_count
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
         q = self.down_q(x).permute(0, 2, 3, 1)
-        kv = self.down_kv(source).permute(0, 2, 3, 1)
+        kv = self.down_kv(y).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
-
         if rope is not None:
             q, k = rope.rel_pe(q), rope.rel_pe(k)
-
-        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2] // s, x.shape[3] // s))
-        out = F.interpolate(out, scale_factor=s, mode="bilinear")
-
-        out = torch.cat([x, out], dim=1)
-        out = out.permute(0, 2, 3, 1)
-        out = self.mlp(out)
-        out = self.norm2(out)
-        out = out.permute(0, 3, 1, 2).contiguous()
-
-        out += x
-        return out
-
-
-class LoFTR(nn.Module):
-    def __init__(
-        self,
-        encoder: nn.Module,
-        types: List[str]
-    ) -> None:
-        super().__init__()
-        self.types = types
-        self.nchw = encoder.nchw
-
-        self.layers = nn.ModuleList([copy.deepcopy(encoder) for _ in types])
-
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def forward(
-        self,
-        feature0: torch.Tensor,
-        feature1: torch.Tensor,
-        size0: Optional[Tuple[int, int]] = None,
-        size1: Optional[Tuple[int, int]] = None,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.nchw:
-            if size0 is None or size1 is None:
-                raise ValueError("")
-
-            feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
-            feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
-
-        for layer, type in zip(self.layers, self.types):
-            if type == "self":
-                feature0 = layer(
-                    feature0, feature0, x_mask=mask0, source_mask=mask0)
-                feature1 = layer(
-                    feature1, feature1, x_mask=mask1, source_mask=mask1)
-            elif type == "cross":
-                feature0 = layer(
-                    feature0, feature1, x_mask=mask0, source_mask=mask1)
-                feature1 = layer(
-                    feature1, feature0, x_mask=mask1, source_mask=mask0)
-            else:
-                raise ValueError("")
-
-        if self.nchw:
-            feature0 = feature0.flatten(start_dim=2).transpose(1, 2)
-            feature1 = feature1.flatten(start_dim=2).transpose(1, 2)
-        return feature0, feature1
+        q, k, v = [
+            rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=self.num_heads)
+            for x in [q, k, v]
+        ]
+        message = self.attention(
+            q, k, v, mask=mask[:, None] if mask is not None else None
+        )
+        message = rearrange(message, "n fc l sc -> n l (fc sc)")
+        message = self.norm1(self.merge(message))
+        message = rearrange(
+            message, "n (sh sw) c -> n c sh sw", sh=x.shape[2] // self.scale
+        )
+        message = F.interpolate(
+            message,
+            scale_factor=self.scale,
+            mode="bilinear",
+            align_corners=False,
+        )
+        message = torch.cat([x, message], dim=1).permute(0, 2, 3, 1)
+        x = x + self.norm2(self.mlp(message)).permute(0, 3, 1, 2)
+        return x
 
 
-class FusedSelectiveTransformer(nn.Module):
+class RegionBasedSelectiveTransformerLayer(nn.Module):
     def __init__(
         self,
         scale: int,
-        depths: Tuple[int, int],
-        encoder: nn.Module,
-        layer_count: int
+        dim: int,
+        num_heads: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
     ) -> None:
         super().__init__()
         self.scale = scale
+        self.num_heads = num_heads
 
-        self.x_up = nn.Conv2d(depths[0], depths[1], 1, bias=False)
-        self.y_up = nn.Conv2d(depths[1], depths[1], 1, bias=False)
-        self.down = nn.Sequential(
-            nn.Conv2d(depths[1], depths[1], 3, padding=1, bias=False),
-            nn.BatchNorm2d(depths[1]),
-            nn.LeakyReLU(inplace=True),
-            nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False))
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
+        self.merge = nn.Linear(dim, dim, bias=False)
+        self.norm1 = nn.LayerNorm(dim)
+        self.mlp = nn.Sequential(
+            nn.Conv2d(2 * dim, 2 * dim, 1, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(2 * dim, dim, 3, padding=1, bias=False),
+        )
+        self.norm2 = nn.LayerNorm(dim)
 
-        self.layers = nn.ModuleList([copy.deepcopy(encoder)
-                                     for _ in range(layer_count)])
+    def forward(
+        self, x: torch.Tensor, y: torch.Tensor, axes_lengths: Dict[str, int]
+    ) -> torch.Tensor:
+        q, k, v = self.q_proj(x), self.k_proj(y), self.v_proj(y)
+        q, k, v = [  # l = ss/(k * ss) for q/kv
+            rearrange(x, "n ff l (fc sc) -> n ff fc l sc", fc=self.num_heads)
+            for x in [q, k, v]
+        ]
+        message = self.attention(q, k, v)
+        message = rearrange(message, "n ff fc ss sc -> n ff ss (fc sc)")
+        message = self.norm1(self.merge(message))
+        message = torch.cat([x, message], dim=-1)
+        message = rearrange(
+            message,
+            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            **axes_lengths,
+        )
+        message = self.mlp(message)
+        message = rearrange(
+            message,
+            "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c",
+            **axes_lengths,
+        )
+        message = self.norm2(message)
+        x = x + message
+        return x
+
+
+class LocalFeatureTransformer(nn.Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        num_layers: int,
+        name: str = "vanilla",
+        scale: Optional[int] = None,
+    ) -> None:
+        super().__init__()
+
+        if name == "vanilla":
+            layer = VanillaTransformerLayer(dim, num_heads)
+        elif name == "aggregated":
+            if scale is None:
+                raise ValueError()
+            layer = AggregatedTransformerLayer(scale, dim, num_heads)
+        else:
+            raise ValueError()
+        self.layers = nn.ModuleList(
+            [deepcopy(layer) for _ in range(2 * num_layers)]
+        )
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -282,56 +277,146 @@ class FusedSelectiveTransformer(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        mask00 = mask11 = mask01 = mask10 = None
+        if mask0 is not None and mask1 is not None:
+            mask00 = mask0[..., :, None] & mask0[..., None, :]
+            mask11 = mask1[..., :, None] & mask1[..., None, :]
+            mask01 = mask0[..., :, None] & mask1[..., None, :]
+            mask10 = mask01.transpose(-1, -2)
+
+        for i, layer in enumerate(self.layers):
+            if i % 2 == 0:
+                x0 = layer(x0, x0, mask=mask00)
+                x1 = layer(x1, x1, mask=mask11)
+            else:
+                x0 = layer(x0, x1, mask=mask01)
+                x1 = layer(x1, x0, mask=mask10)
+        return x0, x1
+
+
+class RegionBasedSelectiveTransformer(nn.Module):
+    def __init__(
+        self,
+        scale: int,
+        dims: Tuple[int, int],
+        num_heads: int,
+        num_layers: int,
+    ) -> None:
+        super().__init__()
+        self.scale = scale
+
+        self.x_up = nn.Conv2d(dims[0], dims[1], 1, bias=False)
+        self.y_up = nn.Conv2d(dims[1], dims[1], 1, bias=False)
+        self.down = nn.Sequential(
+            nn.Conv2d(dims[1], dims[1], 3, padding=1, bias=False),
+            nn.BatchNorm2d(dims[1]),
+            nn.LeakyReLU(inplace=True),
+            nn.Conv2d(dims[1], dims[0], 3, padding=1, bias=False),
+        )
+
+        layer = RegionBasedSelectiveTransformerLayer(scale, dims[0], num_heads)
+        self.layers = nn.ModuleList(
+            [deepcopy(layer) for _ in range(num_layers)]
+        )
+
+        delta_indices = create_meshgrid(
+            self.scale,
+            self.scale,
+            normalized_coordinates=False,
+            dtype=torch.long,
+        ).flatten(end_dim=-2)
+        self.register_buffer("delta_indices", delta_indices, persistent=False)
+
+        for p in self.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def fpn_fuse(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        x, y = self.x_up(x), self.y_up(y)
+        x = x + F.interpolate(
+            y, scale_factor=self.scale, mode="bilinear", align_corners=False
+        )
+        x = self.down(x)
+        return x
+
+    def reshape_to_region_based(
+        self, x: torch.Tensor, axes_lengths: Dict[str, int]
+    ) -> torch.Tensor:
+        out = rearrange(
+            x, "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c", **axes_lengths
+        )
+        return out
+
+    def gather_attended(
+        self, x: torch.Tensor, indices: torch.Tensor
+    ) -> torch.Tensor:
+        out = x[
+            torch.arange(x.shape[0], device=x.device)[:, None, None], indices
+        ].flatten(start_dim=2, end_dim=3)
+        return out
+
+    def map_indices(
+        self, x: torch.Tensor, axes_lengths: Dict[str, int], fw: int
+    ) -> torch.Tensor:
+        row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
+        col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
+        out = row * fw * self.scale + col
+        out = repeat(
+            out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **axes_lengths
+        )
+        return out
+
+    def forward(
+        self,
+        x0: torch.Tensor,
+        x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
-        idxes0_to_1: torch.Tensor,
-        idxes1_to_0: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor]:
-        s = sh = sw = self.scale
-        n, _, h0, w0 = x0.shape
-        _, _, h1, w1 = x1.shape
-        fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
+        indices0_to_1: torch.Tensor,
+        indices1_to_0: torch.Tensor,
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        _, _, fh0, fw0 = y0.shape
+        _, _, fh1, fw1 = y1.shape
+        axes_lengths0 = {
+            "fh": fh0,
+            "fw": fw0,
+            "sh": self.scale,
+            "sw": self.scale,
+        }
+        axes_lengths1 = {
+            "fh": fh1,
+            "fw": fw1,
+            "sh": self.scale,
+            "sw": self.scale,
+        }
 
-        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
-        x += F.interpolate(y, scale_factor=s, mode="bilinear")
-        x0, x1 = einops.rearrange(
-            self.down(x),
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
-
-        idxes1_to_0 = idxes1_to_0.transpose(1, 2)
-        range = torch.arange(n, device=x0.device)[:, None, None]
-        _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
+        if (fh0, fw0) == (fh1, fw1):
+            x, y = torch.cat([x0, x1]), torch.cat([y0, y1])
+            x = self.fpn_fuse(x, y)
+            x0, x1 = self.reshape_to_region_based(x, axes_lengths0).chunk(2)
+        else:
+            x0, x1 = self.fpn_fuse(x0, y0), self.fpn_fuse(x1, y1)
+            x0 = self.reshape_to_region_based(x0, axes_lengths0)
+            x1 = self.reshape_to_region_based(x1, axes_lengths1)
 
         for layer in self.layers:
-            x0 = layer(
-                x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0))
-            x1 = layer(
-                x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1))
+            attended0 = self.gather_attended(x1, indices0_to_1)
+            x0 = layer(x0, attended0, axes_lengths0)
+            attended1 = self.gather_attended(x0, indices1_to_0)
+            x1 = layer(x1, attended1, axes_lengths1)
+        attended0 = self.gather_attended(x1, indices0_to_1)
+        attended1 = self.gather_attended(x0, indices1_to_0)
 
-        out0 = einops.rearrange(
-            x0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh0, sh=sh,
-            fw=fw0, sw=sw)
-        out1 = einops.rearrange(
-            x1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh1, sh=sh,
-            fw=fw1, sw=sw)
-        selective0 = einops.repeat(
-            x0[_idxes1_to_0], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh1, sh=sh, fw=fw1, sw=sw)
-        selective1 = einops.repeat(
-            x1[_idxes0_to_1], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh0, sh=sh, fw=fw0, sw=sw)
-        idxes0_to_1 = (w1 * s * (idxes0_to_1 // (w1 // s)) +
-                       s * (idxes0_to_1 % (w1 // s)))[..., None]
-        idxes1_to_0 = (w0 * s * (idxes1_to_0 // (w0 // s)) +
-                       s * (idxes1_to_0 % (w0 // s)))[..., None]
-        idxes0_to_1 = idxes0_to_1 + idxes0_to_1.new_tensor([0, 1, w1, w1 + 1])
-        idxes1_to_0 = idxes1_to_0 + idxes1_to_0.new_tensor([0, 1, w0, w0 + 1])
-        idxes0_to_1 = einops.repeat(
-            idxes0_to_1, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)",
-            fh=fh0, sh=sh, fw=fw0, sw=sw)
-        idxes1_to_0 = einops.repeat(
-            idxes1_to_0, "n (fh fw) k ss -> n (k ss) (fh sh fw sw)",
-            fh=fh1, sh=sh, fw=fw1, sw=sw)
-        return out0, out1, selective0, selective1, idxes0_to_1, idxes1_to_0
+        indices0_to_1 = self.map_indices(indices0_to_1, axes_lengths0, fw1)
+        indices1_to_0 = self.map_indices(indices1_to_0, axes_lengths1, fw0)
+        return x0, x1, attended0, attended1, indices0_to_1, indices1_to_0
