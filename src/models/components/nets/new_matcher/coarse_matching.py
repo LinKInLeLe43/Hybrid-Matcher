@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional, Tuple, Union
 
+import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -129,6 +130,7 @@ class CoarseMatching(nn.Module):
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
         score, idxes0_to_1, idxes1_to_0 = score
+        coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1)
@@ -149,6 +151,8 @@ class CoarseMatching(nn.Module):
             sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
             idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
             idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
+            if gt_idxes is not None:
+                coarse_recall_mask = self.create_bidirectional_mask(idxes0_to_1[:, :, None], idxes1_to_0[:, None, :])
             idxes0_to_1 = self._remove_border_for_eval(
                 idxes0_to_1, size0, mask0)
             idxes1_to_0 = self._remove_border_for_eval(
@@ -173,7 +177,28 @@ class CoarseMatching(nn.Module):
                   "points1": points1,
                   "scores": scores,
                   "coarse_cls_idxes": train_idxes}
+        if coarse_recall_mask is not None:
+            result["coarse_recall"] = coarse_recall_mask[gt_idxes]
         return result
+
+    def create_bidirectional_mask(
+        self,
+        indices0_to_1: torch.Tensor,
+        indices1_to_0: torch.Tensor
+    ) -> torch.Tensor:
+        n, l0, _ = indices0_to_1.shape
+        _, _, l1 = indices1_to_0.shape
+        device = indices0_to_1.device
+
+        b_indices = torch.arange(n)[:, None, None]
+        i_indices = torch.arange(l0)[None, :, None]
+        j_indices = torch.arange(l1)[None, None, :]
+
+        mask = torch.zeros(n, l0, l1, device=device)
+        mask[b_indices, i_indices, indices0_to_1] += 0.5
+        mask[b_indices, indices1_to_0, j_indices] += 0.5
+        mask.eq_(1.0)
+        return mask
 
     def forward(
         self,
@@ -217,6 +242,10 @@ class CoarseMatching(nn.Module):
 
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)
+        result["extra_idxes0_to_1"] = idxes0_to_1
+        if y_gt_idxes is not None:
+            extra_coarse_topk_recall_mask = self.create_bidirectional_mask(idxes0_to_1, idxes1_to_0)
+            result["extra_coarse_topk_recall"] = extra_coarse_topk_recall_mask[y_gt_idxes]
 
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
@@ -255,4 +284,8 @@ class CoarseMatching(nn.Module):
         result["x_8x"] = (x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
                           x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous())
         result["coarse_cls_heatmap"] = confidence
+        result["extra_idxes0_to_1"] = einops.repeat(
+            result["extra_idxes0_to_1"], "n (fh fw) k -> n (fh sh fw sw) k",
+            fh=h0//2, sh=2, fw=w0//2, sw=2
+        )[result["idxes"][0], result["idxes"][1]]
         return result
