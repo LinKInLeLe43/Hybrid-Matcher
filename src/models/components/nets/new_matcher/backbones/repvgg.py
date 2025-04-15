@@ -196,6 +196,7 @@ class RepVGG(nn.Module):
         # return out
 
         out = self.stage0(x) # 1/2
+        x0 = out
         for module in self.stage1:
             out = module(out) # 1/2
         x1 = out
@@ -206,7 +207,7 @@ class RepVGG(nn.Module):
             out = module(out) # 1/8
         x3 = out
 
-        return x1, x2, x3
+        return x0, x1, x2, x3
 
 
 optional_groupwise_layers = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26]
