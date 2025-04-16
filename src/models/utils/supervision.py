@@ -146,6 +146,7 @@ def create_fine_supervision(
     return_coor: bool = False
 ) -> Dict[str, Any]:
     m, w, scale = len(idxes[0]), scales[0] // scales[1], scales[1]
+    offset = (scale - 1) / 2
     ww, x, device = w ** 2, batch["image0"], batch["image0"].device
     b_idxes, i_idxes, j_idxes = idxes
 
@@ -162,8 +163,8 @@ def create_fine_supervision(
     _, _, h1, w1 = batch["image1"].shape
     h0, w0, h1, w1 = map(lambda x: x // scale, (h0, w0, h1, w1))
     scale0, scale1 = batch.get("scale0"), batch.get("scale1")
-    scale0 = scale * scale0[b_idxes, None] if scale0 is not None else scale
-    scale1 = scale * scale1[b_idxes, None] if scale1 is not None else scale
+    # scale0 = scale * scale0[b_idxes, None] if scale0 is not None else scale
+    # scale1 = scale * scale1[b_idxes, None] if scale1 is not None else scale
 
     coors0 = K.create_meshgrid(
         h0, w0, normalized_coordinates=False, device=device)
@@ -171,8 +172,8 @@ def create_fine_supervision(
         h1, w1, normalized_coordinates=False, device=device)
     coors0 = coors0.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
     coors1 = coors1.repeat(n, 1, 1, 1).permute(0, 3, 1, 2)
-    coors0 = F.pad(coors0, (w // 2, 0, w // 2, 0))
-    coors1 = F.pad(coors1, (w // 2, 0, w // 2, 0))
+    # coors0 = F.pad(coors0, (w // 2, 0, w // 2, 0))
+    # coors1 = F.pad(coors1, (w // 2, 0, w // 2, 0))
     coors0 = F.unfold(coors0, w, stride=w)[b_idxes, :, i_idxes]
     coors1 = F.unfold(coors1, w, stride=w)[b_idxes, :, j_idxes]
     coors0 = coors0.unflatten(1, (2, ww)).transpose(1, 2)
@@ -181,8 +182,11 @@ def create_fine_supervision(
     idxes1 = w1 * coors1[:, :, 1] + coors1[:, :, 0]
     idxes0 = torch.where(idxes0 == 0, -100, idxes0 + h0 * w0 * b_idxes[:, None])
     idxes1 = torch.where(idxes1 == 0, -100, idxes1 + h1 * w1 * b_idxes[:, None])
-    points0 = scale0 * (coors0 + offset)
-    points1 = scale1 * (coors1 + offset)
+    points0 = scale * coors0 + offset
+    points1 = scale * coors1 + offset
+    if scale0 is not None and scale1 is not None:
+        points0 = points0 * scale0[b_idxes, None]
+        points1 = points1 * scale1[b_idxes, None]
 
     points0_to_1 = torch.zeros_like(points0)
     points1_to_0 = torch.zeros_like(points1)
@@ -198,11 +202,16 @@ def create_fine_supervision(
             batch["T1_to_0"][[b]])
         points0_to_1[b_mask] = b_points0_to_1.reshape(-1, ww, 2)
         points1_to_0[b_mask] = b_points1_to_0.reshape(-1, ww, 2)
-    coors0_to_1 = points0_to_1 / scale1
-    coors1_to_0 = points1_to_0 / scale0
+    if scale0 is not None and scale1 is not None:
+        points0 = points0 / scale0[b_idxes, None]
+        points1 = points1 / scale1[b_idxes, None]
+        points1_to_0 = points1_to_0 / scale0[b_idxes, None]
+        points0_to_1 = points0_to_1 / scale1[b_idxes, None]
+    coors0_to_1 = (points0_to_1 - offset) / scale
+    coors1_to_0 = (points1_to_0 - offset) / scale
 
-    coors0_to_1 = (coors0_to_1 - offset).round().long()
-    coors1_to_0 = (coors1_to_0 - offset).round().long()
+    coors0_to_1 = coors0_to_1.round().long()
+    coors1_to_0 = coors1_to_0.round().long()
     _mask_out_of_bound(coors0_to_1, h1, w1)
     _mask_out_of_bound(coors1_to_0, h0, w0)
     idxes0_to_1 = w1 * coors0_to_1[:, :, 1] + coors0_to_1[:, :, 0]
@@ -216,9 +225,9 @@ def create_fine_supervision(
     supervision = {"fine_gt_mask": gt_mask}
 
     if return_coor:
-        if "scale1" in batch:
-            points0_to_1 = points0_to_1 / batch["scale1"][b_idxes, None]
-            points1 = points1 / batch["scale1"][b_idxes, None]
+        # if "scale1" in batch:
+        #     points0_to_1 = points0_to_1 / batch["scale1"][b_idxes, None]
+        #     points1 = points1 / batch["scale1"][b_idxes, None]
         supervision["gt_points0_to_1"] = points0_to_1
         supervision["gt_points1"] = points1
     return supervision

@@ -64,26 +64,26 @@ class NewMatcherNet(nn.Module):
         self.enable_crop = enable_crop
 
         self.scales = (backbone.scales[0],
-                       backbone.scales[1])
+                       backbone.scales[1] // fine_preprocess.scale_before_crop)
         self.reg_w = 5
 
-        # if type == "two_stage":
-        #     self.cls_w = fine_cls_matching.window_size
-        #     self.cls_c = fine_cls_matching.depth
-        #     self.reg_c = fine_reg_matching.depth
+        if type == "two_stage":
+            self.cls_w = fine_cls_matching.window_size
+            self.cls_c = fine_cls_matching.depth
+            self.reg_c = fine_reg_matching.depth
 
-        #     e = fine_preprocess.right_extra
-        #     self.fine_w = fine_preprocess.window_size + 2 * e
-        #     mask = torch.zeros((self.fine_w, self.fine_w), dtype=torch.bool)
-        #     mask[e:-e, e:-e] = True
-        #     mask = mask.flatten()
-        #     self.register_buffer("fine_cls_mask", mask, persistent=False)
+            e = fine_preprocess.right_extra
+            self.fine_w = fine_preprocess.window_size + 2 * e
+            mask = torch.zeros((self.fine_w, self.fine_w), dtype=torch.bool)
+            mask[e:-e, e:-e] = True
+            mask = mask.flatten()
+            self.register_buffer("fine_cls_mask", mask, persistent=False)
 
-        #     delta = K.create_meshgrid(
-        #         self.reg_w, self.reg_w, normalized_coordinates=False,
-        #         dtype=torch.long)
-        #     delta = delta.reshape(-1, 2)
-        #     self.register_buffer("fine_reg_delta", delta, persistent=False)
+            delta = K.create_meshgrid(
+                self.reg_w, self.reg_w, normalized_coordinates=False,
+                dtype=torch.long)
+            delta = delta.reshape(-1, 2)
+            self.register_buffer("fine_reg_delta", delta, persistent=False)
 
         self.ffn = nn.Sequential(
             nn.Conv2d(384 + 384, 384 + 384, 1, bias=False),

@@ -49,7 +49,7 @@ net:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
     temperature: 0.1
-  # fine_preprocess: ???
+  fine_preprocess: ???
 #  fine_module: ???
   # fine_reg_matching: ???
   extra_scale: 16

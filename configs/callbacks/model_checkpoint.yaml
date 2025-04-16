@@ -1,8 +1,8 @@
 model_checkpoint:
   _target_: pytorch_lightning.callbacks.ModelCheckpoint
   dirpath: "${paths.output_dir}/checkpoints"
-  filename: "epoch={epoch}-coarse_precision={val_metric/coarse_precision:.3f}"
-  monitor: "val_metric/coarse_precision"
+  filename: "epoch={epoch}-auc@5={val_metric/pose_auc@5:.3f}-auc@10={val_metric/pose_auc@10:.3f}-auc@20={val_metric/pose_auc@20:.3f}"
+  monitor: "val_metric/pose_auc@10"
   verbose: true
   save_last: true
   save_top_k: 15
