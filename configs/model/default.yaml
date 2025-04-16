@@ -8,7 +8,7 @@ net:
     _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A2
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-    depth: 384
+    depth: 256
     train_size: ???
     test_size: ???
     fp16: ${fp16}
@@ -27,8 +27,8 @@ net:
     types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
     encoder:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
-      depth: 384
-      heads_count: 12
+      depth: 256
+      heads_count: 8
       scale: 1
       attention:
         _target_: src.models.components.nets.new_matcher.Attention
@@ -39,7 +39,7 @@ net:
       scale: 2
       depths:
         - 192
-        - 384
+        - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}

@@ -88,7 +88,7 @@ class NewMatcherNet(nn.Module):
         self.ffn = nn.Sequential(
             nn.Conv2d(384 + 384, 384 + 384, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(384 + 384, 384, 1, bias=False))
+            nn.Conv2d(384 + 384, 256, 1, bias=False))
 
     def _scale_points(
         self,
