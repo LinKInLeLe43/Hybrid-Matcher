@@ -5,7 +5,7 @@ net:
   type: ???
   vit_type: "depth_anything_v2"
   backbone:
-    _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A2
+    _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A1
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
     depth: 256
@@ -38,7 +38,7 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - 192
+        - 128
         - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder

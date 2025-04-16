@@ -51,7 +51,7 @@ class NewMatcherNet(nn.Module):
 
         self.backbone = backbone
         self.backbone.scales = (8, 2)
-        self.backbone.load_state_dict(torch.load('weights/RepVGG-A2-train.pth', map_location='cpu'), strict=False)
+        self.backbone.load_state_dict(torch.load('weights/RepVGG-A1-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         # self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -86,9 +86,9 @@ class NewMatcherNet(nn.Module):
         #     self.register_buffer("fine_reg_delta", delta, persistent=False)
 
         self.ffn = nn.Sequential(
-            nn.Conv2d(384 + 384, 384 + 384, 1, bias=False),
+            nn.Conv2d(384 + 256, 384 + 256, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(384 + 384, 256, 1, bias=False))
+            nn.Conv2d(384 + 256, 256, 1, bias=False))
 
     def _scale_points(
         self,
