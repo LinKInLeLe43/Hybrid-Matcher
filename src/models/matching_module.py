@@ -83,19 +83,19 @@ class MatchingModule(pl.LightningModule):
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
             supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0)
-            # coarse_gt_points1 = supervision.pop("gt_points1")
+                batch, s1, extra_scale=s0, return_coor=True)
+            coarse_gt_points1 = supervision.pop("gt_points1")
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"],
                 extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
             supervision.update(utils.create_fine_supervision(
-                batch, (s1, 1), result["coarse_cls_idxes"]))
-            # supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
-            #     supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
-            #     result["fine_cls_idxes"], s2, self.net.reg_w)
-            # supervision.update(utils.compute_dense_gt_biases(
-            #     batch, result, self.dense_matcher, coarse_gt_points1,
-            #     result["coarse_cls_idxes"], s2, self.net.reg_w))
+                batch, (s1, 1), result["coarse_cls_idxes"], return_coor=True))
+            supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
+                supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
+                result["fine_cls_idxes"], s2, self.net.reg_w)
+            supervision.update(utils.compute_dense_gt_biases(
+                batch, result, self.dense_matcher, coarse_gt_points1,
+                result["coarse_cls_idxes"], s2, self.net.reg_w))
         elif self.net.type == "two_stage":
             supervision = utils.create_coarse_supervision(
                 batch, s1, extra_scale=s0)

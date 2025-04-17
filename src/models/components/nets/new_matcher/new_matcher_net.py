@@ -21,7 +21,7 @@ class NewMatcherNet(nn.Module):
         fine_preprocess: nn.Module,
         # fine_module: nn.Module,
         fine_cls_matching: nn.Module,
-        # fine_reg_matching: nn.Module,
+        fine_reg_matching: nn.Module,
         extra_scale: Optional[int] = None,
         enable_crop: bool = False
     ) -> None:
@@ -59,13 +59,13 @@ class NewMatcherNet(nn.Module):
         self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
         self.fine_cls_matching = fine_cls_matching
-        # self.fine_reg_matching = fine_reg_matching
+        self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1] // fine_preprocess.scale_before_crop)
-        self.reg_w = 5
+        self.reg_w = fine_reg_matching.window_size
 
         if type == "two_stage":
             self.cls_w = fine_cls_matching.window_size
@@ -105,8 +105,8 @@ class NewMatcherNet(nn.Module):
 
         biases0 = result.pop("fine_cls_biases0")[:m]
         biases1 = result.pop("fine_cls_biases1")[:m]
-        # biases1 += (self.scales[1] * (self.reg_w // 2) *
-        #             result["fine_reg_biases"][:m].detach())
+        biases1 += (self.scales[1] * (self.reg_w // 2) *
+                    result["fine_reg_biases"][:m].detach())
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
@@ -247,11 +247,11 @@ class NewMatcherNet(nn.Module):
 
         result.update(self.fine_cls_matching(x0_cls, x1_cls))
 
-        # local_matches = torch.cat([result["fine_cls_biases0"],
-        #                            result["fine_cls_biases1"]], dim=1)
-        # local_matches = local_matches / s2 + w // 2
-        # result.update(self.fine_reg_matching(
-        #     x0_reg, x1_reg, 1, local_matches=local_matches))
+        local_matches = torch.cat([result["fine_cls_biases0"],
+                                   result["fine_cls_biases1"]], dim=1)
+        local_matches = local_matches / s2 + w // 2
+        result.update(self.fine_reg_matching(
+            x0_reg, x1_reg, 1, local_matches=local_matches))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
