@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 
 import torch
 from torch import nn
@@ -34,7 +34,7 @@ class FinePreprocess(nn.Module):
             self.ups, self.downs = nn.ModuleList(), nn.ModuleList()
             for i in range(len(depths[:-1])):
                 c0, c1 = depths[i], depths[i + 1]
-                self.ups.append(nn.Conv2d(c0, c1, 1, bias=False))
+                self.ups.append(nn.Conv2d(c0 if i != 0 else c0 + 32, c1, 1, bias=False))
                 self.downs.append(nn.Sequential(
                     nn.Conv2d(c1, c1, 3, padding=1, bias=False),
                     nn.BatchNorm2d(c1),
@@ -114,12 +114,19 @@ class FinePreprocess(nn.Module):
         self,
         x0s: List[torch.Tensor],
         x1s: List[torch.Tensor],
-        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        depth: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if x0s[0].shape == x1s[0].shape:
             xs = [torch.cat(x) for x in zip(x0s, x1s)]
+            if depth is not None:
+                xs[0] = torch.cat([xs[0], depth], dim=1)
             out0, out1 = self._fuse_eloftr_impl(xs).chunk(2)
         else:
+            if depth is not None:
+                depth0, depth1 = depth.chunk(2)
+                x0s[0] = torch.cat([x0s[0], depth0], dim=1)
+                x1s[0] = torch.cat([x1s[0], depth1], dim=1)
             out0 = self._fuse_eloftr_impl(x0s)
             out1 = self._fuse_eloftr_impl(x1s)
         out0, out1 = self._crop_by_idxes(out0, out1, idxes)
@@ -129,7 +136,8 @@ class FinePreprocess(nn.Module):
         self,
         x0s: List[torch.Tensor],
         x1s: List[torch.Tensor],
-        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        depth: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         ww0 = self.window_size ** 2
         ww1 = (self.window_size + 2 * self.right_extra) ** 2
@@ -147,7 +155,7 @@ class FinePreprocess(nn.Module):
         if self.type == "loftr":
             out0, out1 = self._fuse_loftr(x0s, x1s, idxes)
         elif self.type == "eloftr":
-            out0, out1 = self._fuse_eloftr(x0s, x1s, idxes)
+            out0, out1 = self._fuse_eloftr(x0s, x1s, idxes, depth=depth)
         else:
             assert False
         return out0, out1
