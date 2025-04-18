@@ -1,0 +1,41 @@
+_target_: src.data.MatchingDataModule
+
+train_npz_root: None
+
+train_list_path: None
+
+train_dataset: None
+
+train_sampler: None
+
+train_batch_size_per_gpu: None
+
+val_npz_root: None
+
+val_list_path: None
+
+val_dataset: None
+
+val_sampler: None
+
+test_npz_root: None
+
+test_list_path: null
+
+test_dataset:
+  _target_: src.data.components.datasets.GL3DDataset
+  _partial_: true
+  data_root: "${paths.data_dir}/gl3d"
+  image_size: ???
+  image_factor: ${data.train_dataset.image_factor}
+  mask_factors: ${data.train_dataset.mask_factors}
+  fp16: ${fp16}
+
+test_sampler:
+  _target_: torch.utils.data.DistributedSampler
+  _partial_: true
+  shuffle: false
+
+workers_count: 10
+
+seed: ${seed}
