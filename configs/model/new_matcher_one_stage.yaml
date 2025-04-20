@@ -6,11 +6,10 @@ net:
   type: "one_stage"
   fine_preprocess:
     _target_: src.models.components.nets.new_matcher.FinePreprocess
-    type: "eloftr"
+    dims: ${model.net.backbone.layer_depths}
     window_size: 5
     stride: 4
     padding: 2
-    depths: ${model.net.backbone.layer_depths}
 #  fine_module:
 #    _target_: src.models.components.nets.new_matcher.LoFTR
 #    encoder:
