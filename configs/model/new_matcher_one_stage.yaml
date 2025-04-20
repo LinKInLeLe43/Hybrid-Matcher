@@ -22,8 +22,8 @@ net:
 #    types: ["self", "cross"]
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-    type: "classification"
-    depth: ${model.net.backbone.layer_depths.0}
+    name: "classification"
+    dim: ${model.net.backbone.layer_depths.0}
     window_size: 8
     temperature: 1.0
     cls_offset: 0.5

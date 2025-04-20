@@ -25,15 +25,15 @@ net:
     types: ["self", "cross"]
   fine_cls_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-    type: "classification"
-    depth: 56
+    name: "classification"
+    dim: 56
     window_size: ${model.net.fine_preprocess.window_size}
     temperature: 1.0
     cls_offset: 0.5
   fine_reg_matching:
     _target_: src.models.components.nets.new_matcher.FineMatching
-    type: "regression_by_expectation"
-    depth: 8
+    name: "regression"
+    dim: 8
     window_size: 3
     temperature: 10.0
 
