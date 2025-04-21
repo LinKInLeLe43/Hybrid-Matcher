@@ -201,6 +201,12 @@ class NewMatcherNet(nn.Module):
             x0_reg, x1_reg, 1, local_matches=local_matches))
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
+
+        result["points0"], result["points1"] = self.to_normalized_coordinates(
+            (result["points0"], result["points1"]),
+            *batch["image0"].shape[2:], *batch["image1"].shape[2:]
+        )
+        result["scores"] = result["scores"].logit()
         return result
 
     def crop_by_mask(
@@ -222,3 +228,12 @@ class NewMatcherNet(nn.Module):
         out = x.new_zeros((1, c, h, w))
         out[0, :, :_h, :_w] = x
         return out
+
+    def to_normalized_coordinates(self, coords, H_A, W_A, H_B, W_B):
+        if isinstance(coords, (list, tuple)):
+            kpts_A, kpts_B = coords[0], coords[1]
+        else:
+            kpts_A, kpts_B = coords[...,:2], coords[...,2:]
+        kpts_A = torch.stack((2/W_A * kpts_A[...,0] - 1, 2/H_A * kpts_A[...,1] - 1),axis=-1)
+        kpts_B = torch.stack((2/W_B * kpts_B[...,0] - 1, 2/H_B * kpts_B[...,1] - 1),axis=-1)
+        return kpts_A, kpts_B
