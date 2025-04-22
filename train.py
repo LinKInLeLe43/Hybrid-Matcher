@@ -49,6 +49,18 @@ def parse_args():
     parser.add_argument(
         '--parallel_load_data', action='store_true',
         help='load datasets in with multiple processes.')
+    parser.add_argument(
+        '--save_top_k', type=int, default=10,
+        help='save top k checkpoints based on the monitored metric')
+    parser.add_argument(
+        '--lr_scale', type=float, default=1.0,
+        help='scale the learning rate for fine-tuning')
+    parser.add_argument(
+        '--modality_list', nargs='+', default=['visible'],
+        help='List of modalities')
+    parser.add_argument(
+        '--save_dir', type=str, default=None,
+        help='save directory')
 
     parser = pl.Trainer.add_argparse_args(parser)
     return parser.parse_args()
@@ -74,6 +86,8 @@ def main():
     _scaling = config.TRAINER.TRUE_BATCH_SIZE / config.TRAINER.CANONICAL_BS
     config.TRAINER.SCALING = _scaling
     config.TRAINER.TRUE_LR = config.TRAINER.CANONICAL_LR * _scaling
+    lr_scale = args.lr_scale
+    config.TRAINER.TRUE_LR = config.TRAINER.TRUE_LR * lr_scale  # for fine-tuning
     config.TRAINER.WARMUP_STEP = math.floor(config.TRAINER.WARMUP_STEP / _scaling)
     
     # lightning module
@@ -103,6 +117,7 @@ def main():
     # Lightning Trainer
     trainer = pl.Trainer.from_argparse_args(
         args,
+        resume_from_checkpoint=args.resume_from_checkpoint,
         plugins=DDPPlugin(find_unused_parameters=False,
                           num_nodes=args.num_nodes,
                           sync_batchnorm=config.TRAINER.WORLD_SIZE > 0),

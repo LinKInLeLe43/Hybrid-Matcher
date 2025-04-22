@@ -7,6 +7,9 @@ from loguru import logger
 
 from src.utils.dataset import read_megadepth_gray, read_megadepth_depth
 
+import os
+import random
+import time
 
 class MegaDepthDataset(Dataset):
     def __init__(self,
@@ -19,6 +22,7 @@ class MegaDepthDataset(Dataset):
                  img_padding=False,
                  depth_padding=False,
                  augment_fn=None,
+                 modality_list=None,
                  **kwargs):
         """
         Manage one scene(npz_path) of MegaDepth dataset.
@@ -36,6 +40,16 @@ class MegaDepthDataset(Dataset):
             augment_fn (callable, optional): augments images with pre-defined visual effects.
         """
         super().__init__()
+        if modality_list is None:
+            self.modal_options = ['visible']
+        else:
+            self.modal_options = modality_list
+        self.infrared_root = 'data/megadepth/train/infrared/'
+        self.depth_root = 'data/megadepth/train/depth/'
+        self.normal_root = 'data/megadepth/train/normal/'
+        self.paint_root = 'data/megadepth/train/paint/'
+        self.sketch_root = 'data/megadepth1500/sketch/'
+        self.event_root = 'data/megadepth/train/event/'
         self.root_dir = root_dir
         self.mode = mode
         self.scene_id = npz_path.split('.')[0]
@@ -46,12 +60,13 @@ class MegaDepthDataset(Dataset):
             min_overlap_score = 0
         self.scene_info = np.load(npz_path, allow_pickle=True)
         self.pair_infos = self.scene_info['pair_infos'].copy()
+        self.scene_info = dict(self.scene_info)
         del self.scene_info['pair_infos']
         self.pair_infos = [pair_info for pair_info in self.pair_infos if pair_info[1] > min_overlap_score]
 
         # parameters for image resizing, padding and depthmap padding
-        if mode == 'train':
-            assert img_resize is not None and img_padding and depth_padding
+        # if mode == 'train':
+        # assert img_resize is not None and img_padding and depth_padding
         self.img_resize = img_resize
         self.df = df
         self.img_padding = img_padding
@@ -61,23 +76,119 @@ class MegaDepthDataset(Dataset):
         self.augment_fn = augment_fn if mode == 'train' else None
         self.coarse_scale = getattr(kwargs, 'coarse_scale', 0.125)
 
+        if self.mode == 'val':
+            self.dataset_length = len(self.pair_infos)
+        else:
+            self.dataset_length = len(self.pair_infos) * 2
+        self.local_random_1 = random.Random(time.time())
+        self.local_random_2 = random.Random(time.time() + 666)
+
+        self.modality_to_root = {
+            'visible': self.root_dir,
+            'infrared': self.infrared_root,
+            'depth': self.depth_root,
+            'normal': self.normal_root,
+            'event': self.event_root,
+            'sketch': self.sketch_root,
+            'paint': self.paint_root,
+        }
+
+        if self.mode == 'val':
+            self.modal_options = ['visible']
+
     def __len__(self):
-        return len(self.pair_infos)
+        return self.dataset_length
 
     def __getitem__(self, idx):
-        (idx0, idx1), overlap_score, central_matches = self.pair_infos[idx]
+        original_idx = idx // 2
+        reverse_mode = self.local_random_1.randint(0, 1)  # 0: visible-infrared, 1: infrared-visible
+
+        (idx0, idx1), overlap_score, central_matches = self.pair_infos[original_idx]
 
         # read grayscale image and mask. (1, h, w) and (h, w)
         img_name0 = osp.join(self.root_dir, self.scene_info['image_paths'][idx0])
         img_name1 = osp.join(self.root_dir, self.scene_info['image_paths'][idx1])
-        
-        # TODO: Support augmentation & handle seeds for each worker correctly.
-        image0, mask0, scale0 = read_megadepth_gray(
-            img_name0, self.img_resize, self.df, self.img_padding, None)
-            # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
-        image1, mask1, scale1 = read_megadepth_gray(
-            img_name1, self.img_resize, self.df, self.img_padding, None)
-            # np.random.choice([self.augment_fn, None], p=[0.5, 0.5]))
+
+        if self.mode == 'train' or self.mode == 'val':
+            self.multi_model = self.local_random_2.choice(self.modal_options)
+            self.multi_model = str(self.multi_model).strip().strip('"').strip("'")
+            try:
+                self.multi_model_root = self.modality_to_root[self.multi_model]
+            except KeyError:
+                raise ValueError(f"Unknown multi_model: {self.multi_model}")
+
+            # print('self.multi_model', self.multi_model, 'reverse_mode', reverse_mode)
+
+            img_name0_x_modality = osp.join(self.multi_model_root, self.scene_info['image_paths'][idx0])
+            img_name1_x_modality = osp.join(self.multi_model_root, self.scene_info['image_paths'][idx1])
+
+            if reverse_mode:
+
+                if self.multi_model in ['infrared', 'depth', 'normal', 'sketch']:
+                    filename_wo_ext, _ = os.path.splitext(img_name0_x_modality)
+                    img_name0 = filename_wo_ext + '.jpg'
+                    # assert os.path.exists(img_name1), f"img not found: {img_name1}"
+                    # assert os.path.exists(img_name0_x_modality), f"img not found: {img_name0_x_modality}"
+
+                elif self.multi_model in ['event']:
+
+                    filename_wo_ext, _ = os.path.splitext(img_name0_x_modality)
+                    img_name0 = filename_wo_ext + '.png'
+                    # assert os.path.exists(img_name1), f"img not found: {img_name1}"
+                    # assert os.path.exists(img_name0_x_modality), f"img not found: {img_name0_x_modality}"
+                elif self.multi_model == 'visible':
+                    pass
+                else:
+                    raise ValueError(f"Unknown multi_model: {self.multi_model}")
+
+            else:
+                if self.multi_model in ['infrared', 'depth', 'normal', 'sketch']:
+                    filename_wo_ext, _ = os.path.splitext(img_name1_x_modality)
+                    img_name1 = filename_wo_ext + '.jpg'
+
+                    # assert os.path.exists(img_name0), f"img not found: {img_name0}"
+                    # assert os.path.exists(img_name1_x_modality), f"img not found: {img_name1_x_modality}"
+
+                elif self.multi_model in ['event']:
+                    filename_wo_ext, _ = os.path.splitext(img_name1_x_modality)
+                    img_name1 = filename_wo_ext + '.png'
+                    # assert os.path.exists(img_name0), f"img not found: {img_name0}"
+                    # assert os.path.exists(img_name1_x_modality), f"img not found: {img_name1_x_modality}"
+
+                elif self.multi_model == 'visible':
+                    pass
+
+                else:
+                    raise ValueError(f"Unknown multi_model: {self.multi_model}")
+
+            image0, mask0, scale0 = read_megadepth_gray(img_name0, self.img_resize, self.df, self.img_padding,
+                                                        None)
+
+            image1, mask1, scale1 = read_megadepth_gray(img_name1, self.img_resize, self.df,
+                                                        self.img_padding,
+                                                        None)
+
+        else:
+            img_name0_x_modality = osp.join(self.multi_model_root, self.scene_info['image_paths'][idx0])
+            img_name1_x_modality = osp.join(self.multi_model_root, self.scene_info['image_paths'][idx1])
+            if reverse_mode:
+                img_name0_x_modality = img_name0_x_modality.replace('jpg', 'png')
+
+                image0, mask0, scale0 = read_megadepth_gray(img_name0_x_modality, self.img_resize, self.df,
+                                                            self.img_padding,
+                                                            None)
+                image1, mask1, scale1 = read_megadepth_gray(img_name1, self.img_resize, self.df, self.img_padding,
+                                                            None)
+                img_name0 = img_name0_x_modality
+            else:
+                img_name1_x_modality = img_name1_x_modality.replace('jpg', 'png')
+
+                image0, mask0, scale0 = read_megadepth_gray(img_name0, self.img_resize, self.df, self.img_padding,
+                                                            None)
+                image1, mask1, scale1 = read_megadepth_gray(img_name1_x_modality, self.img_resize, self.df,
+                                                            self.img_padding,
+                                                            None)
+                img_name1 = img_name1_x_modality
 
         # read depth. shape: (h, w)
         if self.mode in ['train', 'val']:
@@ -112,7 +223,7 @@ class MegaDepthDataset(Dataset):
             'dataset_name': 'MegaDepth',
             'scene_id': self.scene_id,
             'pair_id': idx,
-            'pair_names': (self.scene_info['image_paths'][idx0], self.scene_info['image_paths'][idx1]),
+            'pair_names': (img_name0, img_name1),
         }
 
         # for LoFTR training

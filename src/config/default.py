@@ -126,7 +126,7 @@ _CN.TRAINER.COSA_TMAX = 30  # COSA: CosineAnnealing
 _CN.TRAINER.ELR_GAMMA = 0.999992  # ELR: ExponentialLR, this value for 'step' interval
 
 # plotting related
-_CN.TRAINER.ENABLE_PLOTTING = True
+_CN.TRAINER.ENABLE_PLOTTING = False
 _CN.TRAINER.N_VAL_PAIRS_TO_PLOT = 32     # number of val/test paris for plotting
 _CN.TRAINER.PLOT_MODE = 'evaluation'  # ['evaluation', 'confidence']
 _CN.TRAINER.PLOT_MATCHES_ALPHA = 'dynamic'
