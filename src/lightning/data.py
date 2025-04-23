@@ -146,7 +146,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
                         mode='val',
                         min_overlap_score=self.min_overlap_score_test,
                         pose_dir=self.val_pose_root,
-                        modality_list=self.modality_list
+                        modality_list=['infrared']
                     ))
             else:
                 self.val_dataset = self._setup_dataset(
@@ -157,7 +157,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
                     mode='val',
                     min_overlap_score=self.min_overlap_score_test,
                     pose_dir=self.val_pose_root,
-                    modality_list=self.modality_list
+                    modality_list=['infrared']
                 )
             logger.info(f'[rank:{self.rank}] Train & Val Dataset loaded!')
         else:  # stage == 'test
@@ -182,8 +182,6 @@ class MultiSceneDataModule(pl.LightningDataModule):
                        pose_dir=None,
                        modality_list=None):
         """ Setup train / val / test set"""
-        if modality_list is None:
-            modality_list = ['visible']
         with open(scene_list_path, 'r') as f:
             npz_names = [name.split()[0] for name in f.readlines()]
 
@@ -228,8 +226,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
                                    mode=mode,
                                    min_overlap_score=min_overlap_score,
                                    augment_fn=augment_fn,
-                                   pose_dir=pose_dir,
-                                   modality_list=modality_list))
+                                   pose_dir=pose_dir))
             elif data_source == 'MegaDepth':
                 datasets.append(
                     MegaDepthDataset(data_root,
@@ -256,6 +253,7 @@ class MultiSceneDataModule(pl.LightningDataModule):
         mode,
         min_overlap_score=0.,
         pose_dir=None,
+        modality_list=None,
     ):
         augment_fn = self.augment_fn if mode == 'train' else None
         data_source = self.trainval_data_source if mode in ['train', 'val'] else self.test_data_source
@@ -290,7 +288,8 @@ class MultiSceneDataModule(pl.LightningDataModule):
                         img_padding=self.mgdpt_img_pad,
                         depth_padding=self.mgdpt_depth_pad,
                         augment_fn=augment_fn,
-                        coarse_scale=self.coarse_scale))(name)
+                        coarse_scale=self.coarse_scale,
+                        modality_list=modality_list))(name)
                     for name in npz_names)
             else:
                 raise ValueError(f'Unknown dataset: {data_source}')
