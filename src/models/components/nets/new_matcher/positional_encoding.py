@@ -2,6 +2,7 @@ from typing import Optional, Tuple
 import math
 
 import torch
+from torch import device
 from torch import nn
 
 
@@ -45,24 +46,37 @@ class RoPESinePositionalEncoding(nn.Module):
         self,
         depth: int,
         train_size: Tuple[int, int],
-        test_size: Optional[Tuple[int, int]] = None,
+        test_size: Tuple[int, int],
         fp16: bool = False
     ) -> None:
         super().__init__()
-        max_shape = 256, 256
+        self.depth = depth
+        self.train_size = tuple(train_size)
+        self.test_size = tuple(test_size)
+        self.fp16 = fp16
 
-        factor = torch.arange(depth // 4)[None, None, :]
+        self.pe = torch.empty(0)
+        self.sin = torch.empty(0)
+        self.cos = torch.empty(0)
+
+    def _build_tables(self, device: torch.device, dtype: torch.dtype) -> None:
+        max_shape = 256, 256
+        depth = self.depth
+        train_size = self.train_size
+        test_size = self.test_size
+
+        factor = torch.arange(depth // 4, device=device, dtype=dtype)[None, None, :]
         factor = (-math.log(10000.0) / (depth // 4) * factor).exp()
 
-        x = factor * torch.ones(max_shape).cumsum(1)[:, :, None]
-        y = factor * torch.ones(max_shape).cumsum(0)[:, :, None]
+        x = factor * torch.ones(max_shape, device=device, dtype=dtype).cumsum(1)[:, :, None]
+        y = factor * torch.ones(max_shape, device=device, dtype=dtype).cumsum(0)[:, :, None]
 
-        if test_size is not None and test_size != train_size:
+        if test_size != train_size:
             x *= train_size[1] / test_size[1]
             y *= train_size[0] / test_size[0]
 
-        sin = torch.zeros((*max_shape, depth // 2))
-        cos = torch.zeros((*max_shape, depth // 2))
+        sin = torch.zeros((*max_shape, depth // 2), device=device, dtype=dtype)
+        cos = torch.zeros((*max_shape, depth // 2), device=device, dtype=dtype)
         sin[..., 0::2] = y.sin()
         sin[..., 1::2] = x.sin()
         cos[..., 0::2] = y.cos()
@@ -73,24 +87,28 @@ class RoPESinePositionalEncoding(nn.Module):
         sin = sin.repeat_interleave(2, dim=2)
         cos = cos.repeat_interleave(2, dim=2)
 
-        if fp16:
-            pe, sin, cos = pe.half(), sin.half(), cos.half()
+        self.pe = pe
+        self.sin = sin
+        self.cos = cos
 
-        self.register_buffer("pe", pe, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
-        self.register_buffer("cos", cos, persistent=False)
+    def _ensure_tables(self, x: torch.Tensor) -> None:
+        target_dtype = torch.float16 if (self.fp16 or x.dtype == torch.float16) else torch.float32
+        if self.pe.numel() == 0 or  str(self.pe.device) != str(x.device) or self.pe.dtype != target_dtype:
+            self._build_tables(x.device, target_dtype)
 
     def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
-        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        x1, x2 = x.unflatten(-1, (x.shape[-1] // 2, 2)).unbind(dim=-1)
         out = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
         return out
 
     def abs_pe(self, x: torch.Tensor) -> torch.Tensor:
+        self._ensure_tables(x)
         _, c, h, w = x.shape
         out = x + self.pe[:c, :h, :w]
         return out
 
     def rel_pe(self, x: torch.Tensor) -> torch.Tensor:
+        self._ensure_tables(x)
         _, h, w, c = x.shape
         out = (self.cos[:h, :w, :c] * x +
                self.sin[:h, :w, :c] * self._rotate_half(x))

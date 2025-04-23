@@ -1,7 +1,7 @@
 import copy
 from typing import List, Optional, Tuple
 
-import einops
+# import einops
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -87,9 +87,14 @@ class LocalCluster(nn.Module):
         device = x.device
 
         x = self.proj(x.permute(0, 2, 3, 1))
-        x = einops.rearrange(
-            x, "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw", fc=fc,
-            fh=fh, fw=fw)
+        x = (
+            x.reshape(n, fh, sh, fw, sw, fc, -1)
+            .permute(0, 5, 1, 3, 6, 2, 4)
+            .reshape(n * fc * fh * fw, -1, sh, sw)
+        )
+        # x = einops.rearrange(
+        #     x, "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw", fc=fc,
+        #     fh=fh, fw=fw)
         center = self.center_proposal(x)
         x = x.flatten(start_dim=2).transpose(1, 2)
         center = center.flatten(start_dim=2).transpose(1, 2)
@@ -101,73 +106,78 @@ class LocalCluster(nn.Module):
         similarities = torch.einsum(
             "mlc,msc->mls", norm_x_point, norm_center_point)
         similarities = self.alpha * similarities + self.beta
-        if mask is not None:
-            mask = einops.repeat(
-                mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s", fc=fc,
-                fh=fh, fw=fw, s=s)
-            similarities.masked_fill_(~mask, float("-inf"))
+        # if mask is not None:
+        #     mask = einops.repeat(
+        #         mask, "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s", fc=fc,
+        #         fh=fh, fw=fw, s=s)
+        #     similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
         max_sim_values, max_sim_idxes = similarities.max(dim=2)
 
-        if self.type == "flattened_index":
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, x_value, center_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, x_value, center_value))
+        # if self.type == "flattened_index":
+        #     max_sim_idxes = (max_sim_idxes +
+        #                      s * torch.arange(m, device=device)[:, None])
+        #     max_sim_values, max_sim_idxes, x_value, center_value = map(
+        #         lambda x: x.flatten(end_dim=1),
+        #         (max_sim_values, max_sim_idxes, x_value, center_value))
 
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            aggregated = cat_center_value.index_add_(
-                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value)
-            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = (max_sim_values[:, None] *
-                          aggregated.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
-        elif self.type == "torch_scatter":
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, x_value, center_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, x_value, center_value))
-            _max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
+        #     cat_ones = torch.ones_like(x_value[:, [0]])
+        #     cat_x_value = torch.cat([x_value, cat_ones], dim=1)
+        #     cat_ones = torch.ones_like(center_value[:, [0]])
+        #     cat_center_value = torch.cat([center_value, cat_ones], dim=1)
+        #     aggregated = cat_center_value.index_add_(
+        #         0, max_sim_idxes, max_sim_values[:, None] * cat_x_value)
+        #     aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+        #     dispatched = (max_sim_values[:, None] *
+        #                   aggregated.index_select(0, max_sim_idxes))
+        #     dispatched = einops.rearrange(
+        #         dispatched,
+        #         "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
+        #         fh=fh, fw=fw, sh=sh, sw=sw)
+        # elif self.type == "torch_scatter":
+        #     max_sim_idxes = (max_sim_idxes +
+        #                      s * torch.arange(m, device=device)[:, None])
+        #     max_sim_values, max_sim_idxes, x_value, center_value = map(
+        #         lambda x: x.flatten(end_dim=1),
+        #         (max_sim_values, max_sim_idxes, x_value, center_value))
+        #     _max_sim_idxes, sorted_idxes = max_sim_idxes.sort()
 
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
-                _max_sim_idxes, size=m * s)
-            aggregated = cat_center_value + torch_scatter.segment_csr(
-                (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
-                max_sim_idxes_csr)
-            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = (max_sim_values[:, None] *
-                          aggregated.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
-        elif self.type == "original":
-            mask = torch.zeros_like(similarities)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
+        #     cat_ones = torch.ones_like(x_value[:, [0]])
+        #     cat_x_value = torch.cat([x_value, cat_ones], dim=1)
+        #     cat_ones = torch.ones_like(center_value[:, [0]])
+        #     cat_center_value = torch.cat([center_value, cat_ones], dim=1)
+        #     max_sim_idxes_csr = torch._convert_indices_from_coo_to_csr(
+        #         _max_sim_idxes, size=m * s)
+        #     aggregated = cat_center_value + torch_scatter.segment_csr(
+        #         (max_sim_values[:, None] * cat_x_value)[sorted_idxes],
+        #         max_sim_idxes_csr)
+        #     aggregated = aggregated[:, :-1] / aggregated[:, -1:]
+        #     dispatched = (max_sim_values[:, None] *
+        #                   aggregated.index_select(0, max_sim_idxes))
+        #     dispatched = einops.rearrange(
+        #         dispatched,
+        #         "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
+        #         fh=fh, fw=fw, sh=sh, sw=sw)
+        # elif self.type == "original":
+        mask = torch.zeros_like(similarities)
+        mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
+        similarities = (mask * similarities)[..., None]
 
-            aggregated = (center_value +
-                          (similarities * x_value[:, :, None, :]).sum(dim=1))
-            aggregated /= 1 + similarities.sum(dim=1)
-            dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
-                fh=fh, fw=fw, sh=sh, sw=sw)
-        else:
-            raise NotImplementedError("")
+        aggregated = (center_value +
+                      (similarities * x_value[:, :, None, :]).sum(dim=1))
+        aggregated /= 1 + similarities.sum(dim=1)
+        dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
+        dispatched = (
+            dispatched.reshape(n, fc, fh, fw, sh, sw, -1)
+            .permute(0, 2, 4, 3, 5, 1, 6)
+            .reshape(n, fh * sh, fw * sw, -1)
+        )
+        # dispatched = einops.rearrange(
+        #     dispatched,
+        #     "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)", fc=fc,
+        #     fh=fh, fw=fw, sh=sh, sw=sw)
+        # else:
+        #     raise NotImplementedError("")
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -206,10 +216,20 @@ class GlobalCluster(nn.Module):
 
         x0_point = self.proj0(x0.permute(0, 2, 3, 1))
         center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = einops.rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
-        center1 = einops.rearrange(
-            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        x0_point = (
+            x0_point.reshape(n, h0, w0, fc, -1)
+            .permute(0, 3, 1, 2, 4)
+            .reshape(n * fc, h0 * w0, -1)
+        )
+        center1 = (
+            center1.reshape(n, h1, w1, fc, -1)
+            .permute(0, 3, 1, 2, 4)
+            .reshape(n * fc, h1 * w1, -1)
+        )
+        # x0_point = einops.rearrange(
+        #     x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
+        # center1 = einops.rearrange(
+        #     center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc)
         center1_point, center1_value = center1.chunk(2, dim=2)
 
         norm_x0_point = F.normalize(x0_point, dim=2)
@@ -217,47 +237,52 @@ class GlobalCluster(nn.Module):
         similarities = torch.einsum(
             "mlc,msc->mls", norm_x0_point, norm_center1_point)
         similarities = self.alpha * similarities + self.beta
-        if mask is not None:
-            mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
-            similarities.masked_fill_(~mask, float("-inf"))
+        # if mask is not None:
+        #     mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
+        #     similarities.masked_fill_(~mask, float("-inf"))
         similarities.sigmoid_()
 
-        if self.type == "flattened_index":
-            max_sim_values, max_sim_idxes = similarities.max(dim=2)
-            max_sim_idxes = (max_sim_idxes +
-                             s * torch.arange(m, device=device)[:, None])
-            max_sim_values, max_sim_idxes, center1_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value))
+        # if self.type == "flattened_index":
+        max_sim_values, max_sim_idxes = similarities.max(dim=2)
+        max_sim_idxes = (max_sim_idxes +
+                         s * torch.arange(m, device=device)[:, None])
+        max_sim_values, max_sim_idxes, center1_value = [
+            x.flatten(end_dim=1)
+            for x in [max_sim_values, max_sim_idxes, center1_value]]
 
-            dispatched = (max_sim_values[:, None] *
-                          center1_value.index_select(0, max_sim_idxes))
-            dispatched = einops.rearrange(
-                dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
-        elif self.type == "torch_scatter":
-            csr_idxes = s * torch.arange(l + 1, device=device)[None]
-            max_sim_values, max_sim_idxes = torch_scatter.segment_max_csr(
-                similarities.flatten(start_dim=1), csr_idxes)
+        dispatched = (max_sim_values[:, None] *
+                      center1_value.index_select(0, max_sim_idxes))
+        dispatched = (
+            dispatched.reshape(n, fc, h0, w0, -1)
+            .permute(0, 2, 3, 1, 4)
+            .reshape(n, h0, w0, -1)
+        )
+        # dispatched = einops.rearrange(
+        #     dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0)
+        # elif self.type == "torch_scatter":
+        #     csr_idxes = s * torch.arange(l + 1, device=device)[None]
+        #     max_sim_values, max_sim_idxes = torch_scatter.segment_max_csr(
+        #         similarities.flatten(start_dim=1), csr_idxes)
 
-            range = torch.arange(m, device=device)[:, None]
-            dispatched = (max_sim_values[:, :, None] *
-                          center1_value[range, max_sim_idxes % s])
-            dispatched = einops.rearrange(
-                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
-                w=w0)
-        elif self.type == "original":
-            max_sim_idxes = similarities.argmax(dim=2)
-            mask = torch.zeros_like(similarities)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
+        #     range = torch.arange(m, device=device)[:, None]
+        #     dispatched = (max_sim_values[:, :, None] *
+        #                   center1_value[range, max_sim_idxes % s])
+        #     dispatched = einops.rearrange(
+        #         dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
+        #         w=w0)
+        # elif self.type == "original":
+        #     max_sim_idxes = similarities.argmax(dim=2)
+        #     mask = torch.zeros_like(similarities)
+        #     mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
+        #     similarities = (mask * similarities)[..., None]
 
-            dispatched = (similarities *
-                          center1_value[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
-                dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
-                w=w0)
-        else:
-            raise NotImplementedError("")
+        #     dispatched = (similarities *
+        #                   center1_value[:, None, :, :]).sum(dim=2)
+        #     dispatched = einops.rearrange(
+        #         dispatched, "(n fc) (h w) sc -> n h w (fc sc)", fc=fc, h=h0,
+        #         w=w0)
+        # else:
+        #     raise NotImplementedError("")
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -321,7 +346,7 @@ class GlobalClusterBlock(nn.Module):
         x0: torch.Tensor,
         center1: torch.Tensor,
         mask: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor]:
+    ) -> torch.Tensor:
         new_x0 = self.cluster(x0, center1, mask=mask)
         new_x0 = self.norm0(new_x0)
 
@@ -360,12 +385,13 @@ class LocalCoC(nn.Module):
                 point_reducer = nn.Identity()
             self.point_reducers.append(point_reducer)
 
-            layer = nn.Sequential()
+            layer = []
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i], hidden_depths[i], heads_counts[i],
                     center_sizes[i], fold_sizes[i], bias=bias)
                 layer.append(block)
+            layer = nn.Sequential(*layer)
             self.layers.append(layer)
 
             initial_depth = layer_depths[i]
@@ -462,7 +488,7 @@ class MergeBlock(nn.Module):
         center: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear")
+            center, scale_factor=float(self.scale), mode="bilinear")
         new_x = torch.cat([x, up_center], dim=1)
         new_x = new_x.permute(0, 2, 3, 1)
         new_x = self.mlp(new_x)
@@ -526,20 +552,20 @@ class GlobalCoC(nn.Module):
         y0_mask: Optional[torch.Tensor] = None,
         y1_mask: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        xy_mask01 = xy_mask10 = yy_mask00 = yy_mask11 = yy_mask01 = yy_mask10 = None
-        if x0_mask is not None:
-            x0_mask = x0_mask.flatten(start_dim=1)
-            x1_mask = x1_mask.flatten(start_dim=1)
-            y0_mask = y0_mask.flatten(start_dim=1)
-            y1_mask = y1_mask.flatten(start_dim=1)
-            # mask00 = x0_mask[:, :, None] & y0_mask[:, None, :]
-            # mask11 = x1_mask[:, :, None] & y1_mask[:, None, :]
-            xy_mask01 = x0_mask[:, :, None] & y1_mask[:, None, :]
-            xy_mask10 = xy_mask01.transpose(-1, -2)
-            yy_mask00 = y0_mask[:, :, None] & y0_mask[:, None, :]
-            yy_mask11 = y1_mask[:, :, None] & y1_mask[:, None, :]
-            yy_mask01 = y0_mask[:, :, None] & y1_mask[:, None, :]
-            yy_mask10 = yy_mask01.transpose(-1, -2)
+        # xy_mask01 = xy_mask10 = yy_mask00 = yy_mask11 = yy_mask01 = yy_mask10 = None
+        # if x0_mask is not None:
+        #     x0_mask = x0_mask.flatten(start_dim=1)
+        #     x1_mask = x1_mask.flatten(start_dim=1)
+        #     y0_mask = y0_mask.flatten(start_dim=1)
+        #     y1_mask = y1_mask.flatten(start_dim=1)
+        #     # mask00 = x0_mask[:, :, None] & y0_mask[:, None, :]
+        #     # mask11 = x1_mask[:, :, None] & y1_mask[:, None, :]
+        #     xy_mask01 = x0_mask[:, :, None] & y1_mask[:, None, :]
+        #     xy_mask10 = xy_mask01.transpose(-1, -2)
+        #     yy_mask00 = y0_mask[:, :, None] & y0_mask[:, None, :]
+        #     yy_mask11 = y1_mask[:, :, None] & y1_mask[:, None, :]
+        #     yy_mask01 = y0_mask[:, :, None] & y1_mask[:, None, :]
+        #     yy_mask10 = yy_mask01.transpose(-1, -2)
 
         for merge_block, global_block, self_block, cross_block in zip(
             self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks):
@@ -547,12 +573,12 @@ class GlobalCoC(nn.Module):
             x1, y1 = merge_block(x1, y1)
             # x0 = global_block(x0, center0, mask=mask00)
             # x1 = global_block(x1, center1, mask=mask11)
-            x0 = global_block(x0, y1, mask=xy_mask01)
-            x1 = global_block(x1, y0, mask=xy_mask10)
+            x0 = global_block(x0, y1)
+            x1 = global_block(x1, y0)
             x0 = self_block(
-                x0, x0, rope=rope, mask=yy_mask00)
+                x0, x0)
             x1 = self_block(
-                x1, x1, rope=rope, mask=yy_mask11)
-            x0 = cross_block(x0, x1, mask=yy_mask01)
-            x1 = cross_block(x1, x0, mask=yy_mask10)
+                x1, x1)
+            x0 = cross_block(x0, x1)
+            x1 = cross_block(x1, x0)
         return x0, x1

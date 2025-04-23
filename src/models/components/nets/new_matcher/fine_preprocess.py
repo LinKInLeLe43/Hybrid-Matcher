@@ -52,11 +52,11 @@ class FinePreprocess(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
-        index_triplet: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        index_triplet: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         w0, w1 = self.window_size0, self.window_size1
         upscale = self.upscale_before_crop
-        b_indices, i_indices, j_indices = index_triplet
+        b_indices, i_indices, j_indices = index_triplet.chunk(3, dim=-1)
 
         if upscale > 1.0:
             x0 = F.interpolate(
@@ -72,38 +72,46 @@ class FinePreprocess(nn.Module):
         cropped1 = F.unfold(x1, w1, stride=self.stride, padding=self.padding1)[
             b_indices, :, j_indices
         ]
-        cropped0 = rearrange(cropped0, "m (c ww) -> m ww c", ww=w0**2)
-        cropped1 = rearrange(cropped1, "m (c ww) -> m ww c", ww=w1**2)
+        m = cropped0.shape[0]
+        cropped0 = cropped0.reshape(m, -1, int(w0**2)).transpose(-1, -2)
+        cropped1 = cropped1.reshape(m, -1, int(w1**2)).transpose(-1, -2)
+        # cropped0 = rearrange(cropped0, "m (c ww) -> m ww c", ww=w0**2)
+        # cropped1 = rearrange(cropped1, "m (c ww) -> m ww c", ww=w1**2)
         return cropped0, cropped1
 
     def fpn_fuse(self, x_list: List[torch.Tensor]) -> torch.Tensor:
         x = self.ups[-1](x_list[-1])
-        for i in reversed(range(len(x_list) - 1)):
-            x, y = self.ups[i](x_list[i]), x
-            # FIXME: align_corners=False
-            x = x + F.interpolate(
-                y, scale_factor=2.0, mode="bilinear", align_corners=True
-            )
-            x = self.downs[i](x)
+        x, y = self.ups[1](x_list[1]), x
+        # FIXME: align_corners=False
+        x = x + F.interpolate(
+            y, scale_factor=2.0, mode="bilinear", align_corners=True
+        )
+        x = self.downs[1](x)
+        x, y = self.ups[0](x_list[0]), x
+        # FIXME: align_corners=False
+        x = x + F.interpolate(
+            y, scale_factor=2.0, mode="bilinear", align_corners=True
+        )
+        x = self.downs[0](x)
         return x
 
     def forward(
         self,
         x0_list: List[torch.Tensor],
         x1_list: List[torch.Tensor],
-        index_triplet: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        index_triplet: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         x0, x1 = x0_list[0], x1_list[0]
 
-        if index_triplet[0].shape[0] == 0:
-            cropped0 = x0.new_empty(0, self.window_size0**2, x0.shape[1])
-            cropped1 = x1.new_empty(0, self.window_size1**2, x1.shape[1])
+        if index_triplet.shape[0] == 0:
+            cropped0 = x0.new_empty(0, int(self.window_size0**2), x0.shape[1])
+            cropped1 = x1.new_empty(0, int(self.window_size1**2), x1.shape[1])
             return cropped0, cropped1
 
-        if x0.shape == x1.shape:
-            x_list = [torch.cat(x) for x in zip(x0_list, x1_list)]
-            x0, x1 = self.fpn_fuse(x_list).chunk(2)
-        else:
-            x0, x1 = self.fpn_fuse(x0_list), self.fpn_fuse(x1_list)
+        # if x0.shape == x1.shape:
+        x_list = [torch.cat(x) for x in zip(x0_list, x1_list)]
+        x0, x1 = self.fpn_fuse(x_list).chunk(2)
+        # else:
+        #     x0, x1 = self.fpn_fuse(x0_list), self.fpn_fuse(x1_list)
         cropped0, cropped1 = self.crop_by_indices(x0, x1, index_triplet)
         return cropped0, cropped1

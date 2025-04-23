@@ -7,7 +7,7 @@ from .utils.torch_geometry import get_perspective_transform
 from contextlib import nullcontext
 # from loguru import logger
 from .utils.dense_match import DenseMatch
-from pytorch_lightning.utilities import rank_zero_only
+# from pytorch_lightning.utilities import rank_zero_only
 
 
 autocast = torch.cuda.amp.autocast
@@ -26,32 +26,32 @@ class FineHomo(nn.Module):
         in_dim = (2*self.radius+1)**2*2+2 #
         self.update_block_4 = GMA(self.W, in_dim)# 5 3*3
         self.pad_num = 3200
-        self.thresh = np.array([600,1200, 3200, 4800, 6400, 8000]) #, 9600])
-        self.coords0, self.coords1 = {}, {}
-        self.points = {}
-        self.four_point_disp = {}
+        self.thresh = [600,1200, 3200, 4800, 6400, 8000] #, 9600])
+        self.coords0, self.coords1 = {999999: torch.tensor(0)}, {999999: torch.tensor(0)}
+        self.points = {999999: torch.tensor(0)}
+        self.four_point_disp = {999999: torch.tensor(0)}
         self.get_nan = False
 
-        if self.padding:
-            self.initialize_coords()
+        # if self.padding:
+        #     self.initialize_coords()
         # For Dense Match
         # self.config = config
         # if self.homo_dense:
         #     self.Dense_Matcher = DenseMatch(r=1, config=config)
 
-    def initialize_coords(self):
-        device = torch.device(f'cuda:{rank_zero_only.rank}') if torch.cuda.is_available() else torch.device('cpu')
+    # def initialize_coords(self):
+    #     device = torch.device(f'cuda:{rank_zero_only.rank}') if torch.cuda.is_available() else torch.device('cpu')
 
-        for M in self.thresh:
-            if M not in self.coords0:
-                N, H, W = M, self.W, self.W
-                coords0 = coords_grid(N, H, W).to(device) # [batch,2, H, W]
-                coords1 = coords0.clone().to(device)
-                self.coords0[M], self.coords1[M] = coords0, coords1
-                # logger.info('\n'+str(M)+'+'*10)
-                self.four_point_disp[M] = torch.zeros((M, 2, 2, 2)).to(device)
+    #     for M in self.thresh:
+    #         if M not in self.coords0:
+    #             N, H, W = M, self.W, self.W
+    #             coords0 = coords_grid(N, H, W).to(device) # [batch,2, H, W]
+    #             coords1 = coords0.clone().to(device)
+    #             self.coords0[M], self.coords1[M] = coords0, coords1
+    #             # logger.info('\n'+str(M)+'+'*10)
+    #             self.four_point_disp[M] = torch.zeros((M, 2, 2, 2)).to(device)
     
-    def get_flow_now_k(self, four_point, k = 1):
+    def get_flow_now_k(self, four_point, k:int = 1):
         H = self.get_homo_now_k(four_point, k=k)
         N = four_point.shape[0]
         h, w = self.W, self.W
@@ -72,21 +72,21 @@ class FineHomo(nn.Module):
 
         return flow, H
 
-    def get_homo_now_k(self, four_point, k = 1):
+    def get_homo_now_k(self, four_point, k:int = 1):
         # N,_,_,_ = four_point.shape
         N = four_point.shape[0]
         # h, w = h//k, w//k
         h, w = self.W, self.W
         four_point = four_point / k # four_point is at original size， coordinate is at feature map size
         four_point_org = torch.zeros((2, 2, 2)).to(four_point.device)
-        four_point_org[:, 0, 0] = torch.Tensor([0, 0])
-        four_point_org[:, 0, 1] = torch.Tensor([w-1, 0])
-        four_point_org[:, 1, 0] = torch.Tensor([0, h-1])
-        four_point_org[:, 1, 1] = torch.Tensor([w -1, h-1])
+        four_point_org[:, 0, 0] = torch.tensor([0, 0])
+        four_point_org[:, 0, 1] = torch.tensor([w-1, 0])
+        four_point_org[:, 1, 0] = torch.tensor([0, h-1])
+        four_point_org[:, 1, 1] = torch.tensor([w -1, h-1])
 
         four_point_org = four_point_org.unsqueeze(0)
         four_point_org = four_point_org.repeat(N, 1, 1, 1)
-        four_point_new = torch.autograd.Variable(four_point_org) + four_point
+        four_point_new = four_point_org + four_point
         four_point_org = four_point_org.flatten(2).permute(0, 2, 1)
         four_point_new = four_point_new.flatten(2).permute(0, 2, 1)
         H = get_perspective_transform(four_point_org, four_point_new)
@@ -100,14 +100,14 @@ class FineHomo(nn.Module):
 
         return H
 
-    def initialize_flow_k(self, img, k= 4):
+    def initialize_flow_k(self, img, k:int= 4):
         N, C, H, W = img.shape
         coords0 = coords_grid(N, H//k, W//k).to(img.device) # [batch,2, H, W]
         coords1 = coords_grid(N, H//k, W//k).to(img.device)
 
         return coords0, coords1 # [x,y]
     
-    def forward(self, feat_f0_unfold, feat_f1_unfold, iters_lev0, local_matches=None):
+    def forward(self, feat_f0_unfold, feat_f1_unfold, iters_lev0:int, local_matches:torch.Tensor):
         '''
         Input:
             feat_f0_unfold: (torch.Tensor): (M, W*W, dim) dim=128
@@ -121,23 +121,28 @@ class FineHomo(nn.Module):
         # if M_ == 0:
         #     return {"fine_reg_biases": feat_f0_unfold.new_empty((0, 2))}
 
-        if self.padding:
+        # if self.padding:
             # bz = data['image0'].shape[0]
             # pad_size = 0
-            try:
-                # pad_num = self.thresh[np.where((self.thresh/ (M_/bz) >= 1.0))[0][0]]
-                pad_num = self.thresh[np.where((self.thresh / (M_) >= 1.0))[0][0]]
-            except:
-                pad_num = self.thresh[-1]
-            # if M_ > bz * 3200: logger.info(f'bz too big in fine_homo {M_}/{bz}')
-            # if M_ < bz * pad_num:
-            if M_ < pad_num:
-                # 如果当前批次大小小于 M，则进行 padding
-                # pad_size = bz * pad_num - M_
-                pad_size = pad_num - M_
-                padding = torch.zeros(pad_size, W_W, dim,device = feat_f0_unfold.device,dtype=feat_f0_unfold.dtype)
-                feat_f0_unfold = torch.cat([feat_f0_unfold, padding], dim=0)
-                feat_f1_unfold = torch.cat([feat_f1_unfold, padding], dim=0)
+        pad_num = self.thresh[-1] 
+        for t in self.thresh:                  
+            if t / M_ >= 1.0:
+                pad_num = t
+                break
+        # try:
+        #     # pad_num = self.thresh[np.where((self.thresh/ (M_/bz) >= 1.0))[0][0]]
+        #     pad_num = self.thresh[np.where((self.thresh / (M_) >= 1.0))[0][0]]
+        # except:
+        #     pad_num = self.thresh[-1]
+        # if M_ > bz * 3200: logger.info(f'bz too big in fine_homo {M_}/{bz}')
+        # if M_ < bz * pad_num:
+        if M_ < pad_num:
+            # 如果当前批次大小小于 M，则进行 padding
+            # pad_size = bz * pad_num - M_
+            pad_size = pad_num - M_
+            padding = torch.zeros(pad_size, W_W, dim,device = feat_f0_unfold.device,dtype=feat_f0_unfold.dtype)
+            feat_f0_unfold = torch.cat([feat_f0_unfold, padding], dim=0)
+            feat_f1_unfold = torch.cat([feat_f1_unfold, padding], dim=0)
         M, W_W, dim = feat_f0_unfold.shape
 
         # import pdb;pdb.set_trace()
@@ -162,22 +167,23 @@ class FineHomo(nn.Module):
         # sz = data['hw0_f'] # torch.Size([240, 320])
 
         # 2. Calculate Correlation Matrix  
-        corr_fn = CorrBlock(fmap1, fmap2, num_levels=2, radius=self.radius,corr=corr) # radius = 8
+        corr_fn = CorrBlock(fmap1, fmap2, corr, num_levels=2, radius=self.radius) # radius = 8
 
-        if self.padding:
-            if M not in self.coords0:
-                # self.coords0, self.coords1 = self.initialize_flow_k(fmap1, k=1)    
-                coords0, coords1 = self.initialize_flow_k(fmap1, k=1)    
-                self.coords0[M], self.coords1[M] = coords0, coords1
-                # logger.info('\n'+str(M)+'+'*10)
-                self.four_point_disp[M] = torch.zeros((M, 2, 2, 2)).to(fmap1.device)
-            coords0, coords1 = self.coords0[M].to(fmap1.dtype), self.coords1[M].to(fmap1.dtype)
-            four_point_disp = self.four_point_disp[M].to(fmap1.dtype)
-        else:
-            coords0, coords1 = self.initialize_flow_k(fmap1, k=1)
-            four_point_disp = torch.zeros((M, 2, 2, 2)).to(fmap1.device)
+        # if self.padding:
+        if M not in self.coords0:
+            # self.coords0, self.coords1 = self.initialize_flow_k(fmap1, k=1)    
+            coords0, coords1 = self.initialize_flow_k(fmap1, k=1)    
+            self.coords0[M], self.coords1[M] = coords0, coords1
+            # logger.info('\n'+str(M)+'+'*10)
+            self.four_point_disp[M] = torch.zeros((M, 2, 2, 2)).to(fmap1.device)
+        coords0, coords1 = self.coords0[M].to(fmap1.dtype), self.coords1[M].to(fmap1.dtype)
+        four_point_disp = self.four_point_disp[M].to(fmap1.dtype)
+        # else:
+        #     coords0, coords1 = self.initialize_flow_k(fmap1, k=1)
+        #     four_point_disp = torch.zeros((M, 2, 2, 2)).to(fmap1.device)
 
         # 3. Recurrent Homography Estimation
+        H = torch.tensor(0)
         flow_predictions =[] ## for train
         for itr in range(iters_lev0):
             corr = corr_fn(coords1) # batch,channel,H,W  correlation
@@ -235,18 +241,18 @@ class FineHomo(nn.Module):
         
         # 4. Output
         # coords1,H = self.get_flow_now_k(four_point_disp, k=1) 
-        if local_matches is not None:
-            points, r_points = local_matches.chunk(2, dim=1)
-            points = torch.cat([points, torch.ones_like(points[:, [0]])], dim=1)[:, :, None]
-            if self.padding:
-                _points = points.new_zeros((M, 3, 1))
-                _points[:M_] = points
-                points = _points
-        else:
-            center_pix = (self.W-1)/2.0
-            points = torch.cat((torch.ones((1,1))*center_pix, torch.ones((1,1))*center_pix, torch.ones((1,1))),
-                            dim=0).unsqueeze(0).repeat(M, 1, 1).to(four_point_disp.device)# [M,2,1] only one point
-            r_points = (self.W-1)/2.0
+        # if local_matches is not None:
+        points, r_points = local_matches.chunk(2, dim=1)
+        points = torch.cat([points, torch.ones_like(points[:, [0]])], dim=1)[:, :, None]
+        # if self.padding:
+        _points = points.new_zeros((M, 3, 1))
+        _points[:M_] = points
+        points = _points
+        # else:
+        #     center_pix = (self.W-1)/2.0
+        #     points = torch.cat((torch.ones((1,1))*center_pix, torch.ones((1,1))*center_pix, torch.ones((1,1))),
+        #                     dim=0).unsqueeze(0).repeat(M, 1, 1).to(four_point_disp.device)# [M,2,1] only one point
+        #     r_points = (self.W-1)/2.0
         warp_points = H.bmm(points) # [3840, 2]
         safe_denominator = warp_points[:, 2, :].unsqueeze(1) + 1e-8
         # safe_denominator = denominator.clone().clamp(min=1e-8)
@@ -307,7 +313,7 @@ class FineHomo(nn.Module):
         #         # self.get_fine_match_dense(dense_points, warp_dense_points, data)
         #     else:
         # self.get_fine_match(offset, data)
-        return {"fine_reg_biases": offset, "flow_predictions": flow_predictions}
+        return {"fine_reg_biases": offset}
 
     # @torch.no_grad()
     def coords_dense(self, grid_pt_i, r = 2):

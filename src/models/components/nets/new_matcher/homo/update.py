@@ -46,9 +46,9 @@ class CNN_size(nn.Module):
 
     def forward(self, x):
         if self.sz//4 > 0: x = self.layer1(x)
-        if self.sz//8 > 0: x = self.layer2(x)
-        if self.sz//16 > 0: x = self.layer3(x)
-        if self.sz//32 > 0: x = self.layer4(x)
+        # if self.sz//8 > 0: x = self.layer2(x)
+        # if self.sz//16 > 0: x = self.layer3(x)
+        # if self.sz//32 > 0: x = self.layer4(x)
         x = self.layer10(x)
 
         return x

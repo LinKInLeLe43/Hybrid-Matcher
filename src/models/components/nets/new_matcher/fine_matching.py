@@ -39,17 +39,17 @@ class FineMatching(nn.Module):
 
     def compute_cls_biases(
         self, x0: torch.Tensor, x1: torch.Tensor
-    ) -> Dict[str, Any]:
-        ww = self.window_size**2
+    ) -> Dict[str, torch.Tensor]:
+        ww = int(self.window_size**2)
 
-        if x0.shape[0] == 0:
-            out = {
-                "fine_cls_heatmap": x0.new_empty(0, ww, ww),
-                "fine_cls_idxes": 3 * (x0.new_empty(0, dtype=torch.long),),
-                "fine_cls_biases0": x0.new_empty(0, 2),
-                "fine_cls_biases1": x0.new_empty(0, 2),
-            }
-            return out
+        # if x0.shape[0] == 0:
+        #     out = {
+        #         "fine_cls_heatmap": x0.new_empty(0, ww, ww),
+        #         "fine_cls_idxes": x0.new_empty(0, 3, dtype=torch.long),
+        #         "fine_cls_biases0": x0.new_empty(0, 2),
+        #         "fine_cls_biases1": x0.new_empty(0, 2),
+        #     }
+        #     return out
 
         x0, x1 = x0 * self.scale, x1 * self.scale
         similarity = torch.einsum("mlc,msc->mls", x0, x1) / self.temperature
@@ -59,12 +59,11 @@ class FineMatching(nn.Module):
             m_indices = torch.arange(x0.shape[0], device=x0.device)
             ij_indices = confidence.flatten(start_dim=-2).argmax(dim=-1)
             i_indices, j_indices = ij_indices // ww, ij_indices % ww
+            idxes = torch.stack([m_indices, i_indices, j_indices], dim=-1)
             biases0 = self.cls_biases[i_indices]
             biases1 = self.cls_biases[j_indices]
 
         out = {
-            "fine_cls_heatmap": confidence,
-            "fine_cls_idxes": (m_indices, i_indices, j_indices),
             "fine_cls_biases0": biases0,
             "fine_cls_biases1": biases1,
         }
@@ -72,21 +71,21 @@ class FineMatching(nn.Module):
 
     def compute_reg_biases(
         self, x0: torch.Tensor, x1: torch.Tensor
-    ) -> Dict[str, Any]:
+    ) -> Dict[str, torch.Tensor]:
         w = self.window_size
 
         if x0.shape[0] == 0:
             out = {"fine_reg_biases": x0.new_empty(0, 2)}
             return out
 
-        x0 = x0[:, w**2 // 2] * self.scale
+        x0 = x0[:, int(w**2) // 2] * self.scale
         similarity = torch.einsum("mc,mrc->mr", x0, x1) / self.temperature
         confidence = similarity.softmax(dim=-1).unflatten(-1, (w, w))
         biases = spatial_expectation2d(confidence[None])[0]
         out = {"fine_reg_biases": biases}
         return out
 
-    def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, Any]:
+    def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, torch.Tensor]:
         if self.name == "classification":
             out = self.compute_cls_biases(x0, x1)
         elif self.name == "regression":

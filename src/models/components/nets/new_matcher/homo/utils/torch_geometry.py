@@ -62,6 +62,22 @@ def euler_angles_to_matrix(euler_angles, convention: str):
 ###########################
 #### from pytorchgemotry ####
 ###########################
+
+def ax(p, q):
+    ones = torch.ones_like(p)[..., 0:1]
+    zeros = torch.zeros_like(p)[..., 0:1]
+    return torch.cat(
+        [p[:, 0:1], p[:, 1:2], ones, zeros, zeros, zeros,
+         -p[:, 0:1] * q[:, 0:1], -p[:, 1:2] * q[:, 0:1]
+         ], dim=1)
+
+def ay(p, q):
+    ones = torch.ones_like(p)[..., 0:1]
+    zeros = torch.zeros_like(p)[..., 0:1]
+    return torch.cat(
+        [zeros, zeros, zeros, p[:, 0:1], p[:, 1:2], ones,
+         -p[:, 0:1] * q[:, 1:2], -p[:, 1:2] * q[:, 1:2]], dim=1)
+
 def get_perspective_transform(src, dst):
     r"""Calculates a perspective transform from four pairs of the corresponding
     points.
@@ -100,36 +116,22 @@ def get_perspective_transform(src, dst):
         - Input: :math:`(B, 4, 2)` and :math:`(B, 4, 2)`
         - Output: :math:`(B, 3, 3)`
     """
-    if not torch.is_tensor(src):
-        raise TypeError("Input type is not a torch.Tensor. Got {}"
-                        .format(type(src)))
-    if not torch.is_tensor(dst):
-        raise TypeError("Input type is not a torch.Tensor. Got {}"
-                        .format(type(dst)))
-    if not src.shape[-2:] == (4, 2):
-        raise ValueError("Inputs must be a Bx4x2 tensor. Got {}"
-                         .format(src.shape))
-    if not src.shape == dst.shape:
-        raise ValueError("Inputs must have the same shape. Got {}"
-                         .format(dst.shape))
-    if not (src.shape[0] == dst.shape[0]):
-        raise ValueError("Inputs must have same batch size dimension. Got {}"
-                         .format(src.shape, dst.shape))
+    # if not torch.is_tensor(src):
+    #     raise TypeError("Input type is not a torch.Tensor. Got {}"
+    #                     .format(type(src)))
+    # if not torch.is_tensor(dst):
+    #     raise TypeError("Input type is not a torch.Tensor. Got {}"
+    #                     .format(type(dst)))
+    # if not src.shape[-2:] == (4, 2):
+    #     raise ValueError("Inputs must be a Bx4x2 tensor. Got {}"
+    #                      .format(src.shape))
+    # if not src.shape == dst.shape:
+    #     raise ValueError("Inputs must have the same shape. Got {}"
+    #                      .format(dst.shape))
+    # if not (src.shape[0] == dst.shape[0]):
+    #     raise ValueError("Inputs must have same batch size dimension. Got {}"
+    #                      .format(src.shape, dst.shape))
 
-    def ax(p, q):
-        ones = torch.ones_like(p)[..., 0:1]
-        zeros = torch.zeros_like(p)[..., 0:1]
-        return torch.cat(
-            [p[:, 0:1], p[:, 1:2], ones, zeros, zeros, zeros,
-             -p[:, 0:1] * q[:, 0:1], -p[:, 1:2] * q[:, 0:1]
-             ], dim=1)
-
-    def ay(p, q):
-        ones = torch.ones_like(p)[..., 0:1]
-        zeros = torch.zeros_like(p)[..., 0:1]
-        return torch.cat(
-            [zeros, zeros, zeros, p[:, 0:1], p[:, 1:2], ones,
-             -p[:, 0:1] * q[:, 1:2], -p[:, 1:2] * q[:, 1:2]], dim=1)
     # we build matrix A by using only 4 point correspondence. The linear
     # system is solved with the least square method, so here
     # we could even pass more correspondence

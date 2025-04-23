@@ -10,7 +10,7 @@ from warnings import warn
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange, repeat
+# from einops import rearrange, repeat
 from kornia.utils import create_meshgrid
 
 try:
@@ -44,32 +44,32 @@ class Attention(nn.Module):
         v: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if self.enable_sdpa:
-            if self.enable_flash:
-                if mask is not None:
-                    raise ValueError("")
+        # if self.enable_sdpa:
+        #     if self.enable_flash:
+        #         if mask is not None:
+        #             raise ValueError("")
 
-                q, k, v = [x.half().contiguous() for x in [q, k, v]]
-                with sdp_kernel(
-                    enable_flash=True,
-                    enable_math=False,
-                    enable_mem_efficient=False,
-                ):
-                    message = sdpa(q, k, v).to(q.dtype)
-            else:
-                q, k, v = [x.contiguous() for x in [q, k, v]]
-                message = sdpa(q, k, v, attn_mask=mask)
-        else:
-            q = q * q.shape[-1] ** -0.5
-            similarity = torch.einsum("...ld,...sd->...ls", q, k)
-            if mask is not None:
-                similarity.masked_fill_(~mask, -float("inf"))
+        #         q, k, v = [x.half().contiguous() for x in [q, k, v]]
+        #         with sdp_kernel(
+        #             enable_flash=True,
+        #             enable_math=False,
+        #             enable_mem_efficient=False,
+        #         ):
+        #             message = sdpa(q, k, v).to(q.dtype)
+        #     else:
+        #         q, k, v = [x.contiguous() for x in [q, k, v]]
+        #         message = sdpa(q, k, v, attn_mask=mask)
+        # else:
+        q = q * q.shape[-1] ** -0.5
+        similarity = torch.einsum("...ld,...sd->...ls", q, k)
+            # if mask is not None:
+            #     similarity.masked_fill_(~mask, -float("inf"))
 
-            attention = similarity.softmax(dim=-1)
-            message = torch.einsum("...ls,...sd->...ld", attention, v)
+        attention = similarity.softmax(dim=-1)
+        message = torch.einsum("...ls,...sd->...ld", attention, v)
 
-        if mask is not None:
-            message.nan_to_num_()
+        # if mask is not None:
+        #     message.nan_to_num_()
         return message
 
 
@@ -131,7 +131,9 @@ class AggregatedTransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.scale = scale
+        self.head_dim = dim // num_heads
         self.num_heads = num_heads
+        self.rope = None
 
         if scale > 1:
             self.down_q = nn.Conv2d(
@@ -159,29 +161,31 @@ class AggregatedTransformerLayer(nn.Module):
         self,
         x: torch.Tensor,
         y: torch.Tensor,
-        rope: Optional[nn.Module] = None,
         mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         q = self.down_q(x).permute(0, 2, 3, 1)
         kv = self.down_kv(y).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
-        if rope is not None:
-            q, k = rope.rel_pe(q), rope.rel_pe(k)
+        if self.rope is not None:
+            q, k = self.rope.rel_pe(q), self.rope.rel_pe(k)
         q, k, v = [
-            rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=self.num_heads)
+            x.unflatten(-1, (self.num_heads, self.head_dim)).permute(0, 3, 1, 2, 4).flatten(start_dim=2, end_dim=3)
+            # rearrange(x, "n h w (fc sc) -> n fc (h w) sc", fc=self.num_heads)
             for x in [q, k, v]
         ]
         message = self.attention(
             q, k, v, mask=mask[:, None] if mask is not None else None
         )
-        message = rearrange(message, "n fc l sc -> n l (fc sc)")
+        message = message.transpose(1, 2).flatten(start_dim=2)
+        # message = rearrange(message, "n fc l sc -> n l (fc sc)")
         message = self.norm1(self.merge(message))
-        message = rearrange(
-            message, "n (sh sw) c -> n c sh sw", sh=x.shape[2] // self.scale
-        )
+        message = message.unflatten(1, (x.shape[2] // self.scale, x.shape[3] // self.scale)).permute(0, 3, 1, 2)
+        # message = rearrange(
+        #     message, "n (sh sw) c -> n c sh sw", sh=x.shape[2] // self.scale
+        # )
         message = F.interpolate(
             message,
-            scale_factor=self.scale,
+            scale_factor=float(self.scale),
             mode="bilinear",
             align_corners=False,
         )
@@ -201,6 +205,7 @@ class RegionBasedSelectiveTransformerLayer(nn.Module):
     ) -> None:
         super().__init__()
         self.scale = scale
+        self.head_dim = dim // num_heads
         self.num_heads = num_heads
 
         self.q_proj = nn.Linear(dim, dim, bias=False)
@@ -219,28 +224,33 @@ class RegionBasedSelectiveTransformerLayer(nn.Module):
         self.norm2 = nn.LayerNorm(dim)
 
     def forward(
-        self, x: torch.Tensor, y: torch.Tensor, axes_lengths: Dict[str, int]
+        self, x: torch.Tensor, y: torch.Tensor, size: Tuple[int, int]
     ) -> torch.Tensor:
         q, k, v = self.q_proj(x), self.k_proj(y), self.v_proj(y)
         q, k, v = [  # l = ss/(k * ss) for q/kv
-            rearrange(x, "n ff l (fc sc) -> n ff fc l sc", fc=self.num_heads)
+            x.unflatten(-1, (self.num_heads, self.head_dim)).transpose(-2, -3)
+            # rearrange(x, "n ff l (fc sc) -> n ff fc l sc", fc=self.num_heads)
             for x in [q, k, v]
         ]
         message = self.attention(q, k, v)
-        message = rearrange(message, "n ff fc ss sc -> n ff ss (fc sc)")
+        message = message.transpose(-2, -3).flatten(start_dim=-2)
+        # message = rearrange(message, "n ff fc ss sc -> n ff ss (fc sc)")
         message = self.norm1(self.merge(message))
         message = torch.cat([x, message], dim=-1)
-        message = rearrange(
-            message,
-            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            **axes_lengths,
-        )
+        n, _, _, c = message.shape
+        message = message.reshape(n, size[0], size[1], self.scale, self.scale, c).permute(0, 5, 1, 3, 2, 4).reshape(n, c, size[0] * self.scale, size[1] * self.scale)
+        # message = rearrange(
+        #     message,
+        #     "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+        #     **axes_lengths,
+        # )
         message = self.mlp(message)
-        message = rearrange(
-            message,
-            "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c",
-            **axes_lengths,
-        )
+        message = message.reshape(n, -1, size[0], self.scale, size[1], self.scale).permute(0, 2, 4, 3, 5, 1).reshape(n, size[0] * size[1], self.scale * self.scale, -1)
+        # message = rearrange(
+        #     message,
+        #     "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c",
+        #     **axes_lengths,
+        # )
         message = self.norm2(message)
         x = x + message
         return x
@@ -337,17 +347,19 @@ class RegionBasedSelectiveTransformer(nn.Module):
     def fpn_fuse(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         x, y = self.x_up(x), self.y_up(y)
         x = x + F.interpolate(
-            y, scale_factor=self.scale, mode="bilinear", align_corners=False
+            y, scale_factor=float(self.scale), mode="bilinear", align_corners=False
         )
         x = self.down(x)
         return x
 
     def reshape_to_region_based(
-        self, x: torch.Tensor, axes_lengths: Dict[str, int]
+        self, x: torch.Tensor, size: Tuple[int, int]
     ) -> torch.Tensor:
-        out = rearrange(
-            x, "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c", **axes_lengths
-        )
+        n, c, _, _ = x.shape
+        # out = rearrange(
+        #     x, "n c (fh sh) (fw sw) -> n (fh fw) (sh sw) c", **axes_lengths
+        # )
+        out = x.reshape(n, c, size[0], self.scale, size[1], self.scale).permute(0, 2, 4, 3, 5, 1).reshape(n, size[0] * size[1], self.scale * self.scale, c)
         return out
 
     def gather_attended(
@@ -359,14 +371,17 @@ class RegionBasedSelectiveTransformer(nn.Module):
         return out
 
     def map_indices(
-        self, x: torch.Tensor, axes_lengths: Dict[str, int], fw: int
+        self, x: torch.Tensor, size: Tuple[int, int], fw: int
     ) -> torch.Tensor:
         row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
         col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
         out = row * fw * self.scale + col
-        out = repeat(
-            out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **axes_lengths
-        )
+
+        n, _, k, ss = out.shape
+        out = out.reshape(n, size[0], 1, size[1], 1, k, ss).repeat(1, 1, self.scale, 1, self.scale, 1, 1).reshape(n, -1, k * ss)
+        # out = repeat(
+        #     out, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)", **axes_lengths
+        # )
         return out
 
     def forward(
@@ -387,36 +402,36 @@ class RegionBasedSelectiveTransformer(nn.Module):
     ]:
         _, _, fh0, fw0 = y0.shape
         _, _, fh1, fw1 = y1.shape
-        axes_lengths0 = {
-            "fh": fh0,
-            "fw": fw0,
-            "sh": self.scale,
-            "sw": self.scale,
-        }
-        axes_lengths1 = {
-            "fh": fh1,
-            "fw": fw1,
-            "sh": self.scale,
-            "sw": self.scale,
-        }
+        # axes_lengths0 = {
+        #     "fh": fh0,
+        #     "fw": fw0,
+        #     "sh": self.scale,
+        #     "sw": self.scale,
+        # }
+        # axes_lengths1 = {
+        #     "fh": fh1,
+        #     "fw": fw1,
+        #     "sh": self.scale,
+        #     "sw": self.scale,
+        # }
 
         if (fh0, fw0) == (fh1, fw1):
             x, y = torch.cat([x0, x1]), torch.cat([y0, y1])
             x = self.fpn_fuse(x, y)
-            x0, x1 = self.reshape_to_region_based(x, axes_lengths0).chunk(2)
+            x0, x1 = self.reshape_to_region_based(x, (fh0, fw0)).chunk(2)
         else:
             x0, x1 = self.fpn_fuse(x0, y0), self.fpn_fuse(x1, y1)
-            x0 = self.reshape_to_region_based(x0, axes_lengths0)
-            x1 = self.reshape_to_region_based(x1, axes_lengths1)
+            x0 = self.reshape_to_region_based(x0, (fh0, fw0))
+            x1 = self.reshape_to_region_based(x1, (fh1, fw1))
 
         for layer in self.layers:
             attended0 = self.gather_attended(x1, indices0_to_1)
-            x0 = layer(x0, attended0, axes_lengths0)
+            x0 = layer(x0, attended0, (fh0, fw0))
             attended1 = self.gather_attended(x0, indices1_to_0)
-            x1 = layer(x1, attended1, axes_lengths1)
+            x1 = layer(x1, attended1, (fh1, fw1))
         attended0 = self.gather_attended(x1, indices0_to_1)
         attended1 = self.gather_attended(x0, indices1_to_0)
 
-        indices0_to_1 = self.map_indices(indices0_to_1, axes_lengths0, fw1)
-        indices1_to_0 = self.map_indices(indices1_to_0, axes_lengths1, fw0)
+        indices0_to_1 = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
+        indices1_to_0 = self.map_indices(indices1_to_0, (fh1, fw1), fw0)
         return x0, x1, attended0, attended1, indices0_to_1, indices1_to_0

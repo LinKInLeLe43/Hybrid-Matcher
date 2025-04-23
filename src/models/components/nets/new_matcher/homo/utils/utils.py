@@ -81,7 +81,7 @@ def get_homograpy(four_point, sz, k = 1):
     return H
 
 
-def bilinear_sampler(img, coords, mode='bilinear', mask=False):
+def bilinear_sampler(img, coords, mode:str='bilinear', mask:bool=False):
     """ Wrapper for grid_sample, uses pixel coordinates """
     # [1024, 1, 32, 32]  [1024, 9, 9, 2] https://www.jb51.net/article/273930.htm
     H, W = img.shape[-2:]
@@ -92,22 +92,22 @@ def bilinear_sampler(img, coords, mode='bilinear', mask=False):
     grid = torch.cat([xgrid, ygrid], dim=-1)  # [1024, 9, 9, 2]
     # img = F.grid_sample(img, grid, align_corners=True) # [1024, 1, 9, 9]
     # img = F.grid_sample(img, grid, align_corners=False)
-    try:
-        img = F.grid_sample(img, grid, align_corners=True) # [1024, 1, 9, 9]
-    except Exception as e:
-        # import pdb;pdb.set_trace()
-        with torch.backends.cudnn.flags(enabled=False):
-            img = F.grid_sample(img, grid, align_corners=True)
+    # try:
+    img = F.grid_sample(img, grid, align_corners=True) # [1024, 1, 9, 9]
+    # except Exception as e:
+    #     # import pdb;pdb.set_trace()
+    #     with torch.backends.cudnn.flags(enabled=False):
+    #         img = F.grid_sample(img, grid, align_corners=True)
 
-    if mask:
-        mask = (xgrid > -1) & (ygrid > -1) & (xgrid < 1) & (ygrid < 1)
-        return img, mask.float()
+    # if mask:
+    #     mask = (xgrid > -1) & (ygrid > -1) & (xgrid < 1) & (ygrid < 1)
+    #     return img, mask.float()
 
     return img
 
-def coords_grid(batch, ht, wd):
-    coords = torch.meshgrid(torch.arange(ht), torch.arange(wd),indexing='ij')
-    coords = torch.stack(coords[::-1], dim=0).float() 
+def coords_grid(batch:int, ht:int, wd:int):
+    coords = torch.meshgrid(torch.arange(ht), torch.arange(wd))
+    coords = torch.stack(coords[::-1], dim=0).float()
 
     return coords[None].expand(batch, -1, -1, -1)
 

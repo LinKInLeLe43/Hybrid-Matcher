@@ -103,12 +103,12 @@ class RepVggBlock(nn.Module):
         self.deploy = True
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if self.deploy:
-            out = self.branch_reparam(x)
-        else:
-            out = self.branch_3x3(x) + self.branch_1x1(x)
-            if self.branch_identity is not None:
-                out += self.branch_identity(x)
+        # if self.deploy:
+        out = self.branch_reparam(x)
+        # else:
+        #     out = self.branch_3x3(x) + self.branch_1x1(x)
+        #     if self.branch_identity is not None:
+        #         out += self.branch_identity(x)
         out = self.relu(out)
         return out
 
@@ -152,11 +152,12 @@ class RepVgg82(nn.Module):
         stride: int = 1
     ) -> nn.Module:
         strides = [stride] + (block_count - 1) * [1]
-        layer = nn.Sequential()
+        layer = []
         for stride in strides:
             layer.append(RepVggBlock(
                 self.in_depth, out_depth, stride=stride, deploy=self.deploy))
             self.in_depth = out_depth
+        layer = nn.Sequential(*layer)
         return layer
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
