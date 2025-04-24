@@ -222,3 +222,9 @@ class NewMatcherNet(nn.Module):
         out = x.new_zeros((1, c, h, w))
         out[0, :, :_h, :_w] = x
         return out
+
+    def load_state_dict(self, state_dict, *args, **kwargs):
+        for k in list(state_dict.keys()):
+            if k.startswith("net."):
+                state_dict[k.replace("net.", "", 1)] = state_dict.pop(k)
+        return super().load_state_dict(state_dict, *args, **kwargs)

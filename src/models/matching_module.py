@@ -52,6 +52,7 @@ class MatchingModule(pl.LightningModule):
         test_fp16_precision: bool = False,
         test_preparation_enabled: bool = False,
         test_enable_loransac: bool = False,
+        pretrained_ckpt: Optional[str] = None,
         advanced_metrics: bool = True,
         dump_dir: Optional[str] = None
     ) -> None:
@@ -62,6 +63,10 @@ class MatchingModule(pl.LightningModule):
 
         self.dense_matcher = DenseMatch()
         self.test_time_profiler = utils.InferenceProfiler()
+
+        if pretrained_ckpt:
+            state_dict = torch.load(pretrained_ckpt)["state_dict"]
+            self.net.load_state_dict(state_dict)
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         result = self.net(batch)
