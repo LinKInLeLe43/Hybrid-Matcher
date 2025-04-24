@@ -1,0 +1,23 @@
+# @package _global_
+
+defaults:
+  - new_matcher_megadepth/default
+  - override /model: new_matcher_one_stage
+  - _self_
+
+tags: ["train-new_matcher_one_stage_minima-megadepth"]
+
+data:
+  train_npz_root: "${paths.data_dir}/megadepth/index/scene_info_0.1_0.7_no_sfm"
+  train_dataset:
+    modality_list: ["visible", "infrared", "depth", "normal"]
+    seed: ${seed}
+  val_npz_root: "${paths.data_dir}/megadepth/index/scene_info_val_1500_no_sfm"
+  val_dataset:
+    modality_list: ["infrared"]
+
+model:
+  canonical_learning_rate: 8e-4
+  loss:
+    coarse_cls_sparse: false
+    extra_coarse_cls_sparse: false

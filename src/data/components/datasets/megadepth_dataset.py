@@ -1,5 +1,6 @@
+import random
 from os import path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import h5py
@@ -17,23 +18,37 @@ class MegaDepthDataset(data.Dataset):
         image_size: int,
         image_factor: int,
         mask_factors: List[int],
+        modality_list: Optional[List[str]] = None,
         fp16: bool = False,
         load_depth: bool = True,
-        min_overlap_score: float = 0.0
+        min_overlap_score: float = 0.0,
+        seed: int = 66,
     ) -> None:
         super().__init__()
         self.data_root = data_root
         self.image_size = image_size
         self.image_factor = image_factor
         self.mask_factors = mask_factors
+        self.modality_list = modality_list or ["visible"]
         self.fp16 = fp16
         self.load_depth = load_depth
+        self.seed = seed
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
         self.pair_idxes = self.scene_info.pop("pair_infos")
+        self.pair_idxes = dict(self.pair_idxes)
         self.pair_idxes = [pair_info[0] for pair_info in self.pair_idxes
                            if pair_info[1] > min_overlap_score]
         self.depth_max_size = 2000
+        self.modality_to_root = {
+            "visible": self.data_root,
+            "infrared": "data/megadepth/train/infrared/",
+            "depth": "data/megadepth/train/depth/",
+            "normal": "data/megadepth/train/normal/",
+            "event": "data/megadepth/train/event/",
+            "sketch": "data/megadepth/train/sketch/",
+            "paint": "data/megadepth/train/paint/",
+        }
 
     def _read_image(
         self,
@@ -71,8 +86,14 @@ class MegaDepthDataset(data.Dataset):
         idxes = self.pair_idxes[idx]
 
         image_name0, image_name1 = self.scene_info["image_paths"][idxes]
+        if len(self.modality_list) > 1:
+            modality = random.choice(self.modality_list)
+        else:
+            modality = self.modality_list[0]
         image_path0 = path.join(self.data_root, image_name0)
-        image_path1 = path.join(self.data_root, image_name1)
+        image_path1 = path.join(self.modality_list[modality], image_name1)
+        if modality == "event":
+            image_path1 = path.splitext(image_path1)[0] + ".png"
         image0, mask0, scale0 = self._read_image(image_path0)
         image1, mask1, scale1 = self._read_image(image_path1)
         image0, image1 = image0[None], image1[None]
