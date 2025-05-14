@@ -1,0 +1,7 @@
+_target_: src.data.components.datasets.MegaDepthDataset
+_partial_: True
+npz_root: ???
+data_root: ???
+image_size: 832
+image_factor: 32
+mask_factors: [8, 16, 32]

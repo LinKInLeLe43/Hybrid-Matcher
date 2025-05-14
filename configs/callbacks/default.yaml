@@ -1,6 +1,19 @@
 defaults:
-  - learning_rate_monitor
-  - model_checkpoint
-  - model_summary
-  - rich_progress_bar
-  - _self_
+    - items/learning_rate_monitor
+    - items/model_checkpoint
+    - items/rich_model_summary
+    - items/rich_progress_bar
+    - _self_
+
+learning_rate_monitor:
+    logging_interval: "step"
+model_checkpoint:
+    dirpath: "${paths.output_dir}/checkpoints"
+    filename: "epoch={epoch}-auc@5={val_metric/pose_auc@5:.3f}-auc@10={val_metric/pose_auc@10:.3f}-auc@20={val_metric/pose_auc@20:.3f}"
+    monitor: "val_metric/pose_auc@10"
+    verbose: True
+    save_top_k: 15
+    mode: "max"
+    auto_insert_metric_name: False
+rich_model_summary:
+    max_depth: 2

@@ -2,11 +2,11 @@ import torch
 from torch.utils import data
 
 
-class RandomConcatSampler(data.Sampler):
+class SceneBalancedSampler(data.Sampler):
     def __init__(
         self,
         concat_dataset: data.ConcatDataset,
-        samples_count_per_subset: int,
+        num_samples_per_scene: int,
         replacement: bool = True,
         shuffle: bool = True,
         repeat: int = 1,
@@ -14,14 +14,14 @@ class RandomConcatSampler(data.Sampler):
     ) -> None:
         super().__init__(self)
         self.concat_dataset = concat_dataset
-        self.samples_count_per_subset = samples_count_per_subset
+        self.num_samples_per_scene = num_samples_per_scene
         self.replacement = replacement
         self.shuffle = shuffle
         self.repeat = repeat
 
         self.subsets_count = len(concat_dataset.datasets)
         self.samples_count = (repeat * self.subsets_count *
-                              samples_count_per_subset)
+                              num_samples_per_scene)
         self.generator = torch.manual_seed(seed)
 
     def __iter__(self):
@@ -31,19 +31,19 @@ class RandomConcatSampler(data.Sampler):
             high = self.concat_dataset.cumulative_sizes[i]
             if self.replacement:
                 idxes_per_subset = torch.randint(
-                    low, high, (self.samples_count_per_subset,),
+                    low, high, (self.num_samples_per_scene,),
                     generator=self.generator)
             else:
                 subset_samplers_count = high - low
                 idxes_per_subset = torch.randperm(
                     subset_samplers_count, generator=self.generator)
                 idxes_per_subset += low
-                if subset_samplers_count >= self.samples_count_per_subset:
+                if subset_samplers_count >= self.num_samples_per_scene:
                     idxes_per_subset = (
-                        idxes_per_subset[:self.samples_count_per_subset])
+                        idxes_per_subset[:self.num_samples_per_scene])
                 else:
                     padding_count = (
-                        self.samples_count_per_subset - subset_samplers_count)
+                        self.num_samples_per_scene - subset_samplers_count)
                     padding_idxes_per_subset = torch.randint(
                         low, high, (padding_count,), generator=self.generator)
                     idxes_per_subset = torch.cat([idxes_per_subset,

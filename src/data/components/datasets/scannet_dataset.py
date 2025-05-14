@@ -1,17 +1,18 @@
-from os import path
+import os
 from typing import Any, Dict
 
 import cv2
 import numpy as np
-from numpy import linalg
 import torch
+from numpy import linalg
 from torch.utils import data
 
 
 class ScanNetDataset(data.Dataset):
     def __init__(
         self,
-        npz_path: str,
+        npz_name: str,
+        npz_root: str,
         data_root: str,
         intrinsic_path: str,
         load_depth: bool = True,
@@ -24,7 +25,7 @@ class ScanNetDataset(data.Dataset):
         self.fp16 = fp16
         self.load_depth = load_depth
 
-        with np.load(npz_path) as data:
+        with np.load(os.path.join(npz_root, npz_name)) as data:
             self.names = data["name"]
             scores = data.get("score")
             if scores is not None:
@@ -51,18 +52,18 @@ class ScanNetDataset(data.Dataset):
         scene_name, scene_subname, stem0_name, stem1_name = self.names[idx]
         scene_name = f"scene{scene_name:04d}_{scene_subname:02d}"
 
-        image_name0 = path.join(scene_name, "color", f"{stem0_name}.jpg")
-        image_name1 = path.join(scene_name, "color", f"{stem1_name}.jpg")
-        image_path0 = path.join(self.data_root, image_name0)
-        image_path1 = path.join(self.data_root, image_name1)
+        image_name0 = os.path.join(scene_name, "color", f"{stem0_name}.jpg")
+        image_name1 = os.path.join(scene_name, "color", f"{stem1_name}.jpg")
+        image_path0 = os.path.join(self.data_root, image_name0)
+        image_path1 = os.path.join(self.data_root, image_name1)
         image0 = self._read_image(image_path0)[None]
         image1 = self._read_image(image_path1)[None]
 
         K0 = K1 = self.intrinsics[scene_name].copy().reshape(3, 3)
 
-        pose0_path = path.join(
+        pose0_path = os.path.join(
             self.data_root, scene_name, "pose", f"{stem0_name}.txt")
-        pose1_path = path.join(
+        pose1_path = os.path.join(
             self.data_root, scene_name, "pose", f"{stem1_name}.txt")
         T0, T1 = self._read_pose(pose0_path), self._read_pose(pose1_path)
         T0_to_1, T1_to_0 = T1 @ np.linalg.inv(T0), T0 @ np.linalg.inv(T1)
@@ -77,9 +78,9 @@ class ScanNetDataset(data.Dataset):
                 "T1_to_0": T1_to_0}
 
         if self.load_depth:
-            depth_path0 = path.join(
+            depth_path0 = os.path.join(
                 self.data_root, scene_name, "depth", f"{stem0_name}.png")
-            depth_path1 = path.join(
+            depth_path1 = os.path.join(
                 self.data_root, scene_name, "depth", f"{stem1_name}.png")
             data["depth0"] = self._read_depth(depth_path0)
             data["depth1"] = self._read_depth(depth_path1)

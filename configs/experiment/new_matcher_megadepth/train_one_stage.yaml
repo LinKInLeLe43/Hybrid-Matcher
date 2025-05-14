@@ -1,13 +1,12 @@
 # @package _global_
 
 defaults:
-  - new_matcher_megadepth/default
-  - override /model: new_matcher_one_stage
-  - _self_
+    - new_matcher_megadepth/default
+    - override /model: new_matcher_one_stage
+    - _self_
 
 tags: ["train-new_matcher_one_stage-megadepth"]
-
 model:
-  loss:
-    coarse_cls_sparse: false
-    extra_coarse_cls_sparse: false
+    loss:
+        coarse_cls_sparse: False
+        extra_coarse_cls_sparse: False

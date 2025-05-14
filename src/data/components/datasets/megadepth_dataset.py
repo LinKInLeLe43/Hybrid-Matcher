@@ -1,4 +1,4 @@
-from os import path
+import os
 from typing import Any, Dict, List, Tuple
 
 import cv2
@@ -12,14 +12,15 @@ from torch.utils import data
 class MegaDepthDataset(data.Dataset):
     def __init__(
         self,
-        npz_path: str,
+        npz_name: str,
+        npz_root: str,
         data_root: str,
         image_size: int,
         image_factor: int,
         mask_factors: List[int],
         fp16: bool = False,
         load_depth: bool = True,
-        min_overlap_score: float = 0.0
+        min_overlap_score: float = 0.0,
     ) -> None:
         super().__init__()
         self.data_root = data_root
@@ -29,15 +30,19 @@ class MegaDepthDataset(data.Dataset):
         self.fp16 = fp16
         self.load_depth = load_depth
 
-        self.scene_info = np.load(npz_path, allow_pickle=True)
+        self.scene_info = np.load(
+            os.path.join(npz_root, npz_name), allow_pickle=True
+        )
         self.pair_idxes = self.scene_info.pop("pair_infos")
-        self.pair_idxes = [pair_info[0] for pair_info in self.pair_idxes
-                           if pair_info[1] > min_overlap_score]
+        self.pair_idxes = [
+            pair_info[0]
+            for pair_info in self.pair_idxes
+            if pair_info[1] > min_overlap_score
+        ]
         self.depth_max_size = 2000
 
     def _read_image(
-        self,
-        path: str
+        self, path: str
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         h, w = image.shape
@@ -63,7 +68,8 @@ class MegaDepthDataset(data.Dataset):
         h, w = depth.shape
 
         padded_depth = np.zeros(
-            (self.depth_max_size, self.depth_max_size), dtype=depth.dtype)
+            (self.depth_max_size, self.depth_max_size), dtype=depth.dtype
+        )
         padded_depth[:h, :w] = depth
         return padded_depth
 
@@ -71,8 +77,8 @@ class MegaDepthDataset(data.Dataset):
         idxes = self.pair_idxes[idx]
 
         image_name0, image_name1 = self.scene_info["image_paths"][idxes]
-        image_path0 = path.join(self.data_root, image_name0)
-        image_path1 = path.join(self.data_root, image_name1)
+        image_path0 = os.path.join(self.data_root, image_name0)
+        image_path1 = os.path.join(self.data_root, image_name1)
         image0, mask0, scale0 = self._read_image(image_path0)
         image1, mask1, scale1 = self._read_image(image_path1)
         image0, image1 = image0[None], image1[None]
@@ -82,29 +88,38 @@ class MegaDepthDataset(data.Dataset):
         T0, T1 = self.scene_info["poses"][idxes]
         T0_to_1, T1_to_0 = T1 @ np.linalg.inv(T0), T0 @ np.linalg.inv(T1)
 
-        data = {"name0": image_name0,
-                "name1": image_name1,
-                "image0": image0,
-                "image1": image1,
-                "mask0": mask0,
-                "mask1": mask1,
-                "scale0": scale0,
-                "scale1": scale1,
-                "K0": K0,
-                "K1": K1,
-                "T0_to_1": T0_to_1,
-                "T1_to_0": T1_to_0}
+        data = {
+            "name0": image_name0,
+            "name1": image_name1,
+            "image0": image0,
+            "image1": image1,
+            "mask0": mask0,
+            "mask1": mask1,
+            "scale0": scale0,
+            "scale1": scale1,
+            "K0": K0,
+            "K1": K1,
+            "T0_to_1": T0_to_1,
+            "T1_to_0": T1_to_0,
+        }
 
         if self.load_depth:
             depth_name0, depth_name1 = self.scene_info["depth_paths"][idxes]
-            depth_path0 = path.join(self.data_root, depth_name0)
-            depth_path1 = path.join(self.data_root, depth_name1)
+            depth_path0 = os.path.join(self.data_root, depth_name0)
+            depth_path1 = os.path.join(self.data_root, depth_name1)
             data["depth0"] = self._read_depth(depth_path0)
             data["depth1"] = self._read_depth(depth_path1)
 
         for key, value in data.items():
             if isinstance(value, np.ndarray):
-                if self.fp16 and key in ["image0", "image1", "scale0", "scale1", "depth0", "depth1"]:
+                if self.fp16 and key in [
+                    "image0",
+                    "image1",
+                    "scale0",
+                    "scale1",
+                    "depth0",
+                    "depth1",
+                ]:
                     data[key] = torch.from_numpy(value).half()
                 else:
                     data[key] = torch.from_numpy(value).float()
@@ -112,7 +127,8 @@ class MegaDepthDataset(data.Dataset):
         mask = torch.stack([data.pop("mask0"), data.pop("mask1")])
         for factor in self.mask_factors:
             data[f"mask0_{factor}x"], data[f"mask1_{factor}x"] = F.max_pool2d(
-                mask, factor, stride=factor).bool()
+                mask, factor, stride=factor
+            ).bool()
         return data
 
     def __len__(self) -> int:

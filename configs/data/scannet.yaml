@@ -1,57 +1,25 @@
-_target_: src.data.MatchingDataModule
+defaults:
+    - dataset_wrappers/scannet@train_dataset_wrapper
+    - dataset_wrappers/scannet@val_dataset_wrapper
+    - _self_
 
-train_npz_root: "${paths.data_dir}/scannet/index/scene_data/train"
-
-train_list_path: "${paths.data_dir}/scannet/index/scene_data/train_list/scannet_all.txt"
-
-train_dataset:
-  _target_: src.data.components.datasets.ScanNetDataset
-  _partial_: true
-  data_root: "${paths.data_dir}/scannet/train"
-  intrinsic_path: "${paths.data_dir}/scannet/index/intrinsics.npz"
-  min_overlap_score: 0.4
-
-train_sampler:
-  _target_: src.data.components.samplers.RandomConcatSampler
-  _partial_: true
-  samples_count_per_subset: 200
-  seed: ${seed}
-
-train_batch_size_per_gpu: ???
-
-val_npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
-
-val_list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
-
-val_dataset:
-  _target_: src.data.components.datasets.ScanNetDataset
-  _partial_: true
-  data_root: "${paths.data_dir}/scannet/test"
-  intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
-
-val_sampler:
-  _target_: torch.utils.data.DistributedSampler
-  _partial_: true
-  shuffle: false
-
-test_npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
-
-test_list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
-
-test_dataset:
-  _target_: src.data.components.datasets.ScanNetDataset
-  _partial_: true
-  data_root: "${paths.data_dir}/scannet/test"
-  intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
-  fp16: ${fp16}
-
-test_sampler:
-  _target_: torch.utils.data.DistributedSampler
-  _partial_: true
-  shuffle: false
-
-workers_count: 8
-
+_target_: src.data.SceneBalancedDataModule
+train_scene_list_path: "${paths.data_dir}/scannet/index/scene_data/train_list/scannet_all.txt"
+train_num_samples_per_scene: 100
+train_batch_size_per_device: ???
+train_dataset_wrapper:
+    npz_root: "${paths.data_dir}/scannet/index/scene_data/train"
+    data_root: "${paths.data_dir}/scannet/train"
+    intrinsic_path: "${paths.data_dir}/scannet/index/intrinsics.npz"
+    min_overlap_score: 0.4
+val_scene_list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
+val_dataset_wrapper:
+    npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
+    data_root: "${paths.data_dir}/scannet/test"
+    intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
+test_scene_list_path: ${.val_scene_list_path}
+test_dataset_wrapper: ${.val_dataset_wrapper}
+num_workers: 8
+pin_memory: True
 seed: ${seed}
-
-parallel: true
+parallel: True

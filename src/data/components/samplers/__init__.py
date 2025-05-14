@@ -1,1 +1,1 @@
-from .random_concat_sampler import RandomConcatSampler
+from .scene_balanced_sampler import SceneBalancedSampler

@@ -38,7 +38,7 @@ class MatchingModule(pl.LightningModule):
         loss: nn.Module,
         optimizer: functools.partial,
         scheduler: functools.partial,
-        train_batch_size_per_gpu: int,
+        train_batch_size_per_device: int,
         canonical_batch_size: int,
         canonical_learning_rate: float,
         canonical_warmup_step_count: int,
@@ -69,7 +69,7 @@ class MatchingModule(pl.LightningModule):
 
     def on_train_start(self) -> None:
         scale = (self.trainer.world_size *
-                 self.hparams.train_batch_size_per_gpu /
+                 self.hparams.train_batch_size_per_device /
                  self.hparams.canonical_batch_size)
         self.hparams.optimizer.keywords["lr"] = (
             scale * self.hparams.canonical_learning_rate)

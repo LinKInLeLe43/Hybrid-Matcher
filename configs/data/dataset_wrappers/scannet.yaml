@@ -1,0 +1,5 @@
+_target_: src.data.components.datasets.ScanNetDataset
+_partial_: True
+npz_root: ???
+data_root: ???
+intrinsic_path: ???

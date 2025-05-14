@@ -1,26 +1,20 @@
 # @package _global_
 
 defaults:
-  - _self_
-  - data: ???
-  - model: ???
-  - logger: null
-  - trainer: ???
-  - paths: default
-  - extras: default
-  - hydra: default
-  - experiment: ???
+    - _self_
+    - data: ???
+    - model: ???
+    - logger: null
+    - trainer: ???
+    - paths: default
+    - extras: default
+    - hydra: default
+    - experiment: ???
 
 task_name: "eval"
-
 tags: ???
-
-train: false
-
-test: true
-
-fp16: false
-
+train: False
+test: True
+fp16: False
 ckpt_path: ???
-
 seed: 66

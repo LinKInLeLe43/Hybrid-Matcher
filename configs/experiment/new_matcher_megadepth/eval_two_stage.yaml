@@ -1,12 +1,11 @@
 # @package _global_
 
 defaults:
-  - new_matcher_megadepth/default
-  - override /model: new_matcher_two_stage
-  - _self_
+    - new_matcher_megadepth/default
+    - override /model: new_matcher_two_stage
+    - _self_
 
 tags: ["eval-new_matcher_two_stage-megadepth"]
-
 data:
-  test_dataset:
-    image_size: 1152
+    test_dataset:
+        image_size: 1152

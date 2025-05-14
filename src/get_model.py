@@ -27,7 +27,7 @@ def casp_full(
     image_size: int = 832, threshold: float = 0.3, weight: Optional[str] = None
 ) -> nn.Module:
     overrides = [
-        f"data.test_dataset.image_size={image_size}",
+        f"++model.net.rope.test_size=[{image_size},{image_size}]",
         f"++model.net.coarse_matching.threshold={threshold}",
     ]
     config = compose_configs(overrides)
