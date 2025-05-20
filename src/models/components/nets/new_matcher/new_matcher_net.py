@@ -1,6 +1,5 @@
 from typing import Any, Dict, List, Optional, Tuple
 
-import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -89,6 +88,8 @@ class NewMatcherNet(nn.Module):
             nn.Conv2d(384 + 256, 384 + 256, 1, bias=False),
             nn.ReLU(inplace=True),
             nn.Conv2d(384 + 256, 256, 1, bias=False))
+        
+        self.flow_proj = nn.Conv2d(256, 128, 1)
 
     def _scale_points(
         self,
@@ -162,6 +163,9 @@ class NewMatcherNet(nn.Module):
 
             x0_16x = self.ffn(torch.cat([x0_16x, x0s.pop(-1)], dim=1))
             x1_16x = self.ffn(torch.cat([x1_16x, x1s.pop(-1)], dim=1))
+            flow = self.flow_proj(self.rope.pe[None])
+            x0_16x = torch.cat([x0_16x, flow[:, :, : h // 16, : w // 16]], dim=1)
+            x1_16x = torch.cat([x1_16x, flow[:, :, : h // 16, : w // 16]], dim=1)
         else:
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])

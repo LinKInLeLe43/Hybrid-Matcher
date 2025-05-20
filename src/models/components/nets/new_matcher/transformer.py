@@ -85,10 +85,10 @@ class ConvTransformerEncoder(nn.Module):
         self.norm1 = nn.LayerNorm(depth)
 
         self.mlp = nn.Sequential(
-            nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
+            nn.Conv2d(2 * depth + 128, 2 * depth + 128, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Conv2d(2 * depth + 128, depth + 128, 3, padding=1, bias=False))
+        self.norm2 = nn.LayerNorm(depth + 128)
 
     def forward(
         self,
@@ -104,11 +104,11 @@ class ConvTransformerEncoder(nn.Module):
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
+        q = einops.rearrange(self.q_proj(x[..., :128]), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.k_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
         v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.v_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
@@ -158,10 +158,10 @@ class AggregatedEncoder(nn.Module):
         self.norm1 = nn.LayerNorm(depth)
 
         self.mlp = nn.Sequential(
-            nn.Linear(2 * depth, 2 * depth, bias=False),
+            nn.Linear(2 * depth + 128, 2 * depth + 128, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
-        self.norm2 = nn.LayerNorm(depth)
+            nn.Linear(2 * depth + 128, depth + 128, bias=False))
+        self.norm2 = nn.LayerNorm(depth + 128)
 
     def forward(
         self,
@@ -176,8 +176,8 @@ class AggregatedEncoder(nn.Module):
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = self.down_q(x).permute(0, 2, 3, 1)
-        kv = self.down_kv(source).permute(0, 2, 3, 1)
+        q = self.down_q(x[:, :256]).permute(0, 2, 3, 1)
+        kv = self.down_kv(source[:, :256]).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 
         if rope is not None:
@@ -299,10 +299,11 @@ class FusedSelectiveTransformer(nn.Module):
         _, _, h1, w1 = x1.shape
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
-        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
+        flow = F.interpolate(torch.cat([y0[:, 256:], y1[:, 256:]]), scale_factor=s, mode="bilinear")
+        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0[:, :256], y1[:, :256]]))
         x += F.interpolate(y, scale_factor=s, mode="bilinear")
         x0, x1 = einops.rearrange(
-            self.down(x),
+            torch.cat([self.down(x), flow], dim=1),
             "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)

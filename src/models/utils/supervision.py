@@ -105,6 +105,10 @@ def create_coarse_supervision(
     gt_mask[b_idxes, i_idxes, j_idxes] = True
     supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
 
+    if return_flow:
+        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
+        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
+
     if extra_scale is not None:
         if extra_scale <= scale:
             raise ValueError("")
@@ -131,9 +135,6 @@ def create_coarse_supervision(
         supervision["gt_points0_to_1"] = points0_to_1
         supervision["gt_points1"] = points1
 
-    if return_flow:
-        supervision["gt_flows0"] = flows0[gt_idxes[0], gt_idxes[1]]
-        supervision["gt_flows1"] = flows1[gt_idxes[0], gt_idxes[2]]
     return supervision
 
 
