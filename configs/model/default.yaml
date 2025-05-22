@@ -4,25 +4,23 @@ net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   type: ???
   backbone:
-    _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
-    block_counts: [2, 4, 4]
-    layer_depths: [64, 128, 192]
+    _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A1
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-    depth: ${model.net.local_coc.layer_depths.0}
+    depth: 256
     train_size: ???
     test_size: ???
     fp16: ${fp16}
-  local_coc:
-    _target_: src.models.components.nets.new_matcher.LocalCoC
-    initial_depth: ${model.net.backbone.layer_depths.2}
-    scales: [2]
-    blocks_counts: [2]
-    layer_depths: [256]
-    hidden_depths: [256]
-    heads_counts: [8]
-    center_sizes: [4]
-    fold_sizes: [1]
+  # local_coc:
+  #   _target_: src.models.components.nets.new_matcher.LocalCoC
+  #   initial_depth: ${model.net.backbone.layer_depths.2}
+  #   scales: [2]
+  #   blocks_counts: [2]
+  #   layer_depths: [256]
+  #   hidden_depths: [256]
+  #   heads_counts: [8]
+  #   center_sizes: [4]
+  #   fold_sizes: [1]
   coarse_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
@@ -39,7 +37,7 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - ${model.net.backbone.layer_depths.2}
+        - 128
         - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder

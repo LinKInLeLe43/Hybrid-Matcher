@@ -231,6 +231,9 @@ class LoFTR(nn.Module):
 
         #     feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
         #     feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
+        if mask0 is not None and mask1 is not None:
+            mask0 = mask0.flatten(start_dim=-2)
+            mask1 = mask1.flatten(start_dim=-2)
 
         for layer, type in zip(self.layers, self.types):
             if type == "self":

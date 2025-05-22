@@ -12,7 +12,7 @@ class NewMatcherNet(nn.Module):
         type: str,
         backbone: nn.Module,
         rope: nn.Module,
-        local_coc: nn.Module,
+        # local_coc: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         # fine_preprocess: nn.Module,
@@ -25,8 +25,9 @@ class NewMatcherNet(nn.Module):
         super().__init__()
         self.type = type
         self.backbone = backbone
+        self.backbone.scales = (8, 4)
         self.rope = rope
-        self.local_coc = local_coc
+        # self.local_coc = local_coc
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         # self.fine_preprocess = fine_preprocess
@@ -112,41 +113,43 @@ class NewMatcherNet(nn.Module):
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])
 
-        if self.local_coc.scales[0] == 1:
-            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
-        else:
-            x0_8x, x1_8x = x0s[-1], x1s[-1]
+        # if self.local_coc.scales[0] == 1:
+        #     x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
+        # else:
+        #     x0_8x, x1_8x = x0s[-1], x1s[-1]
 
-        x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
+        # x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
 
-        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
-            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
+        # if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
+        #     x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
+        #     x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
 
-            x0_16x, x1_16x = [], []
-            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x = self.local_coc(b_x0_8x)
-                b_x1_16x = self.local_coc(b_x1_8x)
+        #     x0_16x, x1_16x = [], []
+        #     for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
+        #         b_x0_16x = self.local_coc(b_x0_8x)
+        #         b_x1_16x = self.local_coc(b_x1_8x)
 
-                b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, rope=self.rope)
+        #         b_x0_16x, b_x1_16x = self.coarse_module(
+        #             b_x0_16x, b_x1_16x, rope=self.rope)
 
-                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
-                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
-            x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
-        else:
-            if x0_8x.shape == x1_8x.shape:
-                x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x = self.local_coc(x_8x)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                # x0_32x, x1_32x = x_32x.chunk(2)
-            else:
-                x0_16x = self.local_coc(x0_8x)
-                x1_16x = self.local_coc(x1_8x)
+        #         x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
+        #         x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
+        #     x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
+        # else:
+        #     if x0_8x.shape == x1_8x.shape:
+        #         x_8x = torch.cat([x0_8x, x1_8x])
+        #         x_16x = self.local_coc(x_8x)
+        #         x0_16x, x1_16x = x_16x.chunk(2)
+        #         # x0_32x, x1_32x = x_32x.chunk(2)
+        #     else:
+        #         x0_16x = self.local_coc(x0_8x)
+        #         x1_16x = self.local_coc(x1_8x)
 
-            x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, rope=self.rope,
-                mask0=mask0_16x, mask1=mask1_16x)
+        #     x0_16x, x1_16x = self.coarse_module(
+        #         x0_16x, x1_16x, rope=self.rope,
+        #         mask0=mask0_16x, mask1=mask1_16x)
+        x0_16x, x1_16x = self.coarse_module(
+            x0s.pop(-1), x1s.pop(-1), rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
             x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
