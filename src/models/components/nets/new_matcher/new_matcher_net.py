@@ -26,6 +26,7 @@ class NewMatcherNet(nn.Module):
         self.type = type
         self.backbone = backbone
         self.backbone.scales = (8, 4)
+        self.backbone.load_state_dict(torch.load('weights/RepVGG-A1-train.pth', map_location='cpu'), strict=False)
         self.rope = rope
         # self.local_coc = local_coc
         self.coarse_module = coarse_module

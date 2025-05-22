@@ -32,9 +32,12 @@ class ScanNetDataset(data.Dataset):
                 self.names = self.names[mask]
 
     def _read_image(self, path: str) -> np.ndarray:
-        image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-        image = cv2.resize(image, (640, 480))
-        image = image / 255
+        image = cv2.imread(path, cv2.IMREAD_COLOR)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image = cv2.resize(image, (640, 480)) / 255.0
+        image = (image - np.array([0.485, 0.456, 0.406])) / np.array(
+            [0.229, 0.224, 0.225]
+        )
         return image
 
     def _read_depth(self, path: str) -> np.ndarray:
