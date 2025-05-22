@@ -58,6 +58,7 @@ class NewMatcherNet(nn.Module):
         #         dtype=torch.long)
         #     delta = delta.reshape(-1, 2)
         #     self.register_buffer("fine_reg_delta", delta, persistent=False)
+        self.flow_proj = nn.Conv2d(256, 128, 1)
 
     def _scale_points(
         self,
@@ -113,6 +114,11 @@ class NewMatcherNet(nn.Module):
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])
 
+        flow = self.flow_proj(self.rope.pe[None])
+        x0_16x, x1_16x = x0s.pop(-1), x1s.pop(-1)
+        x0_16x = torch.cat([x0_16x, flow[:, :, : x0_16x.shape[2], : x0_16x.shape[3]]], dim=1)
+        x1_16x = torch.cat([x1_16x, flow[:, :, : x1_16x.shape[2], : x1_16x.shape[3]]], dim=1)
+
         # if self.local_coc.scales[0] == 1:
         #     x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
         # else:
@@ -149,7 +155,7 @@ class NewMatcherNet(nn.Module):
         #         x0_16x, x1_16x, rope=self.rope,
         #         mask0=mask0_16x, mask1=mask1_16x)
         x0_16x, x1_16x = self.coarse_module(
-            x0s.pop(-1), x1s.pop(-1), rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
+            x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
             x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,

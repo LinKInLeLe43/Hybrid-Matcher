@@ -83,7 +83,7 @@ class MatchingModule(pl.LightningModule):
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         if self.net.type == "one_stage":
             supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0, return_coor=True)
+                batch, s1, extra_scale=s0, return_coor=True, return_flow=True)
             # coarse_gt_points1 = supervision.pop("gt_points1")
             result = self.net(
                 batch, gt_idxes=supervision["coarse_gt_idxes"],
