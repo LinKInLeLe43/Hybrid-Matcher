@@ -10,6 +10,7 @@ class CoarseMatching(nn.Module):
     def __init__(
         self,
         fused_selective_module: nn.Module,
+        flow_decoder: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -18,6 +19,7 @@ class CoarseMatching(nn.Module):
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
+        self.flow_decoder = flow_decoder
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -117,6 +119,21 @@ class CoarseMatching(nn.Module):
             lambda x, y: torch.cat([x, y[gt_subidxes]]),
             matching_idxes, gt_idxes))
         return train_idxes, matching_idxes
+
+    def _decode_flow(
+        self,
+        flow0: torch.Tensor,
+        flow1: torch.Tensor,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int]
+    ) -> Dict[str, Any]:
+        flows_with_uncertainties0, flow_mask0 = self.flow_decoder(flow0, size1)
+        flows_with_uncertainties1, flow_mask1 = self.flow_decoder(flow1, size0)
+        flow_mask = flow_mask0 | flow_mask1.transpose(1, 2)
+        flow = {"flows_with_uncertainties0": flows_with_uncertainties0,
+                "flows_with_uncertainties1": flows_with_uncertainties1,
+                "flow_mask": flow_mask}
+        return flow
 
     @torch.no_grad()
     def _create_coarse_matching(
@@ -218,8 +235,8 @@ class CoarseMatching(nn.Module):
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
 
-        _y0 = y0.flatten(start_dim=2).transpose(1, 2)
-        _y1 = y1.flatten(start_dim=2).transpose(1, 2)
+        _y0 = y0[:, :256].flatten(start_dim=2).transpose(1, 2)
+        _y1 = y1[:, :256].flatten(start_dim=2).transpose(1, 2)
         _y0, _y1 = _y0 / c ** 0.5, _y1 / c ** 0.5
         similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
         similarity /= self.temperature
@@ -251,6 +268,11 @@ class CoarseMatching(nn.Module):
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
             x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
+        x0, flow0 = x0.split([192, 128], dim=-1)
+        x1, flow1 = x1.split([192, 128], dim=-1)
+        selective0 = selective0[..., :192]
+        selective1 = selective1[..., :192]
+        flow = self._decode_flow(flow0, flow1, (h0, w0), (h1, w1))
         _x0, _x1 = x0 / c ** 0.5, x1 / c ** 0.5
         _selective0 = selective0 / c ** 0.5
         _selective1 = selective1 / c ** 0.5
@@ -289,4 +311,12 @@ class CoarseMatching(nn.Module):
             result["extra_idxes0_to_1"], "n (fh fw) k -> n (fh sh fw sw) k",
             fh=h0//2, sh=2, fw=w0//2, sw=2
         )[result["idxes"][0], result["idxes"][1]]
+        if x_gt_idxes is not None:
+            b_idxes, i_idxes, j_idxes = x_gt_idxes
+        else:
+            b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
+        result["flows_with_uncertainties0"] = (
+            flow["flows_with_uncertainties0"][b_idxes, i_idxes])
+        result["flows_with_uncertainties1"] = (
+            flow["flows_with_uncertainties1"][b_idxes, j_idxes])
         return result

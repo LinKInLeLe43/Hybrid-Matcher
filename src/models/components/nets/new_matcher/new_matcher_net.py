@@ -57,6 +57,7 @@ class NewMatcherNet(nn.Module):
         #         dtype=torch.long)
         #     delta = delta.reshape(-1, 2)
         #     self.register_buffer("fine_reg_delta", delta, persistent=False)
+        self.flow_proj = nn.Conv2d(256, 128, 1)
 
     def _scale_points(
         self,
@@ -128,6 +129,10 @@ class NewMatcherNet(nn.Module):
                 b_x0_16x = self.local_coc(b_x0_8x)
                 b_x1_16x = self.local_coc(b_x1_8x)
 
+                flow = self.flow_proj(self.rope.pe[None])
+                b_x0_16x = torch.cat([b_x0_16x, flow[:, :, : b_x0_16x.shape[2], : b_x0_16x.shape[3]]], dim=1)
+                b_x1_16x = torch.cat([b_x1_16x, flow[:, :, : b_x1_16x.shape[2], : b_x1_16x.shape[3]]], dim=1)
+
                 b_x0_16x, b_x1_16x = self.coarse_module(
                     b_x0_16x, b_x1_16x, rope=self.rope)
 
@@ -144,6 +149,10 @@ class NewMatcherNet(nn.Module):
                 x0_16x = self.local_coc(x0_8x)
                 x1_16x = self.local_coc(x1_8x)
 
+            flow = self.flow_proj(self.rope.pe[None])
+            x0_16x = torch.cat([x0_16x, flow[:, :, : x0_16x.shape[2], : x0_16x.shape[3]]], dim=1)
+            x1_16x = torch.cat([x1_16x, flow[:, :, : x1_16x.shape[2], : x1_16x.shape[3]]], dim=1)
+            
             x0_16x, x1_16x = self.coarse_module(
                 x0_16x, x1_16x, rope=self.rope,
                 mask0=mask0_16x, mask1=mask1_16x)

@@ -26,9 +26,18 @@ net:
   coarse_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
     types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
-    encoder:
+    self_encoder:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
       depth: 256
+      flow_depth: 0
+      heads_count: 8
+      scale: 2
+      attention:
+        _target_: src.models.components.nets.new_matcher.Attention
+    cross_encoder:
+      _target_: src.models.components.nets.new_matcher.AggregatedEncoder
+      depth: 256
+      flow_depth: 128
       heads_count: 8
       scale: 2
       attention:
@@ -49,6 +58,10 @@ net:
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
+    flow_decoder:
+      _target_: src.models.components.nets.new_matcher.FlowDecoder
+      depth: 128
+      radius: 8
     temperature: 0.1
   # fine_preprocess: ???
 #  fine_module: ???
