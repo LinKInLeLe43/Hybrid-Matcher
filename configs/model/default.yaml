@@ -5,8 +5,8 @@ net:
   type: ???
   backbone:
     _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
-    block_counts: [2, 4, 4]
-    layer_depths: [64, 128, 192]
+    block_counts: [2, 4]
+    layer_depths: [64, 128]
   rope:
     _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
     depth: ${model.net.local_coc.layer_depths.0}
@@ -15,7 +15,7 @@ net:
     fp16: ${fp16}
   local_coc:
     _target_: src.models.components.nets.new_matcher.LocalCoC
-    initial_depth: ${model.net.backbone.layer_depths.2}
+    initial_depth: 128
     scales: [2]
     blocks_counts: [2]
     layer_depths: [256]
@@ -48,7 +48,7 @@ net:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
       scale: 2
       depths:
-        - ${model.net.backbone.layer_depths.2}
+        - 128
         - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder

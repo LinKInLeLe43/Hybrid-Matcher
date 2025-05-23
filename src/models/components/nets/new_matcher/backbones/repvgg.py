@@ -131,11 +131,11 @@ class RepVgg82(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
         self.layer0 = self._make_layer(  # 1/2
-            layer_depths[0], block_counts[0])
+            layer_depths[0], block_counts[0], stride=2)
         self.layer1 = self._make_layer(  # 1/4
             layer_depths[1], block_counts[1], stride=2)
-        self.layer2 = self._make_layer(  # 1/8
-            layer_depths[2], block_counts[2], stride=2)
+        # self.layer2 = self._make_layer(  # 1/8
+        #     layer_depths[2], block_counts[2], stride=2)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -166,5 +166,5 @@ class RepVgg82(nn.Module):
 
         x0 = self.layer0(x)
         x1 = self.layer1(x0)
-        x2 = self.layer2(x1)
-        return [x0, x1, x2]
+        # x2 = self.layer2(x1)
+        return [x0, x1]

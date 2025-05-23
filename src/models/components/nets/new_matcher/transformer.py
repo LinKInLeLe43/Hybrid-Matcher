@@ -104,11 +104,11 @@ class ConvTransformerEncoder(nn.Module):
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = einops.rearrange(self.q_proj(x[..., :192]), "n l (fc sc) -> n fc l sc", fc=fc)
+        q = einops.rearrange(self.q_proj(x[..., :128]), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
-            self.k_proj(source[..., :192]), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.k_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
         v = einops.rearrange(
-            self.v_proj(source[..., :192]), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.v_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
