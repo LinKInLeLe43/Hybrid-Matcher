@@ -208,13 +208,16 @@ class SingleHeadModulationEncoder(nn.Module):
         attention: nn.Module
     ) -> None:
         super().__init__()
+        self.extra_depth = extra_depth
         self.attention = attention
         self.nchw = True
 
-        self.q_proj = nn.Linear(in_depth, extra_depth, bias=False)
+        self.q_proj = nn.Linear(in_depth, extra_depth + 3, bias=False)
         self.k_proj = nn.Linear(extra_depth, extra_depth, bias=False)
 
-        self.ctx = nn.Conv2d(extra_depth, extra_depth, 7, stride=1, padding=7 // 2, groups=extra_depth)
+        self.ctx1 = nn.Conv2d(extra_depth, extra_depth, 3, stride=1, padding=3 // 2, groups=extra_depth)
+        self.ctx2 = nn.Conv2d(extra_depth, extra_depth, 5, stride=1, padding=5 // 2, groups=extra_depth)
+        self.ctx3 = nn.Conv2d(extra_depth, extra_depth, 7, stride=1, padding=7 // 2, groups=extra_depth)
         self.gelu = nn.GELU()
 
         self.merge = nn.Linear(extra_depth, extra_depth, bias=False)
@@ -231,11 +234,17 @@ class SingleHeadModulationEncoder(nn.Module):
         x: torch.Tensor,
         source: torch.Tensor,
     ) -> torch.Tensor:
-        q, k = self.q_proj(x.permute(0, 2, 3, 1)), self.k_proj(source.permute(0, 2, 3, 1))
-        import pdb; pdb.set_trace()
-        out = q * self.gelu(self.ctx(k.permute(0, 3, 1, 2)).permute(0, 2, 3, 1))
+        q, gate = self.q_proj(x.permute(0, 2, 3, 1)).split([self.extra_depth, 3], dim=-1)
+        k = self.k_proj(source.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
 
-        out = self.merge(out)
+        k = self.gelu(self.ctx1(k))
+        out = gate[..., 0:1] * k.permute(0, 2, 3, 1)
+        k = self.gelu(self.ctx2(k))
+        out = out + gate[..., 1:2] * k.permute(0, 2, 3, 1)
+        k = self.gelu(self.ctx3(k))
+        out = out + gate[..., 2:3] * k.permute(0, 2, 3, 1)
+
+        out = q * self.merge(out)
         out = self.norm1(out).permute(0, 3, 1, 2)
         # out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
         # out = F.interpolate(out, scale_factor=s, mode="bilinear")
