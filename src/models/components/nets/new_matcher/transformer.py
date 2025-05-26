@@ -104,11 +104,11 @@ class ConvTransformerEncoder(nn.Module):
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = einops.rearrange(self.q_proj(x[..., :128]), "n l (fc sc) -> n fc l sc", fc=fc)
+        q = einops.rearrange(self.q_proj(x[..., :192]), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
-            self.k_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.k_proj(source[..., :192]), "n s (fc sc) -> n fc s sc", fc=fc)
         v = einops.rearrange(
-            self.v_proj(source[..., :128]), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.v_proj(source[..., :192]), "n s (fc sc) -> n fc s sc", fc=fc)
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
@@ -172,8 +172,8 @@ class AggregatedEncoder(nn.Module):
         if x_mask is not None and source_mask is not None:
             x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
-        q = self.down_q(x[:, :256]).permute(0, 2, 3, 1)
-        kv = self.down_kv(source[:, :256]).permute(0, 2, 3, 1)
+        q = self.down_q(x[:, :384]).permute(0, 2, 3, 1)
+        kv = self.down_kv(source[:, :384]).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
 
         if rope is not None:
@@ -239,8 +239,8 @@ class LoFTR(nn.Module):
 
         for layer, type in zip(self.layers, self.types):
             if type == "self":
-                feature0, flow0 = feature0.split([256, 128], dim=1)
-                feature1, flow1 = feature1.split([256, 128], dim=1)
+                feature0, flow0 = feature0.split([384, 128], dim=1)
+                feature1, flow1 = feature1.split([384, 128], dim=1)
                 feature0 = layer(
                     feature0, feature0, rope, x_mask=mask0, source_mask=mask0)
                 feature1 = layer(
@@ -302,8 +302,8 @@ class FusedSelectiveTransformer(nn.Module):
         _, _, h1, w1 = x1.shape
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
-        flow = F.interpolate(torch.cat([y0[:, 256:], y1[:, 256:]]), scale_factor=s, mode="bilinear")
-        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0[:, :256], y1[:, :256]]))
+        flow = F.interpolate(torch.cat([y0[:, 384:], y1[:, 384:]]), scale_factor=s, mode="bilinear")
+        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0[:, :384], y1[:, :384]]))
         x += F.interpolate(y, scale_factor=s, mode="bilinear")
         x0, x1 = einops.rearrange(
             torch.cat([self.down(x), flow], dim=1),

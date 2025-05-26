@@ -58,7 +58,7 @@ class NewMatcherNet(nn.Module):
         #         dtype=torch.long)
         #     delta = delta.reshape(-1, 2)
         #     self.register_buffer("fine_reg_delta", delta, persistent=False)
-        self.flow_proj = nn.Conv2d(256, 128, 1)
+        self.flow_proj = nn.Conv2d(384, 128, 1)
 
     def _scale_points(
         self,

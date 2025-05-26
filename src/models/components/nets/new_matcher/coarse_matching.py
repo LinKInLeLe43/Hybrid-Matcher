@@ -268,10 +268,10 @@ class CoarseMatching(nn.Module):
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
             x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
-        x0, flow0 = x0.split([128, 128], dim=-1)
-        x1, flow1 = x1.split([128, 128], dim=-1)
-        selective0 = selective0[..., :128]
-        selective1 = selective1[..., :128]
+        x0, flow0 = x0.split([192, 128], dim=-1)
+        x1, flow1 = x1.split([192, 128], dim=-1)
+        selective0 = selective0[..., :192]
+        selective1 = selective1[..., :192]
         flow = self._decode_flow(flow0, flow1, (h0, w0), (h1, w1))
         _x0, _x1 = x0 / c ** 0.5, x1 / c ** 0.5
         _selective0 = selective0 / c ** 0.5
