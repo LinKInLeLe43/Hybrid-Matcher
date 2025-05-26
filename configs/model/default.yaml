@@ -3,6 +3,7 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   type: ???
+  vit_type: "depth_anything_v2"
   backbone:
     _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A1
   rope:
@@ -48,7 +49,13 @@ net:
       depths:
         - 128
         - 256
-      encoder:
+      self_encoder:
+        _target_: src.models.components.nets.new_matcher.SingleHeadModulationEncoder
+        in_depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        extra_depth: 32
+        attention:
+          _target_: src.models.components.nets.new_matcher.Attention
+      cross_encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
         depth: ${model.net.coarse_matching.fused_selective_module.depths.0}

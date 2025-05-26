@@ -5,11 +5,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from .backbones.dpt import DepthAnythingV2
+
 
 class NewMatcherNet(nn.Module):
     def __init__(
         self,
         type: str,
+        vit_type: str,
         backbone: nn.Module,
         rope: nn.Module,
         # local_coc: nn.Module,
@@ -24,6 +27,31 @@ class NewMatcherNet(nn.Module):
     ) -> None:
         super().__init__()
         self.type = type
+
+        depth_anything_v2 = DepthAnythingV2(
+            encoder="vits", features=64, out_channels=[48, 96, 192, 384]
+        ).eval()
+        if vit_type == "depth_anything_v2":
+            depth_anything_v2.load_state_dict(
+                torch.load(
+                    "weights/depth_anything_v2_vits.pth", map_location="cpu"
+                ),
+            )
+            vit = depth_anything_v2.pretrained
+            depth_head = depth_anything_v2.depth_head
+        elif vit_type == "dinov2":
+            vit = depth_anything_v2.pretrained
+            vit.load_state_dict(
+                torch.load(
+                    "weights/dinov2_vits14_pretrain.pth", map_location="cpu"
+                )
+            )
+            depth_head = None
+        else:
+            raise ValueError()
+        self.vit = [vit]
+        self.depth_head = [depth_head]
+
         self.backbone = backbone
         self.backbone.scales = (8, 4)
         self.rope = rope
@@ -102,8 +130,27 @@ class NewMatcherNet(nn.Module):
         mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
         mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
 
+        device = batch["image0"].device
         if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
+            image = torch.cat([batch["image0"], batch["image1"]])
+
+            with torch.no_grad():
+                norm_image = (image - torch.tensor([[[0.485]], [[0.456]], [[0.406]]], device=device)) / torch.tensor([[[0.229]], [[0.224]], [[0.225]]], device=device)
+
+                if self.vit[0].cls_token.device != batch["image0"].device:
+                    self.vit[0] = self.vit[0].to(batch["image0"].device)
+                    if self.depth_head[0] is not None:
+                        self.depth_head[0] = self.depth_head[0].to(batch["image0"].device)
+
+                h, w = image.shape[2:]
+                x = F.interpolate(
+                    norm_image, size=(h // 32 * 14, w // 32 * 14), mode="bicubic"
+                )
+                vit_features = self.vit[0].get_intermediate_layers(x, [2, 5, 8, 11], return_class_token=True)
+                depth = self.depth_head[0](vit_features, h // 32, w // 32)
+                del vit_features
+
+            xs = self.backbone(image.mean(dim=1, keepdim=True))
 
             x0s, x1s = [], []
             for x in xs:
@@ -158,7 +205,7 @@ class NewMatcherNet(nn.Module):
             x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
 
         result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+            x0s[-1], x1s[-1], x0_16x, x1_16x, depth, x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
         x0s[-1], x1s[-1] = result.pop("x_8x")

@@ -7,4 +7,4 @@ from .fine_preprocess import FinePreprocess
 from .flow_decoder import FlowDecoder
 from .new_matcher_net import NewMatcherNet
 from .positional_encoding import SinePositionalEncoding, RoPESinePositionalEncoding
-from .transformer import TransformerEncoder, ConvTransformerEncoder, AggregatedEncoder, FusedSelectiveTransformer, LoFTR
+from .transformer import TransformerEncoder, ConvTransformerEncoder, AggregatedEncoder, FusedSelectiveTransformer, SingleHeadModulationEncoder, LoFTR

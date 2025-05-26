@@ -200,6 +200,68 @@ class AggregatedEncoder(nn.Module):
         return out
 
 
+class SingleHeadModulationEncoder(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        extra_depth: int,
+        attention: nn.Module
+    ) -> None:
+        super().__init__()
+        self.attention = attention
+        self.nchw = True
+
+        self.q_proj = nn.Linear(in_depth, extra_depth, bias=False)
+        self.k_proj = nn.Linear(extra_depth, extra_depth, bias=False)
+        self.v_proj = nn.Linear(extra_depth, extra_depth, bias=False)
+
+        # self.merge = nn.Linear(extra_depth, in_depth, bias=False)
+        self.norm1 = nn.LayerNorm(extra_depth)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(in_depth + extra_depth, in_depth + extra_depth, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_depth + extra_depth, in_depth, bias=False))
+        self.norm2 = nn.LayerNorm(in_depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        source: torch.Tensor,
+        rope: Optional[nn.Module] = None,
+        x_mask: Optional[torch.Tensor] = None,
+        source_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        if x_mask is not None and source_mask is not None:
+            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+
+        q = x.permute(0, 2, 3, 1)
+        kv = source.permute(0, 2, 3, 1)
+        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
+
+        if rope is not None:
+            q, k = rope.rel_pe(q), rope.rel_pe(k)
+
+        q = einops.rearrange(q, "n h w c -> n (h w) c")[:, None]
+        k = einops.rearrange(k, "n h w c -> n (h w) c")[:, None]
+        v = einops.rearrange(v, "n h w c -> n (h w) c")[:, None]
+        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)[:, 0]
+
+        # out = self.merge(out)
+        out = self.norm1(out)
+        out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
+        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
+
+        out = torch.cat([x, out], dim=1)
+        out = out.permute(0, 2, 3, 1)
+        out = self.mlp(out)
+        out = self.norm2(out)
+        out = out.permute(0, 3, 1, 2).contiguous()
+
+        out += x
+        return out
+
+
 class LoFTR(nn.Module):
     def __init__(
         self,
@@ -266,7 +328,8 @@ class FusedSelectiveTransformer(nn.Module):
         self,
         scale: int,
         depths: Tuple[int, int],
-        encoder: nn.Module,
+        self_encoder: nn.Module,
+        cross_encoder: nn.Module,
         layer_count: int
     ) -> None:
         super().__init__()
@@ -280,8 +343,10 @@ class FusedSelectiveTransformer(nn.Module):
             nn.LeakyReLU(inplace=True),
             nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False))
 
-        self.layers = nn.ModuleList([copy.deepcopy(encoder)
-                                     for _ in range(layer_count)])
+        self.self_layers = nn.ModuleList([copy.deepcopy(self_encoder)
+                                         for _ in range(layer_count)])
+        self.cross_layers = nn.ModuleList([copy.deepcopy(cross_encoder)
+                                           for _ in range(layer_count)])
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -293,6 +358,7 @@ class FusedSelectiveTransformer(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        depth: torch.Tensor,
         idxes0_to_1: torch.Tensor,
         idxes1_to_0: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
@@ -305,8 +371,13 @@ class FusedSelectiveTransformer(nn.Module):
         flow = F.interpolate(torch.cat([y0[:, 256:], y1[:, 256:]]), scale_factor=s, mode="bilinear")
         x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0[:, :256], y1[:, :256]]))
         x += F.interpolate(y, scale_factor=s, mode="bilinear")
+        x = self.down(x)
+
+        for layer in self.self_layers:
+            x = layer(x, depth)
+
         x0, x1 = einops.rearrange(
-            torch.cat([self.down(x), flow], dim=1),
+            torch.cat([x, flow], dim=1),
             "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
@@ -314,7 +385,7 @@ class FusedSelectiveTransformer(nn.Module):
         _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
         _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
-        for layer in self.layers:
+        for layer in self.cross_layers:
             x0 = layer(
                 x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0))
             x1 = layer(

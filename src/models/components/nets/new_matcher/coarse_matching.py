@@ -223,6 +223,7 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        depth: torch.Tensor,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -267,7 +268,7 @@ class CoarseMatching(nn.Module):
 
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
-            x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
+            x0, x1, y0, y1, depth, idxes0_to_1, idxes1_to_0)
         x0, flow0 = x0.split([128, 128], dim=-1)
         x1, flow1 = x1.split([128, 128], dim=-1)
         selective0 = selective0[..., :128]
