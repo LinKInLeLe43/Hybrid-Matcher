@@ -213,9 +213,11 @@ class SingleHeadModulationEncoder(nn.Module):
 
         self.q_proj = nn.Linear(in_depth, extra_depth, bias=False)
         self.k_proj = nn.Linear(extra_depth, extra_depth, bias=False)
-        self.v_proj = nn.Linear(extra_depth, extra_depth, bias=False)
 
-        # self.merge = nn.Linear(extra_depth, in_depth, bias=False)
+        self.ctx = nn.Conv2d(extra_depth, extra_depth, 7, stride=1, padding=7 // 2, groups=extra_depth)
+        self.gelu = nn.GELU()
+
+        self.merge = nn.Linear(extra_depth, extra_depth, bias=False)
         self.norm1 = nn.LayerNorm(extra_depth)
 
         self.mlp = nn.Sequential(
@@ -228,28 +230,14 @@ class SingleHeadModulationEncoder(nn.Module):
         self,
         x: torch.Tensor,
         source: torch.Tensor,
-        rope: Optional[nn.Module] = None,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
+        q, k = self.q_proj(x.permute(0, 2, 3, 1)), self.k_proj(source.permute(0, 2, 3, 1))
+        import pdb; pdb.set_trace()
+        out = q * self.gelu(self.ctx(k.permute(0, 3, 1, 2)).permute(0, 2, 3, 1))
 
-        q = x.permute(0, 2, 3, 1)
-        kv = source.permute(0, 2, 3, 1)
-        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
-
-        if rope is not None:
-            q, k = rope.rel_pe(q), rope.rel_pe(k)
-
-        q = einops.rearrange(q, "n h w c -> n (h w) c")[:, None]
-        k = einops.rearrange(k, "n h w c -> n (h w) c")[:, None]
-        v = einops.rearrange(v, "n h w c -> n (h w) c")[:, None]
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)[:, 0]
-
-        # out = self.merge(out)
-        out = self.norm1(out)
-        out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
+        out = self.merge(out)
+        out = self.norm1(out).permute(0, 3, 1, 2)
+        # out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
         # out = F.interpolate(out, scale_factor=s, mode="bilinear")
 
         out = torch.cat([x, out], dim=1)

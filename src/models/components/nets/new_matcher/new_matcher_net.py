@@ -148,6 +148,7 @@ class NewMatcherNet(nn.Module):
                 )
                 vit_features = self.vit[0].get_intermediate_layers(x, [2, 5, 8, 11], return_class_token=True)
                 depth = self.depth_head[0](vit_features, h // 32, w // 32)
+                depth = F.interpolate(depth, (h // 8, w // 8), mode="bilinear", align_corners=True)
                 del vit_features
 
             xs = self.backbone(image.mean(dim=1, keepdim=True))
