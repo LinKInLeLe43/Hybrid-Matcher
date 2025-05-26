@@ -200,9 +200,67 @@ class AggregatedEncoder(nn.Module):
         return out
 
 
+class SingleHeadModulationEncoder(nn.Module):
+    def __init__(
+        self,
+        in_depth: int,
+        extra_depth: int,
+    ) -> None:
+        super().__init__()
+        self.extra_depth = extra_depth
+        self.nchw = True
+
+        self.q_proj = nn.Linear(in_depth, extra_depth + 3, bias=False)
+        self.k_proj = nn.Linear(extra_depth, extra_depth, bias=False)
+
+        self.ctx1 = nn.Conv2d(extra_depth, extra_depth, 3, stride=1, padding=3 // 2, groups=extra_depth)
+        self.ctx2 = nn.Conv2d(extra_depth, extra_depth, 5, stride=1, padding=5 // 2, groups=extra_depth)
+        self.ctx3 = nn.Conv2d(extra_depth, extra_depth, 7, stride=1, padding=7 // 2, groups=extra_depth)
+        self.gelu = nn.GELU()
+
+        self.merge = nn.Linear(extra_depth, extra_depth, bias=False)
+        self.norm1 = nn.LayerNorm(extra_depth)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(in_depth + extra_depth, in_depth + extra_depth, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(in_depth + extra_depth, in_depth, bias=False))
+        self.norm2 = nn.LayerNorm(in_depth)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        source: torch.Tensor,
+    ) -> torch.Tensor:
+        q, gate = self.q_proj(x.permute(0, 2, 3, 1)).split([self.extra_depth, 3], dim=-1)
+        k = self.k_proj(source.permute(0, 2, 3, 1)).permute(0, 3, 1, 2).contiguous()
+
+        k = self.gelu(self.ctx1(k))
+        out = gate[..., 0:1] * k.permute(0, 2, 3, 1)
+        k = self.gelu(self.ctx2(k))
+        out = out + gate[..., 1:2] * k.permute(0, 2, 3, 1)
+        k = self.gelu(self.ctx3(k))
+        out = out + gate[..., 2:3] * k.permute(0, 2, 3, 1)
+
+        out = q * self.merge(out)
+        out = self.norm1(out).permute(0, 3, 1, 2)
+        # out = out.transpose(1, 2).unflatten(2, (x.shape[2], x.shape[3]))
+        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
+
+        out = torch.cat([x, out], dim=1)
+        out = out.permute(0, 2, 3, 1)
+        out = self.mlp(out)
+        out = self.norm2(out)
+        out = out.permute(0, 3, 1, 2).contiguous()
+
+        out += x
+        return out
+
+
 class LoFTR(nn.Module):
     def __init__(
         self,
+        modulation: nn.Module,
         self_encoder: nn.Module,
         cross_encoder: nn.Module,
         types: List[str]
@@ -210,6 +268,8 @@ class LoFTR(nn.Module):
         super().__init__()
         self.types = types
         # self.nchw = encoder.nchw
+
+        self.modulations = nn.ModuleList([copy.deepcopy(modulation) for _ in range(2)])
 
         self.layers = nn.ModuleList([copy.deepcopy(self_encoder if type == "self" else cross_encoder) for type in types])
 
@@ -221,6 +281,8 @@ class LoFTR(nn.Module):
         self,
         feature0: torch.Tensor,
         feature1: torch.Tensor,
+        vit0,
+        vit1,
         rope,
         size0: Optional[Tuple[int, int]] = None,
         size1: Optional[Tuple[int, int]] = None,
@@ -236,6 +298,14 @@ class LoFTR(nn.Module):
         if mask0 is not None and mask1 is not None:
             mask0 = mask0.flatten(start_dim=-2)
             mask1 = mask1.flatten(start_dim=-2)
+
+        feature0, flow0 = feature0.split([256, 128], dim=1)
+        feature1, flow1 = feature1.split([256, 128], dim=1)
+        for modulation in self.modulations:
+            feature0 = modulation(feature0, vit0)
+            feature1 = modulation(feature1, vit1)
+        feature0 = torch.cat([feature0, flow0], dim=1)
+        feature1 = torch.cat([feature1, flow1], dim=1)
 
         for layer, type in zip(self.layers, self.types):
             if type == "self":

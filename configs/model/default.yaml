@@ -3,6 +3,7 @@ _target_: src.models.MatchingModule
 net:
   _target_: src.models.components.nets.new_matcher.NewMatcherNet
   type: ???
+  vit_type: "depth_anything_v2"
   backbone:
     _target_: src.models.components.nets.new_matcher.backbones.create_RepVGG_A1
   rope:
@@ -23,6 +24,10 @@ net:
   #   fold_sizes: [1]
   coarse_module:
     _target_: src.models.components.nets.new_matcher.LoFTR
+    modulation: 
+      _target_: src.models.components.nets.new_matcher.SingleHeadModulationEncoder
+      in_depth: 256
+      extra_depth: 384
     types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
     self_encoder:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
