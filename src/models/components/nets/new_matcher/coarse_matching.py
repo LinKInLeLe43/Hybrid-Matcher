@@ -146,7 +146,7 @@ class CoarseMatching(nn.Module):
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
     ) -> Dict[str, Any]:
-        score, idxes0_to_1, idxes1_to_0 = score
+        score0_to_1, score1_to_0, idxes0_to_1, idxes1_to_0 = score
         coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             mask, max_count = self._remove_border_for_train(
@@ -158,32 +158,36 @@ class CoarseMatching(nn.Module):
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
-            n, l0, l1 = score.shape
-            device = score.device
+            n, l0, l1 = score0_to_1.shape
+            device = score0_to_1.device
             r = torch.arange(n, device=device)[:, None, None]
             r0 = torch.arange(l0, device=device)[None, :, None]
             r1 = torch.arange(l1, device=device)[None, None, :]
 
-            values0_to_1, sub_idxes0_to_1 = score[r, r0, idxes0_to_1].max(dim=2)
-            sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
+            values0_to_1, sub_idxes0_to_1 = score0_to_1[r, r0, idxes0_to_1].max(dim=2)
+            values1_to_0, sub_idxes1_to_0 = score1_to_0[r, idxes1_to_0, r1].max(dim=1)
             idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
             idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
-            if gt_idxes is not None:
-                coarse_recall_mask = self.create_bidirectional_mask(idxes0_to_1[:, :, None], idxes1_to_0[:, None, :])
-            idxes0_to_1 = self._remove_border_for_eval(
-                idxes0_to_1, size0, mask0)
-            idxes1_to_0 = self._remove_border_for_eval(
-                idxes1_to_0, size1, mask1)
-            biprojection = torch.stack([idxes1_to_0[b, idx1]
-                                        for b, idx1 in enumerate(idxes0_to_1)])
-            mask = biprojection == r0[:, :, 0]
-            if self.border_removal > 0:
-                mask[:, 0] = False
-            mask &= values0_to_1 > self.threshold
-            b_idxes, i_idxes = mask.nonzero(as_tuple=True)
-            j_idxes = idxes0_to_1[b_idxes, i_idxes]
+            # if gt_idxes is not None:
+            #     coarse_recall_mask = self.create_bidirectional_mask(idxes0_to_1[:, :, None], idxes1_to_0[:, None, :])
+            # idxes0_to_1 = self._remove_border_for_eval(
+            #     idxes0_to_1, size0, mask0)
+            # idxes1_to_0 = self._remove_border_for_eval(
+            #     idxes1_to_0, size1, mask1)
+            # biprojection = torch.stack([idxes1_to_0[b, idx1]
+            #                             for b, idx1 in enumerate(idxes0_to_1)])
+            # mask = biprojection == r0[:, :, 0]
+            # if self.border_removal > 0:
+            #     mask[:, 0] = False
+            # mask &= values0_to_1 > self.threshold
+            # b_idxes, i_idxes = mask.nonzero(as_tuple=True)
+            # j_idxes = idxes0_to_1[b_idxes, i_idxes]
+            b_idxes = r[:, :, 0].expand_as(values0_to_1).flatten()
+            i_idxes = idxes1_to_0.flatten()
+            j_idxes = idxes0_to_1.flatten()
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
-            scores = values0_to_1[b_idxes, i_idxes]
+            # scores = values0_to_1[b_idxes, i_idxes]
+            scores = torch.cat([values0_to_1, values1_to_0])
 
         points0 = torch.stack([i_idxes % size0[1],
                                i_idxes // size0[1]], dim=1).float()
@@ -300,7 +304,7 @@ class CoarseMatching(nn.Module):
             confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
                 1, idxes1_to_0, confidence1_to_0)
             confidence = confidence0_to_1 * confidence1_to_0
-        score = confidence, idxes0_to_1, idxes1_to_0
+        score = confidence0_to_1, confidence1_to_0, idxes0_to_1, idxes1_to_0
 
         result.update(self._create_coarse_matching(
             score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
