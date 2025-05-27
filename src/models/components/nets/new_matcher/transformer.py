@@ -68,6 +68,7 @@ class ConvTransformerEncoder(nn.Module):
         self,
         scale: int,
         depth: int,
+        flow_depth: int,
         heads_count: int,
         attention: nn.Module
     ) -> None:
@@ -85,10 +86,10 @@ class ConvTransformerEncoder(nn.Module):
         self.norm1 = nn.LayerNorm(depth)
 
         self.mlp = nn.Sequential(
-            nn.Conv2d(2 * depth + 128, 2 * depth + 128, 1, bias=False),
+            nn.Conv2d(2 * depth + flow_depth, 2 * depth + flow_depth, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth + 128, depth + 128, 3, padding=1, bias=False))
-        self.norm2 = nn.LayerNorm(depth + 128)
+            nn.Conv2d(2 * depth + flow_depth, depth + flow_depth, 3, padding=1, bias=False))
+        self.norm2 = nn.LayerNorm(depth + flow_depth)
 
     def forward(
         self,
@@ -266,7 +267,8 @@ class FusedSelectiveTransformer(nn.Module):
         self,
         scale: int,
         depths: Tuple[int, int],
-        encoder: nn.Module,
+        self_encoder: nn.Module,
+        cross_encoder: nn.Module,
         layer_count: int
     ) -> None:
         super().__init__()
@@ -280,8 +282,10 @@ class FusedSelectiveTransformer(nn.Module):
             nn.LeakyReLU(inplace=True),
             nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False))
 
-        self.layers = nn.ModuleList([copy.deepcopy(encoder)
-                                     for _ in range(layer_count)])
+        self.self_layers = nn.ModuleList([copy.deepcopy(self_encoder)
+                                          for _ in range(layer_count)])
+        self.cross_layers = nn.ModuleList([copy.deepcopy(cross_encoder)
+                                           for _ in range(layer_count)])
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -293,8 +297,11 @@ class FusedSelectiveTransformer(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        pe,
         idxes0_to_1: torch.Tensor,
-        idxes1_to_0: torch.Tensor
+        idxes1_to_0: torch.Tensor,
+        self_idxes0: torch.Tensor,
+        self_idxes1: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
                torch.Tensor, torch.Tensor]:
         s = sh = sw = self.scale
@@ -305,19 +312,30 @@ class FusedSelectiveTransformer(nn.Module):
         flow = F.interpolate(torch.cat([y0[:, 256:], y1[:, 256:]]), scale_factor=s, mode="bilinear")
         x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0[:, :256], y1[:, :256]]))
         x += F.interpolate(y, scale_factor=s, mode="bilinear")
+        x = pe.abs_pe(x)
         x0, x1 = einops.rearrange(
             torch.cat([self.down(x), flow], dim=1),
             "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
-        range = torch.arange(n, device=x0.device)[:, None, None]
-        _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
+        _range = torch.arange(n, device=x0.device)[:, None, None]
+        _self_idxes0 = (self_idxes0 + fh0 * fw0 * _range).flatten(end_dim=1)
+        _self_idxes1 = (self_idxes1 + fh1 * fw1 * _range).flatten(end_dim=1)
+        _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * _range).flatten(end_dim=1)
+        _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * _range).flatten(end_dim=1)
 
-        for layer in self.layers:
-            x0 = layer(
+        for self_layer, cross_layer in zip(self.self_layers, self.cross_layers):
+            x0, flow0 = x0.split([128, 128], dim=-1)
+            x1, flow1 = x1.split([128, 128], dim=-1)
+            x0 = self_layer(
+                x0, x0[_self_idxes0].flatten(start_dim=1, end_dim=2), (h0, w0))
+            x1 = self_layer(
+                x1, x1[_self_idxes1].flatten(start_dim=1, end_dim=2), (h1, w1))
+            x0 = torch.cat([x0, flow0], dim=-1)
+            x1 = torch.cat([x1, flow1], dim=-1)
+            x0 = cross_layer(
                 x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0))
-            x1 = layer(
+            x1 = cross_layer(
                 x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1))
 
         out0 = einops.rearrange(

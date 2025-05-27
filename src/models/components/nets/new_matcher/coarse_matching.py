@@ -223,6 +223,7 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        pe,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -265,9 +266,14 @@ class CoarseMatching(nn.Module):
             extra_coarse_topk_recall_mask = self.create_bidirectional_mask(idxes0_to_1, idxes1_to_0)
             result["extra_coarse_topk_recall"] = extra_coarse_topk_recall_mask[y_gt_idxes]
 
+        self_similarity0 = torch.einsum("nlc,nsc->nls", _y0, _y0)
+        self_similarity1 = torch.einsum("nlc,nsc->nls", _y1, _y1)
+        _, self_idxes0 = self_similarity0.topk(topk, dim=2)
+        _, self_idxes1 = self_similarity1.topk(topk, dim=2)
+
         (x0, x1, selective0, selective1,
          idxes0_to_1, idxes1_to_0) = self.fused_selective_module(
-            x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
+            x0, x1, y0, y1, pe, idxes0_to_1, idxes1_to_0, self_idxes0, self_idxes1)
         x0, flow0 = x0.split([128, 128], dim=-1)
         x1, flow1 = x1.split([128, 128], dim=-1)
         selective0 = selective0[..., :128]

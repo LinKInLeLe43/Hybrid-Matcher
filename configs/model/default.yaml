@@ -48,10 +48,19 @@ net:
       depths:
         - 128
         - 256
-      encoder:
+      self_encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
         scale: ${model.net.coarse_matching.fused_selective_module.scale}
         depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        flow_depth: 0
+        heads_count: 8
+        attention:
+          _target_: src.models.components.nets.new_matcher.Attention
+      cross_encoder:
+        _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
+        scale: ${model.net.coarse_matching.fused_selective_module.scale}
+        depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        flow_depth: 128
         heads_count: 8
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
