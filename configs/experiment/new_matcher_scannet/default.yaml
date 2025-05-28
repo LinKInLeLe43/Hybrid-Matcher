@@ -13,7 +13,9 @@ model:
     rope:
       train_size: [832, 832]
       test_size: [832, 832]
-    coarse_matching:
+    coarse_matching1:
+      threshold: 0.3
+    coarse_matching2:
       threshold: 0.3
   optimizer:
     _target_: torch.optim.AdamW

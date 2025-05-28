@@ -202,6 +202,7 @@ class CoarseMatching(nn.Module):
 
     def forward(
         self,
+        topk: int,
         x0: torch.Tensor,
         x1: torch.Tensor,
         y0: torch.Tensor,
@@ -228,7 +229,6 @@ class CoarseMatching(nn.Module):
                     y1_mask.flatten(start_dim=1)[:, None, :])
             similarity.masked_fill_(~mask, -1e9)
 
-        topk = 8
         result = {}
 
         confidence0_to_1 = F.softmax(similarity, dim=2)
@@ -237,9 +237,9 @@ class CoarseMatching(nn.Module):
         result["extra_coarse_cls_heatmap"] = confidence
 
         _similarity = similarity
-        if self.training and y_gt_idxes is not None:
-                _similarity = similarity.clone()
-                _similarity[y_gt_idxes] = 1e9
+        # if self.training and y_gt_idxes is not None:
+        #         _similarity = similarity.clone()
+        #         _similarity[y_gt_idxes] = 1e9
 
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.topk(topk, dim=1)

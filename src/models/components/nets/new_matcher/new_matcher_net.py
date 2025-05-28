@@ -13,8 +13,10 @@ class NewMatcherNet(nn.Module):
         backbone: nn.Module,
         rope: nn.Module,
         # local_coc: nn.Module,
-        coarse_module: nn.Module,
-        coarse_matching: nn.Module,
+        coarse_module1: nn.Module,
+        coarse_matching1: nn.Module,
+        coarse_module2: nn.Module,
+        coarse_matching2: nn.Module,
         # fine_preprocess: nn.Module,
         # fine_module: nn.Module,
         # fine_cls_matching: nn.Module,
@@ -28,8 +30,10 @@ class NewMatcherNet(nn.Module):
         self.backbone.scales = (8, 4)
         self.rope = rope
         # self.local_coc = local_coc
-        self.coarse_module = coarse_module
-        self.coarse_matching = coarse_matching
+        self.coarse_module1 = coarse_module1
+        self.coarse_matching1 = coarse_matching1
+        self.coarse_module2 = coarse_module2
+        self.coarse_matching2 = coarse_matching2
         # self.fine_preprocess = fine_preprocess
         # self.fine_module = fine_module
         # self.fine_cls_matching = fine_cls_matching
@@ -39,6 +43,10 @@ class NewMatcherNet(nn.Module):
 
         self.scales = (backbone.scales[0],
                        backbone.scales[1])
+
+        self.backbone.in_planes = 128
+        self.backbone2 = self.backbone._make_stage(256, 4, 2)
+
         # self.reg_w = fine_reg_matching.window_size
 
         # if type == "two_stage":
@@ -113,6 +121,8 @@ class NewMatcherNet(nn.Module):
             x0s = self.backbone(batch["image0"])
             x1s = self.backbone(batch["image1"])
 
+        x0_16x, x1_16x = x0s.pop(-1), x1s.pop(-1)
+
         # if self.local_coc.scales[0] == 1:
         #     x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
         # else:
@@ -148,14 +158,40 @@ class NewMatcherNet(nn.Module):
         #     x0_16x, x1_16x = self.coarse_module(
         #         x0_16x, x1_16x, rope=self.rope,
         #         mask0=mask0_16x, mask1=mask1_16x)
-        x0_16x, x1_16x = self.coarse_module(
-            x0s.pop(-1), x1s.pop(-1), rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
+        x0_16x, x1_16x = self.coarse_module1(
+            x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
 
-        result = self.coarse_matching(
-            x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+        result1 = self.coarse_matching1(
+            8, x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
+        x0s[-1], x1s[-1] = result1.pop("x_8x")
+
+        if batch["image0"].shape == batch["image1"].shape:
+            out = torch.cat([x0s[-1], x1s[-1]])
+            for module in self.backbone2:
+                out = module(out)
+            x0_16x, x1_16x = out.chunk(2)
+        else:
+            x0_16x, x1_16x = x0s[-1], x1s[-1]
+            for module in self.backbone2:
+                x0_16x = module(x0_16x)
+                x1_16x = module(x1_16x)
+
+        x0_16x, x1_16x = self.coarse_module2(
+            x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x)
+
+        result2 = self.coarse_matching2(
+            8, x0s[-1], x1s[-1], x0_16x, x1_16x, x0_mask=mask0_8x,
+            x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
+            x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
+        x0s[-1], x1s[-1] = result2.pop("x_8x")
+
+        result = result2
+        result["coarse_cls_heatmap1"] = result1.pop("coarse_cls_heatmap")
+        result["extra_coarse_cls_heatmap1"] = result1.pop("extra_coarse_cls_heatmap")
+        result["coarse_cls_heatmap2"] = result2.pop("coarse_cls_heatmap")
+        result["extra_coarse_cls_heatmap2"] = result2.pop("extra_coarse_cls_heatmap")
 
         # x0_reg, x1_reg = self.fine_preprocess(
         #     x0s, x1s, result["coarse_cls_idxes"])

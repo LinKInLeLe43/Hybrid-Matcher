@@ -17,7 +17,9 @@ model:
       test_size:
         - ${data.test_dataset.image_size}
         - ${data.test_dataset.image_size}
-    coarse_matching:
+    coarse_matching1:
+      train_percent: 0.3
+    coarse_matching2:
       train_percent: 0.3
   optimizer:
     _target_: torch.optim.AdamW

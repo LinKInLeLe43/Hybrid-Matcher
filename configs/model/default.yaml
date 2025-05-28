@@ -21,9 +21,9 @@ net:
   #   heads_counts: [8]
   #   center_sizes: [4]
   #   fold_sizes: [1]
-  coarse_module:
+  coarse_module1:
     _target_: src.models.components.nets.new_matcher.LoFTR
-    types: ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
+    types: ["self", "cross", "self", "cross"]
     encoder:
       _target_: src.models.components.nets.new_matcher.AggregatedEncoder
       depth: 256
@@ -31,7 +31,7 @@ net:
       scale: 2
       attention:
         _target_: src.models.components.nets.new_matcher.Attention
-  coarse_matching:
+  coarse_matching1:
     _target_: src.models.components.nets.new_matcher.CoarseMatching
     fused_selective_module:
       _target_: src.models.components.nets.new_matcher.FusedSelectiveTransformer
@@ -41,13 +41,15 @@ net:
         - 256
       encoder:
         _target_: src.models.components.nets.new_matcher.ConvTransformerEncoder
-        scale: ${model.net.coarse_matching.fused_selective_module.scale}
-        depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
+        scale: ${model.net.coarse_matching1.fused_selective_module.scale}
+        depth: ${model.net.coarse_matching1.fused_selective_module.depths.0}
         heads_count: 8
         attention:
           _target_: src.models.components.nets.new_matcher.Attention
       layer_count: 2
     temperature: 0.1
+  coarse_module2: ${.coarse_module1}
+  coarse_matching2: ${.coarse_matching1}
   # fine_preprocess: ???
 #  fine_module: ???
   # fine_reg_matching: ???
