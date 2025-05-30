@@ -9,7 +9,6 @@ from torch import distributed as dist
 from torch import nn
 
 from src.models import utils
-from src.models.components.nets.new_matcher.homo.utils.dense_match import DenseMatch
 
 
 def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -60,7 +59,6 @@ class MatchingModule(pl.LightningModule):
         self.loss = loss
         self.save_hyperparameters(ignore=["net", "loss"], logger=False)
 
-        self.dense_matcher = DenseMatch()
         self.test_time_profiler = utils.InferenceProfiler()
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -81,36 +79,21 @@ class MatchingModule(pl.LightningModule):
         batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
-        if self.net.type == "one_stage":
-            supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0, return_coor=True)
-            # coarse_gt_points1 = supervision.pop("gt_points1")
-            result = self.net(
-                batch, gt_idxes=supervision["coarse_gt_idxes"],
-                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
-            # supervision.update(utils.create_fine_supervision(
-            #     batch, (s1, 1), result["coarse_cls_idxes"],
-            #     offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
-            # supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
-            #     supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
-            #     result["fine_cls_idxes"], s2, self.net.reg_w)
-            # supervision.update(utils.compute_dense_gt_biases(
-            #     batch, result, self.dense_matcher, coarse_gt_points1,
-            #     result["coarse_cls_idxes"], s2, self.net.reg_w))
-        elif self.net.type == "two_stage":
-            supervision = utils.create_coarse_supervision(
-                batch, s1, extra_scale=s0)
-            result = self.net(
-                batch, gt_idxes=supervision["coarse_gt_idxes"],
-                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
-            supervision.update(utils.create_fine_supervision(
-                batch, (s1, s2), result["coarse_cls_idxes"],
-                offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
-            supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
-                supervision.pop("points0_to_1"), supervision.pop("points1"),
-                result["fine_cls_idxes"], s2, self.net.reg_w)
-        else:
-            assert False
+        supervision = utils.create_coarse_supervision(
+            batch, s1, extra_scale=s0, return_coor=True)
+        # coarse_gt_points1 = supervision.pop("gt_points1")
+        result = self.net(
+            batch, gt_idxes=supervision["coarse_gt_idxes"],
+            extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+        # supervision.update(utils.create_fine_supervision(
+        #     batch, (s1, 1), result["coarse_cls_idxes"],
+        #     offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+        # supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
+        #     supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
+        #     result["fine_cls_idxes"], s2, self.net.reg_w)
+        # supervision.update(utils.compute_dense_gt_biases(
+        #     batch, result, self.dense_matcher, coarse_gt_points1,
+        #     result["coarse_cls_idxes"], s2, self.net.reg_w))
         loss = self.loss(
             **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
             mask1=batch.get(f"mask1_{s1}x"),

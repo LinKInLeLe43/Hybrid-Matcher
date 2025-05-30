@@ -1,6 +1,13 @@
 defaults:
-  - learning_rate_monitor
-  - model_checkpoint
-  - model_summary
-  - rich_progress_bar
-  - _self_
+    - items/learning_rate_monitor
+    - items/model_checkpoint
+    - items/rich_model_summary
+    - items/rich_progress_bar
+    - _self_
+
+model_checkpoint:
+    filename: "epoch={epoch}-coarse_precision={val_metric/coarse_precision:.3f}"
+    monitor: "val_metric/coarse_precision"
+    save_top_k: 15
+    mode: "max"
+    auto_insert_metric_name: false

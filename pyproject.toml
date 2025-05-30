@@ -1,0 +1,31 @@
+[project]
+name = "casp"
+version = "0.0.1"
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = ["casp"]
+
+[tool.ruff]
+line-length = 79
+select = [
+    "E",  # pycodestyle errors
+    "W",  # pycodestyle warnings
+    "F",  # pyflakes
+    "I",  # isort
+    "B",  # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "N",  # PEP8-naming
+    "PERF",  # Perflint
+    "RUF",  # Ruff-specific rules
+    "ANN",  # flake8-annotations
+]
+ignore = [
+    "N812",  # lowercase-imported-as-non-lowercase
+]
+
+[tool.ruff.format]
+skip-magic-trailing-comma = true
+docstring-code-format = true
+docstring-code-line-length = 79

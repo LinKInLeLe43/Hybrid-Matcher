@@ -1,0 +1,6 @@
+# @package callbacks
+
+model_checkpoint:
+    _target_: pytorch_lightning.callbacks.ModelCheckpoint
+    dirpath: "${paths.output_dir}/checkpoints"
+    verbose: true

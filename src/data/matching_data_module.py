@@ -13,9 +13,6 @@ from src import utils
 from src.data import utils as data_utils
 
 
-log = utils.get_pylogger(__name__)
-
-
 class MatchingDataModule(pl.LightningDataModule):
     def __init__(
         self,
@@ -88,7 +85,7 @@ class MatchingDataModule(pl.LightningDataModule):
             names = [name for name in f.read().splitlines()]
         if split:
             names = self._split_names_per_rank(names)
-        log.info(f"{len(names)} scenes assigned per rank.")
+        # log.info(f"{len(names)} scenes assigned per rank.")
 
         npz_paths = []
         for name in names:
@@ -107,14 +104,14 @@ class MatchingDataModule(pl.LightningDataModule):
                 self.hparams.val_npz_root, self.hparams.val_list_path, False)
             self.val_dataset = self._create_concat_dataset(
                 self.hparams.val_dataset, val_npz_paths)
-            log.info(f"Train and validation `Dataset`s created.")
+            # log.info(f"Train and validation `Dataset`s created.")
 
         if stage == "test":
             test_npz_paths = self._create_npz_paths(
                 self.hparams.test_npz_root, self.hparams.test_list_path, False)
             self.test_dataset = self._create_concat_dataset(
                 self.hparams.test_dataset, test_npz_paths)
-            log.info(f"Test `Dataset` created.")
+            # log.info(f"Test `Dataset` created.")
 
     def train_dataloader(self) -> data.DataLoader:
         dataloader = data.DataLoader(
@@ -123,8 +120,8 @@ class MatchingDataModule(pl.LightningDataModule):
             sampler=self.hparams.train_sampler(self.train_dataset),
             num_workers=self.hparams.workers_count,
             pin_memory=self.hparams.pin_memory)
-        log.info("Train `Sampler` and `DataLoader` created. "
-                 "(should not re-create between epochs)")
+        # log.info("Train `Sampler` and `DataLoader` created. "
+        #          "(should not re-create between epochs)")
         return dataloader
 
     def val_dataloader(self) -> data.DataLoader:
@@ -133,7 +130,7 @@ class MatchingDataModule(pl.LightningDataModule):
             sampler=self.hparams.val_sampler(self.val_dataset),
             num_workers=self.hparams.workers_count,
             pin_memory=self.hparams.pin_memory)
-        log.info("Validation `Sampler` and `DataLoader` created.")
+        # log.info("Validation `Sampler` and `DataLoader` created.")
         return dataloader
 
     def test_dataloader(self) -> data.DataLoader:
@@ -141,5 +138,5 @@ class MatchingDataModule(pl.LightningDataModule):
             self.test_dataset, batch_size=1,
             sampler=self.hparams.test_sampler(self.test_dataset),
             num_workers=self.hparams.workers_count, pin_memory=True)
-        log.info("Test `Sampler` and `DataLoader` created.")
+        # log.info("Test `Sampler` and `DataLoader` created.")
         return dataloader

@@ -1,7 +1,0 @@
-defaults:
-  - default
-  - _self_
-
-accelerator: "cpu"
-
-strategy: "ddp_find_unused_parameters_false"
