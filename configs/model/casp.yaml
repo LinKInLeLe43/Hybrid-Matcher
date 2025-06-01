@@ -2,9 +2,7 @@ _target_: src.models.MatchingModule
 
 net:
     _target_: src.models.nets.CasP
-    encoder:
-        _target_: src.models.nets.encoders.Encoder
-        name: "repvgg_a1"
+    encoder: "repvgg_a1"
     rope:
         _target_: src.models.nets.RoPESinePositionalEncoding
         depth: 256
@@ -20,8 +18,6 @@ net:
             depth: 256
             heads_count: 8
             scale: 2
-            attention:
-                _target_: src.models.nets.decoders.Attention
     coarse_matching:
         _target_: src.models.nets.CoarseMatching
         fused_selective_module:
@@ -35,8 +31,6 @@ net:
                 scale: ${model.net.coarse_matching.fused_selective_module.scale}
                 depth: ${model.net.coarse_matching.fused_selective_module.depths.0}
                 heads_count: 8
-                attention:
-                    _target_: src.models.nets.decoders.Attention
             layer_count: 2
         temperature: 0.1
     extra_scale: 16

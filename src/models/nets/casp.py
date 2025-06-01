@@ -3,25 +3,27 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 from torch import nn
 
+from .encoders import Encoder
+
 
 class CasP(nn.Module):
     def __init__(
         self,
-        encoder: nn.Module,
+        encoder: str,
         rope: nn.Module,
         coarse_module: nn.Module,
         coarse_matching: nn.Module,
         extra_scale: Optional[int] = None,
     ) -> None:
         super().__init__()
-        self.encoder = encoder
+        self.encoder = Encoder(encoder)
         self.encoder.scales = (8, 4)
         self.rope = rope
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.extra_scale = extra_scale
 
-        self.scales = (encoder.scales[0], encoder.scales[1])
+        self.scales = (self.encoder.scales[0], self.encoder.scales[1])
 
     def _scale_points(
         self,
@@ -44,7 +46,9 @@ class CasP(nn.Module):
     def forward(
         self,
         data: Dict[str, Any],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
+        gt_idxes: Optional[
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = None,
         extra_gt_idxes: Optional[
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         ] = None,
@@ -52,17 +56,19 @@ class CasP(nn.Module):
         mask0_8x, mask1_8x = data.get("mask0_8x"), data.get("mask1_8x")
         mask0_16x, mask1_16x = data.get("mask0_16x"), data.get("mask1_16x")
 
-        x0s, x1s = self.encoder(data["image0"], data["image1"])
+        x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
-        x0_16x, x1_16x = self.coarse_module(
-            x0s.pop(-1), x1s.pop(-1), rope=self.rope, mask0=mask0_16x, mask1=mask1_16x
+        x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_16x_t, x1_16x_t = self.coarse_module(
+            x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x
         )
 
+        x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         result = self.coarse_matching(
-            x0s[-1],
-            x1s[-1],
-            x0_16x,
-            x1_16x,
+            x0_8x,
+            x1_8x,
+            x0_16x_t,
+            x1_16x_t,
             x0_mask=mask0_8x,
             x1_mask=mask1_8x,
             y0_mask=mask0_16x,
@@ -70,7 +76,6 @@ class CasP(nn.Module):
             x_gt_idxes=gt_idxes,
             y_gt_idxes=extra_gt_idxes,
         )
-        x0s[-1], x1s[-1] = result.pop("x_8x")
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result

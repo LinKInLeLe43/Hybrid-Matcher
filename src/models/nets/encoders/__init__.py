@@ -21,9 +21,8 @@ class Encoder(Module):
         self, image0: Tensor, image1: Tensor
     ) -> Tuple[List[Tensor], List[Tensor]]:
         if image0.shape == image1.shape:
-            xs = self.backbone(torch.cat([image0, image1]))
-            x0s, x1s = zip(*(x.chunk(2, dim=0) for x in xs))
-            x0s, x1s = list(x0s), list(x1s)
+            x_list = self.backbone(torch.cat([image0, image1]))
+            x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
         else:
-            x0s, x1s = self.backbone(image0), self.backbone(image1)
-        return x0s, x1s
+            x0_list, x1_list = self.backbone(image0), self.backbone(image1)
+        return x0_list, x1_list
