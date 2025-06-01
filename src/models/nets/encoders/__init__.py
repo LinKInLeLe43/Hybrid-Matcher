@@ -4,6 +4,11 @@ import torch
 from torch import Tensor
 from torch.nn import Module
 
+from .convnextv2 import (
+    convnextv2_pico,
+    convnextv2_pico_modified,
+    convnextv2_tiny,
+)
 from .repvgg import create_RepVGG_A1, create_RepVGG_A2
 
 
@@ -14,6 +19,12 @@ class Encoder(Module):
             self.backbone = create_RepVGG_A1()
         elif name == "repvgg_a2":
             self.backbone = create_RepVGG_A2()
+        elif name == "convnextv2_pico":
+            self.backbone = convnextv2_pico()
+        elif name == "convnextv2_pico_modified":
+            self.backbone = convnextv2_pico_modified()
+        elif name == "convnextv2_tiny":
+            self.backbone = convnextv2_tiny()
         else:
             raise ValueError("")
 
