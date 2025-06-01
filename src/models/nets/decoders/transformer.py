@@ -1,64 +1,74 @@
-import copy
+from copy import deepcopy
 from typing import List, Optional, Tuple
+from warnings import warn
 
 import einops
 import torch
-from torch import nn
+from torch import Tensor, nn
+from torch.nn import Module
 from torch.nn import functional as F
 
-if hasattr(F, "scaled_dot_product_attention"):
-    FLASH_AVAILABLE = True
+try:
+    # deprecated after torch 2.3.0, see https://github.com/pytorch/pytorch/releases/tag/v2.3.0
     from torch.backends.cuda import sdp_kernel
-else:
-    FLASH_AVAILABLE = False
+    from torch.nn.functional import scaled_dot_product_attention as sdpa
+
+    SDPA_AVAILABLE = True
+except ImportError:
+    SDPA_AVAILABLE = False
 
 
-class Attention(nn.Module):
-    def __init__(self, try_sdpa: bool = False, try_flash: bool = False) -> None:
+class Attention(Module):
+    def __init__(
+        self, enable_sdpa: bool = False, enable_flash: bool = False
+    ) -> None:
         super().__init__()
-        self.enable_sdpa = try_sdpa and FLASH_AVAILABLE
-        self.enable_flash = try_flash and self.enable_sdpa
+        if enable_sdpa and not SDPA_AVAILABLE:
+            warn("", stacklevel=2)
+        self.enable_sdpa = enable_sdpa and SDPA_AVAILABLE
+        if enable_flash and not self.enable_sdpa:
+            warn("", stacklevel=2)
+        self.enable_flash = enable_flash and self.enable_sdpa
 
     def forward(
         self,
-        q: torch.Tensor,
-        k: torch.Tensor,
-        v: torch.Tensor,
-        q_mask: Optional[torch.Tensor] = None,
-        kv_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        q: Tensor,
+        k: Tensor,
+        v: Tensor,
+        q_mask: Optional[Tensor] = None,
+        kv_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         mask = None
         if q_mask is not None and kv_mask is not None:
             mask = q_mask[..., :, None] & kv_mask[..., None, :]
 
         if self.enable_sdpa:
             if self.enable_flash:
-                args = [x.contiguous().half() for x in [q, k, v]]
+                assert mask is None
+                q, k, v = [x.half().contiguous() for x in [q, k, v]]
                 with sdp_kernel(
-                    enable_math=False, enable_flash=True,
-                    enable_mem_efficient=False):
-                    out = F.scaled_dot_product_attention(
-                        *args, attn_mask=mask).to(q.dtype)
+                    enable_flash=True,
+                    enable_math=False,
+                    enable_mem_efficient=False,
+                ):
+                    message = sdpa(q, k, v).to(q.dtype)
             else:
-                args = [x.contiguous() for x in [q, k, v]]
-                out = F.scaled_dot_product_attention(*args, attn_mask=mask)
+                q, k, v = [x.contiguous() for x in [q, k, v]]
+                message = sdpa(q, k, v, attn_mask=mask)
         else:
-            sc = q.shape[-1]
-            similarity = torch.einsum("...ld,...sd->...ls", q, k) / sc ** 0.5
+            q = q * q.shape[-1] ** -0.5
+            similarity = q @ k.transpose(-1, -2)
             if mask is not None:
-                similarity.masked_fill_(~mask, -1e9)
+                similarity.masked_fill_(~mask, -float("inf"))
+            attention = similarity.softmax(dim=-1)
+            message = attention @ v
+        if mask is not None:
+            message.nan_to_num_()
+        return message
 
-            out = torch.einsum(
-                "...ls,...sc->...lc", F.softmax(similarity, dim=-1), v)
-        return out
 
-
-class TransformerEncoder(nn.Module):
-    def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-    ) -> None:
+class TransformerEncoder(Module):
+    def __init__(self, depth: int, heads_count: int) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.attention = Attention()
@@ -74,16 +84,17 @@ class TransformerEncoder(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(2 * depth, 2 * depth, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
+            nn.Linear(2 * depth, depth, bias=False),
+        )
         self.norm2 = nn.LayerNorm(depth)
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        x: Tensor,
+        source: Tensor,
+        x_mask: Optional[Tensor] = None,
+        source_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         fc = self.heads_count
 
         if x_mask is not None and source_mask is not None:
@@ -91,9 +102,11 @@ class TransformerEncoder(nn.Module):
 
         q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        )
         v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        )
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
@@ -108,13 +121,8 @@ class TransformerEncoder(nn.Module):
         return out
 
 
-class ConvTransformerEncoder(nn.Module):
-    def __init__(
-        self,
-        scale: int,
-        depth: int,
-        heads_count: int,
-    ) -> None:
+class ConvTransformerEncoder(Module):
+    def __init__(self, scale: int, depth: int, heads_count: int) -> None:
         super().__init__()
         self.scale = scale
         self.heads_count = heads_count
@@ -131,17 +139,18 @@ class ConvTransformerEncoder(nn.Module):
         self.mlp = nn.Sequential(
             nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False))
+            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False),
+        )
         self.norm2 = nn.LayerNorm(depth)
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
+        x: Tensor,
+        source: Tensor,
         size: Tuple[int, int],
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        x_mask: Optional[Tensor] = None,
+        source_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         sh, sw, fc = self.scale, self.scale, self.heads_count
         fh, fw = size[0] // sh, size[1] // sw
 
@@ -150,9 +159,11 @@ class ConvTransformerEncoder(nn.Module):
 
         q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        )
         v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc)
+            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        )
         out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
@@ -161,24 +172,25 @@ class ConvTransformerEncoder(nn.Module):
 
         out = torch.cat([x, out], dim=2)
         out = einops.rearrange(
-            out, "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)", fh=fh, sh=sh,
-            fw=fw, sw=sw)
+            out,
+            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            fh=fh,
+            sh=sh,
+            fw=fw,
+            sw=sw,
+        )
         out = self.mlp(out)
         out = einops.rearrange(
-            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw)
+            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw
+        )
         out = self.norm2(out)
 
         out += x
         return out
 
 
-class AggregatedEncoder(nn.Module):
-    def __init__(
-        self,
-        depth: int,
-        heads_count: int,
-        scale: int,
-    ) -> None:
+class AggregatedEncoder(Module):
+    def __init__(self, depth: int, heads_count: int, scale: int) -> None:
         super().__init__()
         self.heads_count = heads_count
         self.scale = scale
@@ -198,17 +210,18 @@ class AggregatedEncoder(nn.Module):
         self.mlp = nn.Sequential(
             nn.Linear(2 * depth, 2 * depth, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(2 * depth, depth, bias=False))
+            nn.Linear(2 * depth, depth, bias=False),
+        )
         self.norm2 = nn.LayerNorm(depth)
 
     def forward(
         self,
-        x: torch.Tensor,
-        source: torch.Tensor,
-        rope: Optional[nn.Module] = None,
-        x_mask: Optional[torch.Tensor] = None,
-        source_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+        x: Tensor,
+        source: Tensor,
+        rope: Optional[Module] = None,
+        x_mask: Optional[Tensor] = None,
+        source_mask: Optional[Tensor] = None,
+    ) -> Tensor:
         s, fc = self.scale, self.heads_count
 
         if x_mask is not None and source_mask is not None:
@@ -242,53 +255,34 @@ class AggregatedEncoder(nn.Module):
         return out
 
 
-class LoFTR(nn.Module):
-    def __init__(
-        self,
-        encoder: nn.Module,
-        types: List[str]
-    ) -> None:
+class LoFTR(Module):
+    def __init__(self, encoder: Module, types: List[str]) -> None:
         super().__init__()
         self.types = types
         self.nchw = encoder.nchw
 
-        self.layers = nn.ModuleList([copy.deepcopy(encoder) for _ in types])
+        self.layers = nn.ModuleList([deepcopy(encoder) for _ in types])
 
         for p in self.parameters():
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(
-        self,
-        feature0: torch.Tensor,
-        feature1: torch.Tensor,
-        rope,
-        size0: Optional[Tuple[int, int]] = None,
-        size1: Optional[Tuple[int, int]] = None,
-        mask0: Optional[torch.Tensor] = None,
-        mask1: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
+    def _forward(
+        self, feature0: Tensor, feature1: Tensor, rope
+    ) -> Tuple[Tensor, Tensor]:
         # if self.nchw:
         #     if size0 is None or size1 is None:
         #         raise ValueError("")
 
         #     feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
         #     feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
-        if mask0 is not None and mask1 is not None:
-            mask0 = mask0.flatten(start_dim=-2)
-            mask1 = mask1.flatten(start_dim=-2)
-
         for layer, type in zip(self.layers, self.types):
             if type == "self":
-                feature0 = layer(
-                    feature0, feature0, rope, x_mask=mask0, source_mask=mask0)
-                feature1 = layer(
-                    feature1, feature1, rope, x_mask=mask1, source_mask=mask1)
+                feature0 = layer(feature0, feature0, rope)
+                feature1 = layer(feature1, feature1, rope)
             elif type == "cross":
-                feature0 = layer(
-                    feature0, feature1, x_mask=mask0, source_mask=mask1)
-                feature1 = layer(
-                    feature1, feature0, x_mask=mask1, source_mask=mask0)
+                feature0 = layer(feature0, feature1)
+                feature1 = layer(feature1, feature0)
             else:
                 raise ValueError("")
 
@@ -297,14 +291,41 @@ class LoFTR(nn.Module):
         #     feature1 = feature1.flatten(start_dim=2).transpose(1, 2)
         return feature0, feature1
 
+    def forward(
+        self,
+        feature0: Tensor,
+        feature1: Tensor,
+        rope,
+        mask0: Optional[Tensor] = None,
+        mask1: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        if mask0 is None and mask1 is None:
+            feature0_t, feature1_t = self._forward(feature0, feature1, rope)
+        else:
+            feature0_t = torch.zeros_like(feature0)
+            feature1_t = torch.zeros_like(feature1)
+            for b in range(feature0.shape[0]):
+                h0 = mask0[b].sum(dim=0).amax()
+                w0 = mask0[b].sum(dim=1).amax()
+                h1 = mask1[b].sum(dim=0).amax()
+                w1 = mask1[b].sum(dim=1).amax()
+                b_feature0, b_feature1 = self._forward(
+                    feature0[b:b+1, :, :h0, :w0],
+                    feature1[b:b+1, :, :h1, :w1],
+                    rope,
+                )
+                feature0_t[b:b+1, :, :h0, :w0] = b_feature0
+                feature1_t[b:b+1, :, :h1, :w1] = b_feature1
+        return feature0_t, feature1_t
 
-class FusedSelectiveTransformer(nn.Module):
+
+class FusedSelectiveTransformer(Module):
     def __init__(
         self,
         scale: int,
         depths: Tuple[int, int],
-        encoder: nn.Module,
-        layer_count: int
+        encoder: Module,
+        layer_count: int,
     ) -> None:
         super().__init__()
         self.scale = scale
@@ -315,10 +336,12 @@ class FusedSelectiveTransformer(nn.Module):
             nn.Conv2d(depths[1], depths[1], 3, padding=1, bias=False),
             nn.BatchNorm2d(depths[1]),
             nn.LeakyReLU(inplace=True),
-            nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False))
+            nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False),
+        )
 
-        self.layers = nn.ModuleList([copy.deepcopy(encoder)
-                                     for _ in range(layer_count)])
+        self.layers = nn.ModuleList(
+            [deepcopy(encoder) for _ in range(layer_count)]
+        )
 
         for p in self.parameters():
             if p.dim() > 1:
@@ -326,14 +349,13 @@ class FusedSelectiveTransformer(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        y0: torch.Tensor,
-        y1: torch.Tensor,
-        idxes0_to_1: torch.Tensor,
-        idxes1_to_0: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
-               torch.Tensor, torch.Tensor]:
+        x0: Tensor,
+        x1: Tensor,
+        y0: Tensor,
+        y1: Tensor,
+        idxes0_to_1: Tensor,
+        idxes1_to_0: Tensor,
+    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
         s = sh = sw = self.scale
         n, _, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
@@ -343,7 +365,10 @@ class FusedSelectiveTransformer(nn.Module):
         x += F.interpolate(y, scale_factor=s, mode="bilinear")
         x0, x1 = einops.rearrange(
             self.down(x),
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw).chunk(2)
+            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            sh=sh,
+            sw=sw,
+        ).chunk(2)
 
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
         range = torch.arange(n, device=x0.device)[:, None, None]
@@ -352,32 +377,66 @@ class FusedSelectiveTransformer(nn.Module):
 
         for layer in self.layers:
             x0 = layer(
-                x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0))
+                x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0)
+            )
             x1 = layer(
-                x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1))
+                x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1)
+            )
 
         out0 = einops.rearrange(
-            x0, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh0, sh=sh,
-            fw=fw0, sw=sw)
+            x0,
+            "(n fh fw) (sh sw) c -> n (fh sh fw sw) c",
+            fh=fh0,
+            sh=sh,
+            fw=fw0,
+            sw=sw,
+        )
         out1 = einops.rearrange(
-            x1, "(n fh fw) (sh sw) c -> n (fh sh fw sw) c", fh=fh1, sh=sh,
-            fw=fw1, sw=sw)
+            x1,
+            "(n fh fw) (sh sw) c -> n (fh sh fw sw) c",
+            fh=fh1,
+            sh=sh,
+            fw=fw1,
+            sw=sw,
+        )
         selective0 = einops.repeat(
-            x0[_idxes1_to_0], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh1, sh=sh, fw=fw1, sw=sw)
+            x0[_idxes1_to_0],
+            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            fh=fh1,
+            sh=sh,
+            fw=fw1,
+            sw=sw,
+        )
         selective1 = einops.repeat(
-            x1[_idxes0_to_1], "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh0, sh=sh, fw=fw0, sw=sw)
-        idxes0_to_1 = (w1 * s * (idxes0_to_1 // (w1 // s)) +
-                       s * (idxes0_to_1 % (w1 // s)))[..., None]
-        idxes1_to_0 = (w0 * s * (idxes1_to_0 // (w0 // s)) +
-                       s * (idxes1_to_0 % (w0 // s)))[..., None]
+            x1[_idxes0_to_1],
+            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
+            fh=fh0,
+            sh=sh,
+            fw=fw0,
+            sw=sw,
+        )
+        idxes0_to_1 = (
+            w1 * s * (idxes0_to_1 // (w1 // s)) + s * (idxes0_to_1 % (w1 // s))
+        )[..., None]
+        idxes1_to_0 = (
+            w0 * s * (idxes1_to_0 // (w0 // s)) + s * (idxes1_to_0 % (w0 // s))
+        )[..., None]
         idxes0_to_1 = idxes0_to_1 + idxes0_to_1.new_tensor([0, 1, w1, w1 + 1])
         idxes1_to_0 = idxes1_to_0 + idxes1_to_0.new_tensor([0, 1, w0, w0 + 1])
         idxes0_to_1 = einops.repeat(
-            idxes0_to_1, "n (fh fw) k ss -> n (fh sh fw sw) (k ss)",
-            fh=fh0, sh=sh, fw=fw0, sw=sw)
+            idxes0_to_1,
+            "n (fh fw) k ss -> n (fh sh fw sw) (k ss)",
+            fh=fh0,
+            sh=sh,
+            fw=fw0,
+            sw=sw,
+        )
         idxes1_to_0 = einops.repeat(
-            idxes1_to_0, "n (fh fw) k ss -> n (k ss) (fh sh fw sw)",
-            fh=fh1, sh=sh, fw=fw1, sw=sw)
+            idxes1_to_0,
+            "n (fh fw) k ss -> n (k ss) (fh sh fw sw)",
+            fh=fh1,
+            sh=sh,
+            fw=fw1,
+            sw=sw,
+        )
         return out0, out1, selective0, selective1, idxes0_to_1, idxes1_to_0
