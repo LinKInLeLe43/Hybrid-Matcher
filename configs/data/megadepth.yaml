@@ -45,7 +45,7 @@ test_dataset:
     _target_: src.data.components.datasets.MegaDepthDataset
     _partial_: true
     data_root: "${paths.data_dir}/megadepth/test"
-    image_size: ${data.train_dataset.image_size}
+    image_size: 1152
     image_factor: ${data.train_dataset.image_factor}
     mask_factors: ${data.train_dataset.mask_factors}
     fp16: ${fp16}

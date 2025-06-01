@@ -2,7 +2,7 @@ defaults:
     - _self_
     - model: ???
     - data: ???
-    - trainer: defaults
+    - trainer: default
     - paths: default
     - hydra: default
 
