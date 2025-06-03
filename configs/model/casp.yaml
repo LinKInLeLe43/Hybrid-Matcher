@@ -10,7 +10,7 @@ net:
         test_size: ???
         fp16: ${fp16}
     coarse_module:
-        _target_: src.models.nets.decoders.LoFTR
+        _target_: src.models.nets.decoders.Decoder
         types:
             ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
         encoder:

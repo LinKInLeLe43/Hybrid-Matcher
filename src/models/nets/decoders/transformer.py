@@ -31,17 +31,8 @@ class Attention(Module):
         self.enable_flash = enable_flash and self.enable_sdpa
 
     def forward(
-        self,
-        q: Tensor,
-        k: Tensor,
-        v: Tensor,
-        q_mask: Optional[Tensor] = None,
-        kv_mask: Optional[Tensor] = None,
+        self, q: Tensor, k: Tensor, v: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        mask = None
-        if q_mask is not None and kv_mask is not None:
-            mask = q_mask[..., :, None] & kv_mask[..., None, :]
-
         if self.enable_sdpa:
             if self.enable_flash:
                 assert mask is None
@@ -89,16 +80,9 @@ class TransformerEncoder(Module):
         self.norm2 = nn.LayerNorm(depth)
 
     def forward(
-        self,
-        x: Tensor,
-        source: Tensor,
-        x_mask: Optional[Tensor] = None,
-        source_mask: Optional[Tensor] = None,
+        self, x: Tensor, source: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
         fc = self.heads_count
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
         q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
@@ -107,7 +91,7 @@ class TransformerEncoder(Module):
         v = einops.rearrange(
             self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
         )
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = self.attention(q, k, v, mask=mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
@@ -144,18 +128,10 @@ class ConvTransformerEncoder(Module):
         self.norm2 = nn.LayerNorm(depth)
 
     def forward(
-        self,
-        x: Tensor,
-        source: Tensor,
-        size: Tuple[int, int],
-        x_mask: Optional[Tensor] = None,
-        source_mask: Optional[Tensor] = None,
+        self, x: Tensor, source: Tensor, size: Tuple[int, int]
     ) -> Tensor:
         sh, sw, fc = self.scale, self.scale, self.heads_count
         fh, fw = size[0] // sh, size[1] // sw
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
 
         q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
         k = einops.rearrange(
@@ -164,7 +140,7 @@ class ConvTransformerEncoder(Module):
         v = einops.rearrange(
             self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
         )
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = self.attention(q, k, v)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
@@ -219,14 +195,9 @@ class AggregatedEncoder(Module):
         x: Tensor,
         source: Tensor,
         rope: Optional[Module] = None,
-        x_mask: Optional[Tensor] = None,
-        source_mask: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
     ) -> Tensor:
         s, fc = self.scale, self.heads_count
-
-        if x_mask is not None and source_mask is not None:
-            x_mask, source_mask = x_mask[:, None], source_mask[:, None]
-
         q = self.down_q(x).permute(0, 2, 3, 1)
         kv = self.down_kv(source).permute(0, 2, 3, 1)
         q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
@@ -237,7 +208,7 @@ class AggregatedEncoder(Module):
         q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        out = self.attention(q, k, v, q_mask=x_mask, kv_mask=source_mask)
+        out = self.attention(q, k, v, mask=mask)
         out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
 
         out = self.merge(out)
@@ -253,70 +224,6 @@ class AggregatedEncoder(Module):
 
         out += x
         return out
-
-
-class LoFTR(Module):
-    def __init__(self, encoder: Module, types: List[str]) -> None:
-        super().__init__()
-        self.types = types
-        self.nchw = encoder.nchw
-
-        self.layers = nn.ModuleList([deepcopy(encoder) for _ in types])
-
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
-
-    def _forward(
-        self, feature0: Tensor, feature1: Tensor, rope
-    ) -> Tuple[Tensor, Tensor]:
-        # if self.nchw:
-        #     if size0 is None or size1 is None:
-        #         raise ValueError("")
-
-        #     feature0 = feature0.transpose(1, 2).unflatten(2, size0).contiguous()
-        #     feature1 = feature1.transpose(1, 2).unflatten(2, size1).contiguous()
-        for layer, type in zip(self.layers, self.types):
-            if type == "self":
-                feature0 = layer(feature0, feature0, rope)
-                feature1 = layer(feature1, feature1, rope)
-            elif type == "cross":
-                feature0 = layer(feature0, feature1)
-                feature1 = layer(feature1, feature0)
-            else:
-                raise ValueError("")
-
-        # if self.nchw:
-        #     feature0 = feature0.flatten(start_dim=2).transpose(1, 2)
-        #     feature1 = feature1.flatten(start_dim=2).transpose(1, 2)
-        return feature0, feature1
-
-    def forward(
-        self,
-        feature0: Tensor,
-        feature1: Tensor,
-        rope,
-        mask0: Optional[Tensor] = None,
-        mask1: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor]:
-        if mask0 is None and mask1 is None:
-            feature0_t, feature1_t = self._forward(feature0, feature1, rope)
-        else:
-            feature0_t = torch.zeros_like(feature0)
-            feature1_t = torch.zeros_like(feature1)
-            for b in range(feature0.shape[0]):
-                h0 = mask0[b].sum(dim=0).amax()
-                w0 = mask0[b].sum(dim=1).amax()
-                h1 = mask1[b].sum(dim=0).amax()
-                w1 = mask1[b].sum(dim=1).amax()
-                b_feature0, b_feature1 = self._forward(
-                    feature0[b:b+1, :, :h0, :w0],
-                    feature1[b:b+1, :, :h1, :w1],
-                    rope,
-                )
-                feature0_t[b:b+1, :, :h0, :w0] = b_feature0
-                feature1_t[b:b+1, :, :h1, :w1] = b_feature1
-        return feature0_t, feature1_t
 
 
 class FusedSelectiveTransformer(Module):
