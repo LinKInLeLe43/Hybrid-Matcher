@@ -17,51 +17,76 @@ class Decoder(Module):
         self, num_layers: int, enable_crop: bool = True, **kwargs
     ) -> None:
         super().__init__()
-        self.enable_crop = enable_crop
         layer = TransformerLayer(**kwargs)
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )
+        self.enable_crop = enable_crop
 
     def _forward(
         self,
         x0: Tensor,
         x1: Tensor,
-        rope,
+        encoding0: Tensor,
+        encoding1: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
+        mask00 = mask11 = mask01 = None
         if mask0 is not None and mask1 is not None:
             mask0 = mask0.flatten(start_dim=1)
             mask1 = mask1.flatten(start_dim=1)
-        x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
+            mask00 = mask0[:, None, :, None] & mask0[:, None, None, :]
+            mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
+            mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
+
         for layer in self.layers:
-            x0, x1 = layer(x0, x1, rope, mask0=mask0, mask1=mask1)
-        x0, x1 = x0.permute(0, 3, 1, 2), x1.permute(0, 3, 1, 2)
+            x0, x1 = layer(
+                x0,
+                x1,
+                encoding0,
+                encoding1,
+                mask00=mask00,
+                mask11=mask11,
+                mask01=mask01,
+            )
         return x0, x1
 
     def forward(
         self,
         x0: Tensor,
         x1: Tensor,
-        rope,
+        encoding: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        if mask0 is None and mask1 is None:
-            x0_t, x1_t = self._forward(x0, x1, rope)
-        elif not self.enable_crop:
-            x0_t, x1_t = self._forward(x0, x1, rope, mask0, mask1)
-        else:
+        x0 = x0.permute(0, 2, 3, 1)
+        x1 = x1.permute(0, 2, 3, 1)
+        if mask0 is not None and mask1 is not None and self.enable_crop:
             x0_t, x1_t = torch.zeros_like(x0), torch.zeros_like(x1)
+            c = x0.shape[-1]
             for b in range(x0.shape[0]):
                 h0 = mask0[b].sum(dim=0).amax()
                 w0 = mask0[b].sum(dim=1).amax()
                 h1 = mask1[b].sum(dim=0).amax()
                 w1 = mask1[b].sum(dim=1).amax()
-                b_x0_t, b_x1_t = self._forward(
-                    x0[[b], :, :h0, :w0], x1[[b], :, :h1, :w1], rope
+                x0_t[[b], :h0, :w0], x1_t[[b], :h1, :w1] = self._forward(
+                    x0[[b], :h0, :w0],
+                    x1[[b], :h1, :w1],
+                    encoding[:, :h0, :w0, :c],
+                    encoding[:, :h1, :w1, :c],
                 )
-                x0_t[[b], :, :h0, :w0] = b_x0_t
-                x1_t[[b], :, :h1, :w1] = b_x1_t
+        else:
+            _, h0, w0, c = x0.shape
+            _, h1, w1, c = x1.shape
+            x0_t, x1_t = self._forward(
+                x0,
+                x1,
+                encoding[:, :h0, :w0, :c],
+                encoding[:, :h1, :w1, :c],
+                mask0=mask0,
+                mask1=mask1,
+            )
+        x0_t = x0_t.permute(0, 3, 1, 2)
+        x1_t = x1_t.permute(0, 3, 1, 2)
         return x0_t, x1_t

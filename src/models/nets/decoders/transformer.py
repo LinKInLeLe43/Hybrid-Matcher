@@ -250,16 +250,31 @@ class SelfBlock(Module):
         )
         self.norm2 = nn.LayerNorm(dim)
 
-    def forward(
-        self, x: Tensor, rope: Module, mask: Optional[Tensor] = None
-    ) -> Tensor:
-        fc = self.num_heads
-        q, k, v = self.qkv_proj(x).unflatten(-1, (-1, 3)).unbind(-1)
-        q, k = rope.rel_pe(q), rope.rel_pe(k)
+    def _rotate_half(self, x: Tensor) -> Tensor:
+        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        x = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
+        return x
 
-        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+    def _apply_rotary_encoding(self, x: Tensor, encoding: Tensor) -> Tensor:
+        x = x * encoding[0] + self._rotate_half(x) * encoding[1]
+        return x
+
+    def forward(
+        self, x: Tensor, encoding: Tensor, mask: Optional[Tensor] = None
+    ) -> Tensor:
+        q, k, v = (
+            self.qkv_proj(x.flatten(start_dim=1, end_dim=2))
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(1, 2)
+            .unbind(dim=-1)
+        )
+        encoding = (
+            encoding.flatten(start_dim=1, end_dim=2)
+            .unflatten(-1, (self.num_heads, self.head_dim))
+            .transpose(1, 2)
+        )
+        q = self._apply_rotary_encoding(q, encoding)
+        k = self._apply_rotary_encoding(k, encoding)
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = self.norm1(message)
@@ -342,18 +357,14 @@ class TransformerLayer(Module):
         self,
         x0: Tensor,
         x1: Tensor,
-        rope,
-        mask0: Optional[Tensor] = None,
-        mask1: Optional[Tensor] = None,
+        encoding0: Tensor,
+        encoding1: Tensor,
+        mask00: Optional[Tensor] = None,
+        mask11: Optional[Tensor] = None,
+        mask01: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        mask00 = mask11 = mask01 = None
-        if mask0 is not None and mask1 is not None:
-            mask00 = mask0[:, None, :, None] & mask0[:, None, None, :]
-            mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
-            mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
-
-        x0 = self.self_block(x0, rope, mask00)
-        x1 = self.self_block(x1, rope, mask11)
+        x0 = self.self_block(x0, encoding0, mask00)
+        x1 = self.self_block(x1, encoding1, mask11)
         x0, x1 = self.cross_block(x0, x1, mask01)
         return x0, x1
 

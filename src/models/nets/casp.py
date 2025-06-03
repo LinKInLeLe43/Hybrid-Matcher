@@ -1,18 +1,18 @@
 from typing import Any, Dict, Optional, Tuple
 
-import torch
-from torch import nn
+from torch import Tensor
+from torch.nn import Module
 
 from .encoders import Encoder
 
 
-class CasP(nn.Module):
+class CasP(Module):
     def __init__(
         self,
         encoder: str,
-        rope: nn.Module,
-        coarse_module: nn.Module,
-        coarse_matching: nn.Module,
+        rope: Module,
+        coarse_module: Module,
+        coarse_matching: Module,
         extra_scale: Optional[int] = None,
     ) -> None:
         super().__init__()
@@ -28,8 +28,8 @@ class CasP(nn.Module):
     def _scale_points(
         self,
         result: Dict[str, Any],
-        scale0: Optional[torch.Tensor] = None,
-        scale1: Optional[torch.Tensor] = None,
+        scale0: Optional[Tensor] = None,
+        scale1: Optional[Tensor] = None,
     ) -> None:
         b_idxes = result["idxes"][0]
 
@@ -46,12 +46,8 @@ class CasP(nn.Module):
     def forward(
         self,
         data: Dict[str, Any],
-        gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
-        extra_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
+        gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        extra_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = data.get("mask0_8x"), data.get("mask1_8x")
         mask0_16x, mask1_16x = data.get("mask0_16x"), data.get("mask1_16x")
@@ -59,8 +55,9 @@ class CasP(nn.Module):
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
+        encoding = self.rope.get_encoding()
         x0_16x_t, x1_16x_t = self.coarse_module(
-            x0_16x, x1_16x, rope=self.rope, mask0=mask0_16x, mask1=mask1_16x
+            x0_16x, x1_16x, encoding, mask0=mask0_16x, mask1=mask1_16x
         )
 
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
