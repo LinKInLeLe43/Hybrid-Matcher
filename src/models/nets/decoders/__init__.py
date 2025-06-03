@@ -27,8 +27,7 @@ class Decoder(Module):
         self,
         x0: Tensor,
         x1: Tensor,
-        encoding0: Tensor,
-        encoding1: Tensor,
+        encoding: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
@@ -42,13 +41,7 @@ class Decoder(Module):
 
         for layer in self.layers:
             x0, x1 = layer(
-                x0,
-                x1,
-                encoding0,
-                encoding1,
-                mask00=mask00,
-                mask11=mask11,
-                mask01=mask01,
+                x0, x1, encoding, mask00=mask00, mask11=mask11, mask01=mask01
             )
         return x0, x1
 
@@ -64,28 +57,17 @@ class Decoder(Module):
         x1 = x1.permute(0, 2, 3, 1)
         if mask0 is not None and mask1 is not None and self.enable_crop:
             x0_t, x1_t = torch.zeros_like(x0), torch.zeros_like(x1)
-            c = x0.shape[-1]
             for b in range(x0.shape[0]):
                 h0 = mask0[b].sum(dim=0).amax()
                 w0 = mask0[b].sum(dim=1).amax()
                 h1 = mask1[b].sum(dim=0).amax()
                 w1 = mask1[b].sum(dim=1).amax()
                 x0_t[[b], :h0, :w0], x1_t[[b], :h1, :w1] = self._forward(
-                    x0[[b], :h0, :w0],
-                    x1[[b], :h1, :w1],
-                    encoding[:, :h0, :w0, :c],
-                    encoding[:, :h1, :w1, :c],
+                    x0[[b], :h0, :w0], x1[[b], :h1, :w1], encoding
                 )
         else:
-            _, h0, w0, c = x0.shape
-            _, h1, w1, c = x1.shape
             x0_t, x1_t = self._forward(
-                x0,
-                x1,
-                encoding[:, :h0, :w0, :c],
-                encoding[:, :h1, :w1, :c],
-                mask0=mask0,
-                mask1=mask1,
+                x0, x1, encoding, mask0=mask0, mask1=mask1
             )
         x0_t = x0_t.permute(0, 3, 1, 2)
         x1_t = x1_t.permute(0, 3, 1, 2)

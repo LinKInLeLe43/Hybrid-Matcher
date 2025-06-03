@@ -12,6 +12,7 @@ net:
     coarse_module:
         _target_: src.models.nets.decoders.Decoder
         num_layers: 4
+        scale: 1
         dim: 256
         num_heads: 8
     coarse_matching:
