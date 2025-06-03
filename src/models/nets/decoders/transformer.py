@@ -285,8 +285,7 @@ class CrossBlock(Module):
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        self.q_proj = nn.Linear(dim, dim, bias=bias)
-        self.kv_proj = nn.Linear(dim, 2 * dim, bias=bias)
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
@@ -298,20 +297,39 @@ class CrossBlock(Module):
 
     def forward(
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
-    ) -> Tensor:
-        fc = self.num_heads
-        q = self.q_proj(x0)
-        k, v = self.kv_proj(x1).unflatten(-1, (-1, 2)).unbind(-1)
-
-        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
-        message = self.attention(q, k, v, mask=mask)
-        message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
-        message = self.norm1(message)
-        message = message.unflatten(1, (x0.shape[1], x0.shape[2]))
-        x0 = x0 + self.norm2(self.ffn(torch.cat([x0, message], dim=-1)))
-        return x0
+    ) -> Tuple[Tensor, Tensor]:
+        q0, k0, v0 = (
+            self.qkv_proj(x0.flatten(start_dim=1, end_dim=2))
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(1, 2)
+            .unbind(dim=-1)
+        )
+        q1, k1, v1 = (
+            self.qkv_proj(x1.flatten(start_dim=1, end_dim=2))
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(1, 2)
+            .unbind(dim=-1)
+        )
+        message0 = self.attention(q0, k1, v1, mask=mask)
+        message1 = self.attention(
+            q1,
+            k0,
+            v0,
+            mask=mask.transpose(-1, -2) if mask is not None else None,
+        )
+        message0 = self.out_proj(
+            message0.transpose(1, 2).flatten(start_dim=-2)
+        )
+        message1 = self.out_proj(
+            message1.transpose(1, 2).flatten(start_dim=-2)
+        )
+        message0 = self.norm1(message0)
+        message1 = self.norm1(message1)
+        message0 = message0.unflatten(1, (x0.shape[1], x0.shape[2]))
+        message1 = message1.unflatten(1, (x1.shape[1], x1.shape[2]))
+        x0 = x0 + self.norm2(self.ffn(torch.cat([x0, message0], dim=-1)))
+        x1 = x1 + self.norm2(self.ffn(torch.cat([x1, message1], dim=-1)))
+        return x0, x1
 
 
 class TransformerLayer(Module):
@@ -328,17 +346,15 @@ class TransformerLayer(Module):
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        mask00 = mask11 = mask01 = mask10 = None
+        mask00 = mask11 = mask01 = None
         if mask0 is not None and mask1 is not None:
             mask00 = mask0[:, None, :, None] & mask0[:, None, None, :]
             mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
             mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
-            mask10 = mask1[:, None, :, None] & mask0[:, None, None, :]
 
         x0 = self.self_block(x0, rope, mask00)
         x1 = self.self_block(x1, rope, mask11)
-        x0 = self.cross_block(x0, x1, mask01)
-        x1 = self.cross_block(x1, x0, mask10)
+        x0, x1 = self.cross_block(x0, x1, mask01)
         return x0, x1
 
 

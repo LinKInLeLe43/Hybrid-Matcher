@@ -6,21 +6,19 @@ from torch import Tensor, nn
 from torch.nn import Module
 
 from .transformer import (
-    AggregatedEncoder,
     ConvTransformerEncoder,
     FusedSelectiveTransformer,
-    TransformerEncoder,
     TransformerLayer,
 )
 
 
 class Decoder(Module):
     def __init__(
-        self, layer: Module, num_layers: int, enable_crop: bool = True
+        self, num_layers: int, enable_crop: bool = True, **kwargs
     ) -> None:
         super().__init__()
         self.enable_crop = enable_crop
-
+        layer = TransformerLayer(**kwargs)
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )

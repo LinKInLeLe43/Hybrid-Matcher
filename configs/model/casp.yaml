@@ -11,11 +11,9 @@ net:
         fp16: ${fp16}
     coarse_module:
         _target_: src.models.nets.decoders.Decoder
-        layer:
-            _target_: src.models.nets.decoders.TransformerLayer
-            dim: 256
-            num_heads: 8
         num_layers: 4
+        dim: 256
+        num_heads: 8
     coarse_matching:
         _target_: src.models.nets.CoarseMatching
         fused_selective_module:
