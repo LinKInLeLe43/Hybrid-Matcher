@@ -242,18 +242,17 @@ class SelfBlock(Module):
 
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
-        self.norm1 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
+            nn.LayerNorm(2 * dim),
             nn.GELU(),
             nn.Linear(2 * dim, dim, bias=bias),
         )
-        self.norm2 = nn.LayerNorm(dim)
 
     def _rotate_half(self, x: Tensor) -> Tensor:
         x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        x = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
-        return x
+        x_rotated = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
+        return x_rotated
 
     def _apply_rotary_encoding(self, x: Tensor, encoding: Tensor) -> Tensor:
         x = x * encoding[0] + self._rotate_half(x) * encoding[1]
@@ -277,9 +276,8 @@ class SelfBlock(Module):
         k = self._apply_rotary_encoding(k, encoding)
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
-        message = self.norm1(message)
         message = message.unflatten(1, (x.shape[1], x.shape[2]))
-        x = x + self.norm2(self.ffn(torch.cat([x, message], dim=-1)))
+        x = x + self.ffn(torch.cat([x, message], dim=-1))
         return x
 
 
@@ -302,13 +300,12 @@ class CrossBlock(Module):
 
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
-        self.norm1 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
+            nn.LayerNorm(2 * dim),
             nn.GELU(),
             nn.Linear(2 * dim, dim, bias=bias),
         )
-        self.norm2 = nn.LayerNorm(dim)
 
     def forward(
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
@@ -338,12 +335,10 @@ class CrossBlock(Module):
         message1 = self.out_proj(
             message1.transpose(1, 2).flatten(start_dim=-2)
         )
-        message0 = self.norm1(message0)
-        message1 = self.norm1(message1)
         message0 = message0.unflatten(1, (x0.shape[1], x0.shape[2]))
         message1 = message1.unflatten(1, (x1.shape[1], x1.shape[2]))
-        x0 = x0 + self.norm2(self.ffn(torch.cat([x0, message0], dim=-1)))
-        x1 = x1 + self.norm2(self.ffn(torch.cat([x1, message1], dim=-1)))
+        x0 = x0 + self.ffn(torch.cat([x0, message0], dim=-1))
+        x1 = x1 + self.ffn(torch.cat([x1, message1], dim=-1))
         return x0, x1
 
 
