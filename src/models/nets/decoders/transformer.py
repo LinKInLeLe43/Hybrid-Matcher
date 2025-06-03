@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from warnings import warn
 
 import einops
@@ -224,6 +224,166 @@ class AggregatedEncoder(Module):
 
         out += x
         return out
+
+
+class SelfBlock(Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        scale: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
+        bias: bool = False,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = scale
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
+
+        self.down_q = nn.Identity()
+        self.down_kv = nn.Identity()
+
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.k_proj = nn.Linear(dim, dim, bias=bias)
+        self.v_proj = nn.Linear(dim, dim, bias=bias)
+
+        self.out_proj = nn.Linear(dim, dim, bias=bias)
+        self.norm1 = nn.LayerNorm(dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(2 * dim, 2 * dim, bias=bias),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * dim, dim, bias=bias),
+        )
+        self.norm2 = nn.LayerNorm(dim)
+
+    def forward(
+        self,
+        x: Tensor,
+        rope: Optional[Module] = None,
+        mask: Optional[Tensor] = None,
+    ) -> Tensor:
+        s, fc = self.scale, self.num_heads
+        q = self.down_q(x).permute(0, 2, 3, 1)
+        kv = self.down_kv(x).permute(0, 2, 3, 1)
+        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
+
+        if rope is not None:
+            q, k = rope.rel_pe(q), rope.rel_pe(k)
+
+        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        message = self.attention(q, k, v, mask=mask)
+        message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
+        message = self.norm1(message)
+        message = message.transpose(1, 2).unflatten(
+            2, (x.shape[2], x.shape[3])
+        )
+        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
+
+        message = torch.cat([x, message], dim=1)
+        message = message.permute(0, 2, 3, 1)
+        message = self.ffn(message)
+        message = self.norm2(message)
+        x = x + message.permute(0, 3, 1, 2).contiguous()
+        return x
+
+
+class CrossBlock(Module):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        scale: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
+        bias: bool = False,
+    ) -> None:
+        super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = scale
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
+
+        self.down_q = nn.Identity()
+        self.down_kv = nn.Identity()
+
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.k_proj = nn.Linear(dim, dim, bias=bias)
+        self.v_proj = nn.Linear(dim, dim, bias=bias)
+
+        self.out_proj = nn.Linear(dim, dim, bias=bias)
+        self.norm1 = nn.LayerNorm(dim)
+
+        self.ffn = nn.Sequential(
+            nn.Linear(2 * dim, 2 * dim, bias=bias),
+            nn.ReLU(inplace=True),
+            nn.Linear(2 * dim, dim, bias=bias),
+        )
+        self.norm2 = nn.LayerNorm(dim)
+
+    def forward(
+        self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
+    ) -> Tensor:
+        s, fc = self.scale, self.num_heads
+        q = self.down_q(x0).permute(0, 2, 3, 1)
+        kv = self.down_kv(x1).permute(0, 2, 3, 1)
+        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
+
+        q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        v = einops.rearrange(v, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
+        message = self.attention(q, k, v, mask=mask)
+        message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
+        message = self.norm1(message)
+        message = message.transpose(1, 2).unflatten(
+            2, (x0.shape[2], x0.shape[3])
+        )
+        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
+
+        message = torch.cat([x0, message], dim=1)
+        message = message.permute(0, 2, 3, 1)
+        message = self.ffn(message)
+        message = self.norm2(message)
+        x0 = x0 + message.permute(0, 3, 1, 2).contiguous()
+        return x0
+
+
+class TransformerLayer(Module):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
+        self.self_block = SelfBlock(*args, **kwargs)
+        self.cross_block = CrossBlock(*args, **kwargs)
+
+    def forward(
+        self,
+        x0: Tensor,
+        x1: Tensor,
+        rope,
+        mask0: Optional[Tensor] = None,
+        mask1: Optional[Tensor] = None,
+    ) -> Tuple[Tensor, Tensor]:
+        mask00 = mask11 = mask01 = mask10 = None
+        if mask0 is not None and mask1 is not None:
+            mask00 = mask0[:, None, :, None] & mask0[:, None, None, :]
+            mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
+            mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
+            mask10 = mask1[:, None, :, None] & mask0[:, None, None, :]
+
+        x0 = self.self_block(x0, rope, mask00)
+        x1 = self.self_block(x1, rope, mask11)
+        x0 = self.cross_block(x0, x1, mask01)
+        x1 = self.cross_block(x1, x0, mask10)
+        return x0, x1
 
 
 class FusedSelectiveTransformer(Module):

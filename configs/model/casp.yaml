@@ -11,13 +11,12 @@ net:
         fp16: ${fp16}
     coarse_module:
         _target_: src.models.nets.decoders.Decoder
-        types:
-            ["self", "cross", "self", "cross", "self", "cross", "self", "cross"]
-        encoder:
-            _target_: src.models.nets.decoders.AggregatedEncoder
-            depth: 256
-            heads_count: 8
+        layer:
+            _target_: src.models.nets.decoders.TransformerLayer
+            dim: 256
+            num_heads: 8
             scale: 2
+        num_layers: 4
     coarse_matching:
         _target_: src.models.nets.CoarseMatching
         fused_selective_module:

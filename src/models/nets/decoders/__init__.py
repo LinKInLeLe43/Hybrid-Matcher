@@ -10,19 +10,20 @@ from .transformer import (
     ConvTransformerEncoder,
     FusedSelectiveTransformer,
     TransformerEncoder,
+    TransformerLayer,
 )
 
 
 class Decoder(Module):
     def __init__(
-        self, encoder: Module, types: List[str], enable_crop: bool = True
+        self, layer: Module, num_layers: int, enable_crop: bool = True
     ) -> None:
         super().__init__()
-        self.types = types
-        self.nchw = encoder.nchw
         self.enable_crop = enable_crop
 
-        self.layers = nn.ModuleList([deepcopy(encoder) for _ in types])
+        self.layers = nn.ModuleList(
+            [deepcopy(layer) for _ in range(num_layers)]
+        )
 
     def _forward(
         self,
@@ -32,22 +33,11 @@ class Decoder(Module):
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        mask00 = mask11 = mask01 = mask10 = None
         if mask0 is not None and mask1 is not None:
-            n = x0.shape[0]
-            mask00 = mask0.reshape(n, 1, -1, 1) & mask0.reshape(n, 1, 1, -1)
-            mask11 = mask1.reshape(n, 1, -1, 1) & mask1.reshape(n, 1, 1, -1)
-            mask01 = mask0.reshape(n, 1, -1, 1) & mask1.reshape(n, 1, 1, -1)
-            mask10 = mask01.transpose(-1, -2)
-        for layer, type in zip(self.layers, self.types):
-            if type == "self":
-                x0 = layer(x0, x0, rope, mask=mask00)
-                x1 = layer(x1, x1, rope, mask=mask11)
-            elif type == "cross":
-                x0 = layer(x0, x1, mask=mask01)
-                x1 = layer(x1, x0, mask=mask10)
-            else:
-                raise ValueError("")
+            mask0 = mask0.flatten(start_dim=1)
+            mask1 = mask1.flatten(start_dim=1)
+        for layer in self.layers:
+            x0, x1 = layer(x0, x1, rope, mask0=mask0, mask1=mask1)
         return x0, x1
 
     def forward(
