@@ -239,63 +239,70 @@ class TransformerLayer(Module):
         return x0, x1
 
 
-class ConvTransformerEncoder(Module):
-    def __init__(self, scale: int, depth: int, heads_count: int) -> None:
+class RegionSelectiveCrossBlock(Module):
+    def __init__(
+        self,
+        scale: int,
+        dim: int,
+        num_heads: int,
+        enable_sdpa: bool = False,
+        enable_flash: bool = False,
+        bias: bool = False,
+    ) -> None:
         super().__init__()
+        assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.scale = scale
-        self.heads_count = heads_count
-        self.attention = Attention()
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.attention = Attention(
+            enable_sdpa=enable_sdpa, enable_flash=enable_flash
+        )
 
-        self.q_proj = nn.Linear(depth, depth, bias=False)
-        self.k_proj = nn.Linear(depth, depth, bias=False)
-        self.v_proj = nn.Linear(depth, depth, bias=False)
-
-        self.merge = nn.Linear(depth, depth, bias=False)
-        self.norm1 = nn.LayerNorm(depth)
-
-        self.mlp = nn.Sequential(
-            nn.Conv2d(2 * depth, 2 * depth, 1, bias=False),
+        self.q_proj = nn.Linear(dim, dim, bias=bias)
+        self.kv_proj = nn.Linear(dim, 2 * dim, bias=bias)
+        self.out_proj = nn.Linear(dim, dim, bias=bias)
+        self.norm1 = nn.LayerNorm(dim)
+        self.ffn = nn.Sequential(
+            nn.Conv2d(2 * dim, 2 * dim, 1, bias=bias),
             nn.ReLU(inplace=True),
-            nn.Conv2d(2 * depth, depth, 3, padding=1, bias=False),
+            nn.Conv2d(2 * dim, dim, 3, padding=1, bias=bias),
         )
-        self.norm2 = nn.LayerNorm(depth)
+        self.norm2 = nn.LayerNorm(dim)
 
-    def forward(
-        self, x: Tensor, source: Tensor, size: Tuple[int, int]
-    ) -> Tensor:
-        sh, sw, fc = self.scale, self.scale, self.heads_count
+    def forward(self, x0: Tensor, x1: Tensor, size: Tuple[int, int]) -> Tensor:
+        sh, sw = self.scale, self.scale
         fh, fw = size[0] // sh, size[1] // sw
+        c = x0.shape[-1]
 
-        q = einops.rearrange(self.q_proj(x), "n l (fc sc) -> n fc l sc", fc=fc)
-        k = einops.rearrange(
-            self.k_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        q = (
+            self.q_proj(x0)
+            .unflatten(-1, (self.num_heads, self.head_dim))
+            .transpose(1, 2)
         )
-        v = einops.rearrange(
-            self.v_proj(source), "n s (fc sc) -> n fc s sc", fc=fc
+        k, v = (
+            self.kv_proj(x1)
+            .unflatten(-1, (self.num_heads, self.head_dim, 2))
+            .transpose(1, 2)
+            .unbind(dim=-1)
         )
-        out = self.attention(q, k, v)
-        out = einops.rearrange(out, " n fc l sc -> n l (fc sc)")
-
-        out = self.merge(out)
-        out = self.norm1(out)
-
-        out = torch.cat([x, out], dim=2)
-        out = einops.rearrange(
-            out,
-            "(n fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=fh,
-            sh=sh,
-            fw=fw,
-            sw=sw,
+        message = self.attention(q, k, v)
+        message = self.norm1(
+            self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         )
-        out = self.mlp(out)
-        out = einops.rearrange(
-            out, "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c", sh=sh, sw=sw
+        message = (
+            torch.cat([x0, message], dim=-1)
+            .reshape(-1, fh, fw, sh, sw, 2 * c)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(-1, 2 * c, size[0], size[1])
         )
-        out = self.norm2(out)
-
-        out += x
-        return out
+        message = (
+            self.ffn(message)
+            .reshape(-1, c, fh, sh, fw, sw)
+            .permute(0, 2, 4, 3, 5, 1)
+            .reshape(-1, sh * sw, c)
+        )
+        x0 = x0 + self.norm2(message)
+        return x0
 
 
 class FusedSelectiveTransformer(Module):

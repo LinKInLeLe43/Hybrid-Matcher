@@ -1,13 +1,13 @@
 from copy import deepcopy
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 
 import torch
 from torch import Tensor, nn
 from torch.nn import Module
 
 from .transformer import (
-    ConvTransformerEncoder,
     FusedSelectiveTransformer,
+    RegionSelectiveCrossBlock,
     TransformerLayer,
 )
 
@@ -38,7 +38,6 @@ class Decoder(Module):
             mask00 = mask0[:, None, :, None] & mask0[:, None, None, :]
             mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
             mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
-
         for layer in self.layers:
             x0, x1 = layer(
                 x0, x1, encoding, mask00=mask00, mask11=mask11, mask01=mask01
