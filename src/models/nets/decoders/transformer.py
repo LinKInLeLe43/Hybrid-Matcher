@@ -63,7 +63,6 @@ class TransformerEncoder(Module):
         super().__init__()
         self.heads_count = heads_count
         self.attention = Attention()
-        self.nchw = False
 
         self.q_proj = nn.Linear(depth, depth, bias=False)
         self.k_proj = nn.Linear(depth, depth, bias=False)
@@ -111,7 +110,6 @@ class ConvTransformerEncoder(Module):
         self.scale = scale
         self.heads_count = heads_count
         self.attention = Attention()
-        self.nchw = False
 
         self.q_proj = nn.Linear(depth, depth, bias=False)
         self.k_proj = nn.Linear(depth, depth, bias=False)
@@ -171,7 +169,6 @@ class AggregatedEncoder(Module):
         self.heads_count = heads_count
         self.scale = scale
         self.attention = Attention()
-        self.nchw = True
 
         self.down_q = nn.Identity()
         self.down_kv = nn.Identity()
@@ -231,7 +228,6 @@ class SelfBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        scale: int,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
@@ -240,41 +236,26 @@ class SelfBlock(Module):
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = scale
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        self.down_q = nn.Identity()
-        self.down_kv = nn.Identity()
-
-        self.q_proj = nn.Linear(dim, dim, bias=bias)
-        self.k_proj = nn.Linear(dim, dim, bias=bias)
-        self.v_proj = nn.Linear(dim, dim, bias=bias)
-
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
-
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Linear(2 * dim, dim, bias=bias),
         )
         self.norm2 = nn.LayerNorm(dim)
 
     def forward(
-        self,
-        x: Tensor,
-        rope: Optional[Module] = None,
-        mask: Optional[Tensor] = None,
+        self, x: Tensor, rope: Module, mask: Optional[Tensor] = None
     ) -> Tensor:
-        s, fc = self.scale, self.num_heads
-        q = self.down_q(x).permute(0, 2, 3, 1)
-        kv = self.down_kv(x).permute(0, 2, 3, 1)
-        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
-
-        if rope is not None:
-            q, k = rope.rel_pe(q), rope.rel_pe(k)
+        fc = self.num_heads
+        q, k, v = self.qkv_proj(x).unflatten(-1, (-1, 3)).unbind(-1)
+        q, k = rope.rel_pe(q), rope.rel_pe(k)
 
         q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
@@ -282,16 +263,8 @@ class SelfBlock(Module):
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = self.norm1(message)
-        message = message.transpose(1, 2).unflatten(
-            2, (x.shape[2], x.shape[3])
-        )
-        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
-
-        message = torch.cat([x, message], dim=1)
-        message = message.permute(0, 2, 3, 1)
-        message = self.ffn(message)
-        message = self.norm2(message)
-        x = x + message.permute(0, 3, 1, 2).contiguous()
+        message = message.unflatten(1, (x.shape[1], x.shape[2]))
+        x = x + self.norm2(self.ffn(torch.cat([x, message], dim=-1)))
         return x
 
 
@@ -300,7 +273,6 @@ class CrossBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        scale: int,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
@@ -309,24 +281,17 @@ class CrossBlock(Module):
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = scale
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        self.down_q = nn.Identity()
-        self.down_kv = nn.Identity()
-
         self.q_proj = nn.Linear(dim, dim, bias=bias)
-        self.k_proj = nn.Linear(dim, dim, bias=bias)
-        self.v_proj = nn.Linear(dim, dim, bias=bias)
-
+        self.kv_proj = nn.Linear(dim, 2 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
-
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Linear(2 * dim, dim, bias=bias),
         )
         self.norm2 = nn.LayerNorm(dim)
@@ -334,10 +299,9 @@ class CrossBlock(Module):
     def forward(
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        s, fc = self.scale, self.num_heads
-        q = self.down_q(x0).permute(0, 2, 3, 1)
-        kv = self.down_kv(x1).permute(0, 2, 3, 1)
-        q, k, v = self.q_proj(q), self.k_proj(kv), self.v_proj(kv)
+        fc = self.num_heads
+        q = self.q_proj(x0)
+        k, v = self.kv_proj(x1).unflatten(-1, (-1, 2)).unbind(-1)
 
         q = einops.rearrange(q, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
         k = einops.rearrange(k, "n h w (fc sc) -> n fc (h w) sc", fc=fc)
@@ -345,16 +309,8 @@ class CrossBlock(Module):
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = self.norm1(message)
-        message = message.transpose(1, 2).unflatten(
-            2, (x0.shape[2], x0.shape[3])
-        )
-        # out = F.interpolate(out, scale_factor=s, mode="bilinear")
-
-        message = torch.cat([x0, message], dim=1)
-        message = message.permute(0, 2, 3, 1)
-        message = self.ffn(message)
-        message = self.norm2(message)
-        x0 = x0 + message.permute(0, 3, 1, 2).contiguous()
+        message = message.unflatten(1, (x0.shape[1], x0.shape[2]))
+        x0 = x0 + self.norm2(self.ffn(torch.cat([x0, message], dim=-1)))
         return x0
 
 

@@ -15,7 +15,6 @@ net:
             _target_: src.models.nets.decoders.TransformerLayer
             dim: 256
             num_heads: 8
-            scale: 2
         num_layers: 4
     coarse_matching:
         _target_: src.models.nets.CoarseMatching

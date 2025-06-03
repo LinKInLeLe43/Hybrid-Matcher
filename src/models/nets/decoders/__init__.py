@@ -36,8 +36,10 @@ class Decoder(Module):
         if mask0 is not None and mask1 is not None:
             mask0 = mask0.flatten(start_dim=1)
             mask1 = mask1.flatten(start_dim=1)
+        x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         for layer in self.layers:
             x0, x1 = layer(x0, x1, rope, mask0=mask0, mask1=mask1)
+        x0, x1 = x0.permute(0, 3, 1, 2), x1.permute(0, 3, 1, 2)
         return x0, x1
 
     def forward(
