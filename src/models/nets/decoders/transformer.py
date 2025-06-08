@@ -2,12 +2,10 @@ from copy import deepcopy
 from typing import Optional, Sequence, Tuple
 from warnings import warn
 
-import einops
 import torch
+from kornia import create_meshgrid
 from torch import Tensor, nn
 from torch.nn import Module
-
-from .submodules import PyramidFuser
 
 try:
     # deprecated after torch 2.3.0, see https://github.com/pytorch/pytorch/releases/tag/v2.3.0
@@ -306,111 +304,72 @@ class RegionSelectiveCrossBlock(Module):
         return x0
 
 
-class FusedSelectiveTransformer(Module):
-    def __init__(self, dims: Sequence[int], num_layers: int, **kwargs) -> None:
+class RegionSelectiveTransformerLayer(Module):
+    def __init__(self, num_layers: int, **kwargs) -> None:
         super().__init__()
-        assert len(dims) == 2
-        self.fuser = PyramidFuser(dims, **kwargs)
-        layer = RegionSelectiveCrossBlock(dims[0], **kwargs)
+        layer = RegionSelectiveCrossBlock(**kwargs)
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )
         self.scale = kwargs["scale"]
+        delta_indices = create_meshgrid(
+            self.scale,
+            self.scale,
+            normalized_coordinates=False,
+            dtype=torch.long,
+        ).flatten(end_dim=-2)
+        self.register_buffer("delta_indices", delta_indices, persistent=False)
+
+    def map_indices(
+        self, x: Tensor, size: Sequence[int], fw: int
+    ) -> torch.Tensor:
+        row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
+        col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
+        out = row * fw * self.scale + col
+        out = (
+            out.unflatten(1, size)
+            .repeat_interleave(self.scale, dim=1)
+            .repeat_interleave(self.scale, dim=2)
+            .flatten(start_dim=1, end_dim=2)
+            .flatten(start_dim=-2)
+        )
+        return out
 
     def forward(
         self,
         x0: Tensor,
         x1: Tensor,
-        y0: Tensor,
-        y1: Tensor,
-        idxes0_to_1: Tensor,
-        idxes1_to_0: Tensor,
+        indices0_to_1: Tensor,
+        indices1_to_0: Tensor,
+        size0: Sequence[int],
+        size1: Sequence[int],
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        s = sh = sw = self.scale
-        n, _, h0, w0 = x0.shape
-        _, _, h1, w1 = x1.shape
+        n = indices0_to_1.shape[0]
+        sh = sw = self.scale
+        h0, w0 = size0
+        h1, w1 = size1
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
-        x0, x1 = self.fuser([x0, y0], [x1, y1])
-        x0 = einops.rearrange(
-            x0,
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
-            sh=sh,
-            sw=sw,
-        )
-        x1 = einops.rearrange(
-            x1,
-            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
-            sh=sh,
-            sw=sw,
-        )
-        idxes1_to_0 = idxes1_to_0.transpose(1, 2)
+        indices1_to_0 = indices1_to_0.transpose(1, 2)
         range = torch.arange(n, device=x0.device)[:, None, None]
-        _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _idxes1_to_0 = (idxes1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
+        _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
+        _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
             x0 = layer(
-                x0, x1[_idxes0_to_1].flatten(start_dim=1, end_dim=2), (h0, w0)
+                x0,
+                x1[_indices0_to_1].flatten(start_dim=1, end_dim=2),
+                (h0, w0),
             )
             x1 = layer(
-                x1, x0[_idxes1_to_0].flatten(start_dim=1, end_dim=2), (h1, w1)
+                x1,
+                x0[_indices1_to_0].flatten(start_dim=1, end_dim=2),
+                (h1, w1),
             )
+        selective0 = x0[_indices1_to_0].flatten(start_dim=1, end_dim=2)
+        selective1 = x1[_indices0_to_1].flatten(start_dim=1, end_dim=2)
 
-        out0 = einops.rearrange(
-            x0,
-            "(n fh fw) (sh sw) c -> n (fh sh fw sw) c",
-            fh=fh0,
-            sh=sh,
-            fw=fw0,
-            sw=sw,
-        )
-        out1 = einops.rearrange(
-            x1,
-            "(n fh fw) (sh sw) c -> n (fh sh fw sw) c",
-            fh=fh1,
-            sh=sh,
-            fw=fw1,
-            sw=sw,
-        )
-        selective0 = einops.repeat(
-            x0[_idxes1_to_0],
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh1,
-            sh=sh,
-            fw=fw1,
-            sw=sw,
-        )
-        selective1 = einops.repeat(
-            x1[_idxes0_to_1],
-            "(n fh fw) k ss c -> n (fh sh fw sw) (k ss) c",
-            fh=fh0,
-            sh=sh,
-            fw=fw0,
-            sw=sw,
-        )
-        idxes0_to_1 = (
-            w1 * s * (idxes0_to_1 // (w1 // s)) + s * (idxes0_to_1 % (w1 // s))
-        )[..., None]
-        idxes1_to_0 = (
-            w0 * s * (idxes1_to_0 // (w0 // s)) + s * (idxes1_to_0 % (w0 // s))
-        )[..., None]
-        idxes0_to_1 = idxes0_to_1 + idxes0_to_1.new_tensor([0, 1, w1, w1 + 1])
-        idxes1_to_0 = idxes1_to_0 + idxes1_to_0.new_tensor([0, 1, w0, w0 + 1])
-        idxes0_to_1 = einops.repeat(
-            idxes0_to_1,
-            "n (fh fw) k ss -> n (fh sh fw sw) (k ss)",
-            fh=fh0,
-            sh=sh,
-            fw=fw0,
-            sw=sw,
-        )
-        idxes1_to_0 = einops.repeat(
-            idxes1_to_0,
-            "n (fh fw) k ss -> n (k ss) (fh sh fw sw)",
-            fh=fh1,
-            sh=sh,
-            fw=fw1,
-            sw=sw,
-        )
-        return out0, out1, selective0, selective1, idxes0_to_1, idxes1_to_0
+        indices0_to_1 = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
+        indices1_to_0 = self.map_indices(indices1_to_0, (fh1, fw1), fw0)
+        indices1_to_0 = indices1_to_0.transpose(1, 2)
+        return x0, x1, selective0, selective1, indices0_to_1, indices1_to_0
