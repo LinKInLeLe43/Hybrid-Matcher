@@ -276,17 +276,17 @@ class RegionSelectiveCrossBlock(Module):
         q = (
             self.q_proj(x0)
             .unflatten(-1, (self.num_heads, self.head_dim))
-            .transpose(1, 2)
+            .transpose(2, 3)
         )
         k, v = (
             self.kv_proj(x1)
             .unflatten(-1, (self.num_heads, self.head_dim, 2))
-            .transpose(1, 2)
+            .transpose(2, 3)
             .unbind(dim=-1)
         )
         message = self.attention(q, k, v)
         message = self.norm1(
-            self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
+            self.out_proj(message.transpose(2, 3).flatten(start_dim=-2))
         )
         message = (
             torch.cat([x0, message], dim=-1)
@@ -298,7 +298,7 @@ class RegionSelectiveCrossBlock(Module):
             self.ffn(message)
             .reshape(-1, c, fh, sh, fw, sw)
             .permute(0, 2, 4, 3, 5, 1)
-            .reshape(-1, sh * sw, c)
+            .reshape(-1, fh * fw, sh * sw, c)
         )
         x0 = x0 + self.norm2(message)
         return x0
@@ -335,6 +335,19 @@ class RegionSelectiveTransformerLayer(Module):
         )
         return out
 
+    def _gather(self, x: Tensor, indices: Tensor) -> Tensor:
+        n, s, ss, c = x.shape
+        _, l, k = indices.shape
+        out = (
+            x.reshape(n, 1, s, ss * c)
+            .expand(-1, l, -1, -1)
+            .gather(2, indices[:, :, :, None].expand(-1, -1, -1, ss * c))
+        ).reshape(n, l, k * ss, c)
+        # out = x[
+        #     torch.arange(x.shape[0], device=x.device)[:, None, None], indices
+        # ].flatten(start_dim=2, end_dim=3)
+        return out
+
     def forward(
         self,
         x0: Tensor,
@@ -351,23 +364,15 @@ class RegionSelectiveTransformerLayer(Module):
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
         indices1_to_0 = indices1_to_0.transpose(1, 2)
-        range = torch.arange(n, device=x0.device)[:, None, None]
-        _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
+        # range = torch.arange(n, device=x0.device)[:, None, None]
+        # _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
+        # _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
-            x0 = layer(
-                x0,
-                x1[_indices0_to_1].flatten(start_dim=1, end_dim=2),
-                (h0, w0),
-            )
-            x1 = layer(
-                x1,
-                x0[_indices1_to_0].flatten(start_dim=1, end_dim=2),
-                (h1, w1),
-            )
-        selective0 = x0[_indices1_to_0].flatten(start_dim=1, end_dim=2)
-        selective1 = x1[_indices0_to_1].flatten(start_dim=1, end_dim=2)
+            x0 = layer(x0, self._gather(x1, indices0_to_1), (h0, w0))
+            x1 = layer(x1, self._gather(x0, indices1_to_0), (h1, w1))
+        selective0 = self._gather(x0, indices1_to_0)
+        selective1 = self._gather(x1, indices0_to_1)
 
         indices0_to_1 = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
         indices1_to_0 = self.map_indices(indices1_to_0, (fh1, fw1), fw0)

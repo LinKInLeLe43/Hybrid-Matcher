@@ -247,12 +247,12 @@ class CoarseMatching(nn.Module):
         x0 = (
             x0.reshape(n, c, fh0, sh, fw0, sw)
             .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n * fh0 * fw0, sh * sw, c)
+            .reshape(n, fh0 * fw0, sh * sw, c)
         )
         x1 = (
             x1.reshape(n, c, fh1, sh, fw1, sw)
             .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n * fh1 * fw1, sh * sw, c)
+            .reshape(n, fh1 * fw1, sh * sw, c)
         )
         (_x0, _x1, _selective0, _selective1, idxes0_to_1, idxes1_to_0) = (
             self.fused_selective_module(
@@ -295,12 +295,16 @@ class CoarseMatching(nn.Module):
             _x0, _x1 = _x0 / c**0.5, _x1 / c**0.5
             _selective0 = _selective0 / c**0.5
             _selective1 = _selective1 / c**0.5
-            similarity0_to_1 = torch.einsum("mlc,msc->mls", _x0, _selective1)
-            similarity1_to_0 = torch.einsum("msc,mlc->msl", _selective0, _x1)
+            similarity0_to_1 = torch.einsum(
+                "nmlc,nmsc->nmls", _x0, _selective1
+            )
+            similarity1_to_0 = torch.einsum(
+                "nmsc,nmlc->nmsl", _selective0, _x1
+            )
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature
-            _confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
-            _confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
+            _confidence0_to_1 = F.softmax(similarity0_to_1, dim=3)
+            _confidence1_to_0 = F.softmax(similarity1_to_0, dim=2)
             _confidence0_to_1 = (
                 _confidence0_to_1.reshape(n, fh0, fw0, sh, sw, -1)
                 .transpose(2, 3)
