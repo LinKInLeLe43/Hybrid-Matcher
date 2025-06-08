@@ -6,8 +6,8 @@ from torch import Tensor, nn
 from torch.nn import Module
 
 from .transformer import (
-    FusedSelectiveTransformer,
     RegionSelectiveCrossBlock,
+    RegionSelectiveTransformerLayer,
     TransformerLayer,
 )
 

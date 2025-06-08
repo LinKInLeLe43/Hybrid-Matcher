@@ -257,5 +257,9 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 loss["scalar"]["flow_loss"] = flow_loss.detach().cpu()
 
         loss["loss"] = total_loss
-        loss["scalar"]["total_loss"] = total_loss.detach().cpu()
+        loss["scalar"]["total_loss"] = (
+            total_loss.detach().cpu()
+            if isinstance(total_loss, torch.Tensor)
+            else torch.tensor(0.0)
+        )
         return loss
