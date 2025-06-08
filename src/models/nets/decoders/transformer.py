@@ -268,7 +268,13 @@ class RegionSelectiveCrossBlock(Module):
         )
         self.norm2 = nn.LayerNorm(dim)
 
-    def forward(self, x0: Tensor, x1: Tensor, size: Tuple[int, int]) -> Tensor:
+    def forward(
+        self,
+        x0: Tensor,
+        x1: Tensor,
+        indices0_to_1: Tensor,
+        size: Tuple[int, int],
+    ) -> Tensor:
         sh, sw = self.scale, self.scale
         fh, fw = size[0] // sh, size[1] // sw
         c = x0.shape[-1]
@@ -279,7 +285,7 @@ class RegionSelectiveCrossBlock(Module):
             .transpose(2, 3)
         )
         k, v = (
-            self.kv_proj(x1)
+            self.gather(self.kv_proj(x1), indices0_to_1)
             .unflatten(-1, (self.num_heads, self.head_dim, 2))
             .transpose(2, 3)
             .unbind(dim=-1)
@@ -369,8 +375,8 @@ class RegionSelectiveTransformerLayer(Module):
         # _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
-            x0 = layer(x0, self._gather(x1, indices0_to_1), (h0, w0))
-            x1 = layer(x1, self._gather(x0, indices1_to_0), (h1, w1))
+            x0 = layer(x0, x1, indices0_to_1, (h0, w0))
+            x1 = layer(x1, x0, indices1_to_0, (h1, w1))
         selective0 = self._gather(x0, indices1_to_0)
         selective1 = self._gather(x1, indices0_to_1)
 
