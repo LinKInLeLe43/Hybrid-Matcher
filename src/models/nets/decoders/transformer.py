@@ -1,12 +1,13 @@
 from copy import deepcopy
-from typing import Optional, Tuple
+from typing import Optional, Sequence, Tuple
 from warnings import warn
 
 import einops
 import torch
 from torch import Tensor, nn
 from torch.nn import Module
-from torch.nn import functional as F
+
+from .submodules import PyramidFuser
 
 try:
     # deprecated after torch 2.3.0, see https://github.com/pytorch/pytorch/releases/tag/v2.3.0
@@ -242,18 +243,18 @@ class TransformerLayer(Module):
 class RegionSelectiveCrossBlock(Module):
     def __init__(
         self,
-        scale: int,
         dim: int,
         num_heads: int,
+        scale: int,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.scale = scale
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
+        self.scale = scale
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
@@ -306,32 +307,15 @@ class RegionSelectiveCrossBlock(Module):
 
 
 class FusedSelectiveTransformer(Module):
-    def __init__(
-        self,
-        scale: int,
-        depths: Tuple[int, int],
-        encoder: Module,
-        layer_count: int,
-    ) -> None:
+    def __init__(self, dims: Sequence[int], num_layers: int, **kwargs) -> None:
         super().__init__()
-        self.scale = scale
-
-        self.x_up = nn.Conv2d(depths[0], depths[1], 1, bias=False)
-        self.y_up = nn.Conv2d(depths[1], depths[1], 1, bias=False)
-        self.down = nn.Sequential(
-            nn.Conv2d(depths[1], depths[1], 3, padding=1, bias=False),
-            nn.BatchNorm2d(depths[1]),
-            nn.LeakyReLU(inplace=True),
-            nn.Conv2d(depths[1], depths[0], 3, padding=1, bias=False),
-        )
-
+        assert len(dims) == 2
+        self.fuser = PyramidFuser(dims, **kwargs)
+        layer = RegionSelectiveCrossBlock(dims[0], **kwargs)
         self.layers = nn.ModuleList(
-            [deepcopy(encoder) for _ in range(layer_count)]
+            [deepcopy(layer) for _ in range(num_layers)]
         )
-
-        for p in self.parameters():
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+        self.scale = kwargs["scale"]
 
     def forward(
         self,
@@ -347,15 +331,19 @@ class FusedSelectiveTransformer(Module):
         _, _, h1, w1 = x1.shape
         fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
 
-        x, y = self.x_up(torch.cat([x0, x1])), self.y_up(torch.cat([y0, y1]))
-        x += F.interpolate(y, scale_factor=s, mode="bilinear")
-        x0, x1 = einops.rearrange(
-            self.down(x),
+        x0, x1 = self.fuser([x0, y0], [x1, y1])
+        x0 = einops.rearrange(
+            x0,
             "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
             sh=sh,
             sw=sw,
-        ).chunk(2)
-
+        )
+        x1 = einops.rearrange(
+            x1,
+            "n c (fh sh) (fw sw) -> (n fh fw) (sh sw) c",
+            sh=sh,
+            sw=sw,
+        )
         idxes1_to_0 = idxes1_to_0.transpose(1, 2)
         range = torch.arange(n, device=x0.device)[:, None, None]
         _idxes0_to_1 = (idxes0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)

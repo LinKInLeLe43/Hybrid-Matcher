@@ -98,9 +98,9 @@ class CoarseMatching(nn.Module):
         mask1: Optional[torch.Tensor],
         gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     ) -> Dict[str, Any]:
-        score, idxes0_to_1, idxes1_to_0 = score
         coarse_recall_mask = None
         if self.training and gt_idxes is not None:
+            score, idxes0_to_1, idxes1_to_0 = score
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1
             )
@@ -111,18 +111,15 @@ class CoarseMatching(nn.Module):
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
-            n, l0, l1 = score.shape
-            device = score.device
-            r = torch.arange(n, device=device)[:, None, None]
-            r0 = torch.arange(l0, device=device)[None, :, None]
-            r1 = torch.arange(l1, device=device)[None, None, :]
-
-            values0_to_1, sub_idxes0_to_1 = score[r, r0, idxes0_to_1].max(
-                dim=2
-            )
-            sub_idxes1_to_0 = score[r, idxes1_to_0, r1].argmax(dim=1)
-            idxes0_to_1 = idxes0_to_1[r[:, :, 0], r0[:, :, 0], sub_idxes0_to_1]
-            idxes1_to_0 = idxes1_to_0[r[:, 0, :], sub_idxes1_to_0, r1[:, 0, :]]
+            score0_to_1, score1_to_0, idxes0_to_1, idxes1_to_0 = score
+            values0_to_1, sub_idxes0_to_1 = score0_to_1.max(dim=2)
+            values1_to_0, sub_idxes1_to_0 = score1_to_0.max(dim=1)
+            idxes0_to_1 = idxes0_to_1.gather(2, sub_idxes0_to_1[:, :, None])[
+                :, :, 0
+            ]
+            idxes1_to_0 = idxes1_to_0.gather(1, sub_idxes1_to_0[:, None, :])[
+                :, 0, :
+            ]
             if gt_idxes is not None:
                 coarse_recall_mask = self.create_bidirectional_mask(
                     idxes0_to_1[:, :, None], idxes1_to_0[:, None, :]
@@ -133,10 +130,10 @@ class CoarseMatching(nn.Module):
             idxes1_to_0 = self._remove_border_for_eval(
                 idxes1_to_0, size1, mask1
             )
-            biprojection = torch.stack(
-                [idxes1_to_0[b, idx1] for b, idx1 in enumerate(idxes0_to_1)]
+            biprojection = idxes1_to_0.gather(1, idxes0_to_1)
+            mask = biprojection == torch.arange(
+                score0_to_1.shape[1], device=score0_to_1.device
             )
-            mask = biprojection == r0[:, :, 0]
             if self.border_removal > 0:
                 mask[:, 0] = False
             mask &= values0_to_1 > self.threshold
@@ -257,21 +254,31 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
+            score = confidence, idxes0_to_1, idxes1_to_0
+            result["coarse_cls_heatmap"] = confidence
         else:
             similarity0_to_1 = torch.einsum("nlc,nlkc->nlk", _x0, _selective1)
             similarity1_to_0 = torch.einsum("nlkc,nlc->nkl", _selective0, _x1)
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature
-            confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
-            confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
-            confidence0_to_1 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
-                2, idxes0_to_1, confidence0_to_1
+            _confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
+            _confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
+            confidence0_to_1 = _confidence0_to_1 * (
+                x1.new_zeros(n, h0 * w0, h1 * w1)
+                .scatter_(1, idxes1_to_0, _confidence1_to_0)
+                .gather(2, idxes0_to_1)
             )
-            confidence1_to_0 = x0.new_zeros((n, h0 * w0, h1 * w1)).scatter_(
-                1, idxes1_to_0, confidence1_to_0
+            confidence1_to_0 = _confidence1_to_0 * (
+                x0.new_zeros(n, h0 * w0, h1 * w1)
+                .scatter_(2, idxes0_to_1, _confidence0_to_1)
+                .gather(1, idxes1_to_0)
             )
-            confidence = confidence0_to_1 * confidence1_to_0
-        score = confidence, idxes0_to_1, idxes1_to_0
+            score = (
+                confidence0_to_1,
+                confidence1_to_0,
+                idxes0_to_1,
+                idxes1_to_0,
+            )
 
         result.update(
             self._create_coarse_matching(
@@ -282,7 +289,6 @@ class CoarseMatching(nn.Module):
             x0.transpose(1, 2).unflatten(2, (h0, w0)).contiguous(),
             x1.transpose(1, 2).unflatten(2, (h1, w1)).contiguous(),
         )
-        result["coarse_cls_heatmap"] = confidence
         result["extra_idxes0_to_1"] = einops.repeat(
             result["extra_idxes0_to_1"],
             "n (fh fw) k -> n (fh sh fw sw) k",

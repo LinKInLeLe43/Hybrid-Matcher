@@ -19,16 +19,12 @@ net:
         _target_: src.models.nets.CoarseMatching
         fused_selective_module:
             _target_: src.models.nets.decoders.FusedSelectiveTransformer
-            scale: 2
-            depths:
+            dims:
                 - 128
                 - 256
-            encoder:
-                _target_: src.models.nets.decoders.RegionSelectiveCrossBlock
-                scale: ${model.net.coarse_matching.fused_selective_module.scale}
-                dim: ${model.net.coarse_matching.fused_selective_module.depths.0}
-                num_heads: 8
-            layer_count: 2
+            num_layers: 2
+            num_heads: 8
+            scale: 2
         temperature: 0.1
     extra_scale: 16
 
