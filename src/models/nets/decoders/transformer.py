@@ -238,6 +238,20 @@ class TransformerLayer(Module):
         return x0, x1
 
 
+def _gather(x: Tensor, indices: Tensor) -> Tensor:
+    n, s, ss, c = x.shape
+    _, l, k = indices.shape
+    out = (
+        x.reshape(n, 1, s, ss * c)
+        .expand(-1, l, -1, -1)
+        .gather(2, indices[:, :, :, None].expand(-1, -1, -1, ss * c))
+    ).reshape(n, l, k * ss, c)
+    # out = x[
+    #     torch.arange(x.shape[0], device=x.device)[:, None, None], indices
+    # ].flatten(start_dim=2, end_dim=3)
+    return out
+
+
 class RegionSelectiveCrossBlock(Module):
     def __init__(
         self,
@@ -257,8 +271,7 @@ class RegionSelectiveCrossBlock(Module):
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        self.q_proj = nn.Linear(dim, dim, bias=bias)
-        self.kv_proj = nn.Linear(dim, 2 * dim, bias=bias)
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
@@ -273,41 +286,66 @@ class RegionSelectiveCrossBlock(Module):
         x0: Tensor,
         x1: Tensor,
         indices0_to_1: Tensor,
-        size: Tuple[int, int],
-    ) -> Tensor:
+        indices1_to_0: Tensor,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int],
+    ) -> Tuple[Tensor, Tensor]:
         sh, sw = self.scale, self.scale
-        fh, fw = size[0] // sh, size[1] // sw
+        fh0, fw0 = size0[0] // sh, size0[1] // sw
+        fh1, fw1 = size1[0] // sh, size1[1] // sw
         c = x0.shape[-1]
 
-        q = (
-            self.q_proj(x0)
-            .unflatten(-1, (self.num_heads, self.head_dim))
-            .transpose(2, 3)
-        )
-        k, v = (
-            self.gather(self.kv_proj(x1), indices0_to_1)
-            .unflatten(-1, (self.num_heads, self.head_dim, 2))
+        q0, k0, v0 = (
+            self.qkv_proj(x0)
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
             .transpose(2, 3)
             .unbind(dim=-1)
         )
-        message = self.attention(q, k, v)
-        message = self.norm1(
-            self.out_proj(message.transpose(2, 3).flatten(start_dim=-2))
+        q1, k1, v1 = (
+            self.qkv_proj(x1)
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(2, 3)
+            .unbind(dim=-1)
         )
-        message = (
-            torch.cat([x0, message], dim=-1)
-            .reshape(-1, fh, fw, sh, sw, 2 * c)
+        message0 = self.attention(
+            q0, _gather(k1, indices0_to_1), _gather(v1, indices0_to_1)
+        )
+        message1 = self.attention(
+            q1, _gather(k0, indices1_to_0), _gather(v0, indices1_to_0)
+        )
+        message0 = self.norm1(
+            self.out_proj(message0.transpose(2, 3).flatten(start_dim=-2))
+        )
+        message1 = self.norm1(
+            self.out_proj(message1.transpose(2, 3).flatten(start_dim=-2))
+        )
+        message0 = (
+            torch.cat([x0, message0], dim=-1)
+            .reshape(-1, fh0, fw0, sh, sw, 2 * c)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(-1, 2 * c, size[0], size[1])
+            .reshape(-1, 2 * c, size0[0], size0[1])
         )
-        message = (
-            self.ffn(message)
-            .reshape(-1, c, fh, sh, fw, sw)
+        message1 = (
+            torch.cat([x1, message1], dim=-1)
+            .reshape(-1, fh1, fw1, sh, sw, 2 * c)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(-1, 2 * c, size1[0], size1[1])
+        )
+        message0 = (
+            self.ffn(message0)
+            .reshape(-1, c, fh0, sh, fw0, sw)
             .permute(0, 2, 4, 3, 5, 1)
-            .reshape(-1, fh * fw, sh * sw, c)
+            .reshape(-1, fh0 * fw0, sh * sw, c)
         )
-        x0 = x0 + self.norm2(message)
-        return x0
+        message1 = (
+            self.ffn(message1)
+            .reshape(-1, c, fh1, sh, fw1, sw)
+            .permute(0, 2, 4, 3, 5, 1)
+            .reshape(-1, fh1 * fw1, sh * sw, c)
+        )
+        x0 = x0 + self.norm2(message0)
+        x1 = x1 + self.norm2(message1)
+        return x0, x1
 
 
 class RegionSelectiveTransformerLayer(Module):
@@ -341,19 +379,6 @@ class RegionSelectiveTransformerLayer(Module):
         )
         return out
 
-    def _gather(self, x: Tensor, indices: Tensor) -> Tensor:
-        n, s, ss, c = x.shape
-        _, l, k = indices.shape
-        out = (
-            x.reshape(n, 1, s, ss * c)
-            .expand(-1, l, -1, -1)
-            .gather(2, indices[:, :, :, None].expand(-1, -1, -1, ss * c))
-        ).reshape(n, l, k * ss, c)
-        # out = x[
-        #     torch.arange(x.shape[0], device=x.device)[:, None, None], indices
-        # ].flatten(start_dim=2, end_dim=3)
-        return out
-
     def forward(
         self,
         x0: Tensor,
@@ -375,10 +400,11 @@ class RegionSelectiveTransformerLayer(Module):
         # _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
-            x0 = layer(x0, x1, indices0_to_1, (h0, w0))
-            x1 = layer(x1, x0, indices1_to_0, (h1, w1))
-        selective0 = self._gather(x0, indices1_to_0)
-        selective1 = self._gather(x1, indices0_to_1)
+            x0, x1 = layer(
+                x0, x1, indices0_to_1, indices1_to_0, (h0, w0), (h1, w1)
+            )
+        selective0 = _gather(x0, indices1_to_0)
+        selective1 = _gather(x1, indices0_to_1)
 
         indices0_to_1 = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
         indices1_to_0 = self.map_indices(indices1_to_0, (fh1, fw1), fw0)
