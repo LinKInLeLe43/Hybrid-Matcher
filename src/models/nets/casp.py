@@ -55,9 +55,10 @@ class CasP(Module):
         x0_list, x1_list, prompt0, prompt1 = self.encoder(
             data["image0"], data["image1"]
         )
-
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
+
         x0_16x_t, x1_16x_t = self.coarse_module(
             x0_16x,
             x1_16x,
@@ -67,9 +68,7 @@ class CasP(Module):
             mask0=mask0_16x,
             mask1=mask1_16x,
         )
-
-        x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
-        result = self.coarse_matching(
+        result1 = self.coarse_matching(
             x0_8x,
             x1_8x,
             x0_16x_t,
@@ -81,6 +80,33 @@ class CasP(Module):
             x_gt_idxes=gt_idxes,
             y_gt_idxes=extra_gt_idxes,
         )
+
+        x0_16x_t, x1_16x_t = self.coarse_module(
+            x0_16x,
+            x1_16x,
+            encoding,
+            mask0=mask0_16x,
+            mask1=mask1_16x,
+        )
+        result2 = self.coarse_matching(
+            x0_8x,
+            x1_8x,
+            x0_16x_t,
+            x1_16x_t,
+            x0_mask=mask0_8x,
+            x1_mask=mask1_8x,
+            y0_mask=mask0_16x,
+            y1_mask=mask1_16x,
+            x_gt_idxes=gt_idxes,
+            y_gt_idxes=extra_gt_idxes,
+        )
+
+        result = result2
+        if self.training:
+            result["coarse_cls_heatmap1"] = result1.pop("coarse_cls_heatmap")
+            result["extra_coarse_cls_heatmap1"] = result1.pop("extra_coarse_cls_heatmap")
+            result["coarse_cls_heatmap2"] = result2.pop("coarse_cls_heatmap")
+            result["extra_coarse_cls_heatmap2"] = result2.pop("extra_coarse_cls_heatmap")
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
