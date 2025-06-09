@@ -14,6 +14,7 @@ net:
         num_layers: 4
         scale: 1
         dim: 256
+        prompt_dim: 384
         num_heads: 8
     coarse_matching:
         _target_: src.models.nets.CoarseMatching

@@ -52,12 +52,20 @@ class CasP(Module):
         mask0_8x, mask1_8x = data.get("mask0_8x"), data.get("mask1_8x")
         mask0_16x, mask1_16x = data.get("mask0_16x"), data.get("mask1_16x")
 
-        x0_list, x1_list = self.encoder(data["image0"], data["image1"])
+        x0_list, x1_list, prompt0, prompt1 = self.encoder(
+            data["image0"], data["image1"]
+        )
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
         x0_16x_t, x1_16x_t = self.coarse_module(
-            x0_16x, x1_16x, encoding, mask0=mask0_16x, mask1=mask1_16x
+            x0_16x,
+            x1_16x,
+            encoding,
+            prompt0=prompt0,
+            prompt1=prompt1,
+            mask0=mask0_16x,
+            mask1=mask1_16x,
         )
 
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)

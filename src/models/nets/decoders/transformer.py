@@ -62,14 +62,18 @@ class SelfBlock(Module):
         self,
         scale: int,
         dim: int,
+        prompt_dim: int,
         num_heads: int,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.scale = scale
+        self.dim = dim
+        self.prompt_dim = prompt_dim
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.attention = Attention(
@@ -84,12 +88,18 @@ class SelfBlock(Module):
                 dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
-        self.out_proj = nn.Linear(dim, dim, bias=bias)
+        self.prompt_proj = nn.Linear(prompt_dim, prompt_dim, bias=bias)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
             nn.LayerNorm(2 * dim),
             nn.GELU(),
             nn.Linear(2 * dim, dim, bias=bias),
+        )
+        self.prompt_ffn = nn.Sequential(
+            nn.Linear(dim + prompt_dim, dim + prompt_dim, bias=bias),
+            nn.LayerNorm(dim + prompt_dim),
+            nn.GELU(),
+            nn.Linear(dim + prompt_dim, dim, bias=bias),
         )
 
     def _rotate_half(self, x: Tensor) -> Tensor:
@@ -102,18 +112,22 @@ class SelfBlock(Module):
         return x
 
     def forward(
-        self, x: Tensor, encoding: Tensor, mask: Optional[Tensor] = None
+        self,
+        x: Tensor,
+        encoding: Tensor,
+        prompt: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
     ) -> Tensor:
         x_ = x
-        if self.scale != 1:
-            x_ = self.down_proj(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        # if self.scale != 1:
+        #     x_ = self.down_proj(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         q, k, v = (
             self.qkv_proj(x_.flatten(start_dim=1, end_dim=2))
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        _, h, w, c = x_.shape
+        n, h, w, c = x_.shape
         encoding = (
             encoding[:, :h, :w, :c]
             .flatten(start_dim=1, end_dim=2)
@@ -122,14 +136,27 @@ class SelfBlock(Module):
         )
         q = self._apply_rotary_encoding(q, encoding)
         k = self._apply_rotary_encoding(k, encoding)
+        if prompt is not None:
+            prompt = (
+                self.prompt_proj(prompt)
+                .flatten(start_dim=1, end_dim=2)
+                .unflatten(-1, (self.num_heads, -1))
+                .transpose(1, 2)
+            )
+            v = torch.cat([v, prompt], dim=-1)
         message = self.attention(q, k, v, mask=mask)
-        message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
-        message = message.unflatten(1, (h, w))
-        if self.scale != 1:
-            message = self.up_proj(
-                message.permute(0, 3, 1, 2).contiguous()
-            ).permute(0, 2, 3, 1)
+        message = message.permute(0, 2, 3, 1).reshape(n, h, w, -1)
+        # if self.scale != 1:
+        #     message = self.up_proj(
+        #         message.permute(0, 3, 1, 2).contiguous()
+        #     ).permute(0, 2, 3, 1)
+        if prompt is not None:
+            message, prompt = message.split(
+                (self.dim, self.prompt_dim), dim=-1
+            )
         x = x + self.ffn(torch.cat([x, message], dim=-1))
+        if prompt is not None:
+            x = x + self.prompt_ffn(torch.cat([x, prompt], dim=-1))
         return x
 
 
@@ -142,6 +169,7 @@ class CrossBlock(Module):
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
+        **kwargs,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
@@ -228,13 +256,15 @@ class TransformerLayer(Module):
         x0: Tensor,
         x1: Tensor,
         encoding: Tensor,
+        prompt0: Optional[Tensor] = None,
+        prompt1: Optional[Tensor] = None,
         mask00: Optional[Tensor] = None,
         mask11: Optional[Tensor] = None,
         mask01: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        x0 = self.self_block(x0, encoding, mask00)
-        x1 = self.self_block(x1, encoding, mask11)
-        x0, x1 = self.cross_block(x0, x1, mask01)
+        x0 = self.self_block(x0, encoding, prompt=prompt0, mask=mask00)
+        x1 = self.self_block(x1, encoding, prompt=prompt1, mask=mask11)
+        x0, x1 = self.cross_block(x0, x1, mask=mask01)
         return x0, x1
 
 

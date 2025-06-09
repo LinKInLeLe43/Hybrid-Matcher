@@ -28,6 +28,8 @@ class Decoder(Module):
         x0: Tensor,
         x1: Tensor,
         encoding: Tensor,
+        prompt0: Optional[Tensor] = None,
+        prompt1: Optional[Tensor] = None,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
@@ -40,7 +42,14 @@ class Decoder(Module):
             mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
         for layer in self.layers:
             x0, x1 = layer(
-                x0, x1, encoding, mask00=mask00, mask11=mask11, mask01=mask01
+                x0,
+                x1,
+                encoding,
+                prompt0=prompt0,
+                prompt1=prompt1,
+                mask00=mask00,
+                mask11=mask11,
+                mask01=mask01,
             )
         return x0, x1
 
@@ -49,6 +58,8 @@ class Decoder(Module):
         x0: Tensor,
         x1: Tensor,
         encoding: Tensor,
+        prompt0: Optional[Tensor] = None,
+        prompt1: Optional[Tensor] = None,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
@@ -62,11 +73,25 @@ class Decoder(Module):
                 h1 = mask1[b].sum(dim=0).amax()
                 w1 = mask1[b].sum(dim=1).amax()
                 x0_t[[b], :h0, :w0], x1_t[[b], :h1, :w1] = self._forward(
-                    x0[[b], :h0, :w0], x1[[b], :h1, :w1], encoding
+                    x0[[b], :h0, :w0],
+                    x1[[b], :h1, :w1],
+                    encoding,
+                    prompt0=(
+                        prompt0[[b], :h0, :w0] if prompt0 is not None else None
+                    ),
+                    prompt1=(
+                        prompt1[[b], :h1, :w1] if prompt1 is not None else None
+                    ),
                 )
         else:
             x0_t, x1_t = self._forward(
-                x0, x1, encoding, mask0=mask0, mask1=mask1
+                x0,
+                x1,
+                encoding,
+                prompt0=prompt0,
+                prompt1=prompt1,
+                mask0=mask0,
+                mask1=mask1,
             )
         x0_t = x0_t.permute(0, 3, 1, 2)
         x1_t = x1_t.permute(0, 3, 1, 2)
