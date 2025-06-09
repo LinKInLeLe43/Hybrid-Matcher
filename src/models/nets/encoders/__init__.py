@@ -28,12 +28,29 @@ class Encoder(Module):
         else:
             raise ValueError("")
 
+        self.register_buffer(
+            "mean",
+            torch.tensor([0.485, 0.456, 0.406])[:, None, None],
+            persistent=False,
+        )
+        self.register_buffer(
+            "std",
+            torch.tensor([0.229, 0.224, 0.225])[:, None, None],
+            persistent=False,
+        )
+
+    def _preprocess(self, x: Tensor) -> Tensor:
+        x = (x - self.mean) / self.std
+        return x
+
     def forward(
-        self, image0: Tensor, image1: Tensor
+        self, x0: Tensor, x1: Tensor
     ) -> Tuple[List[Tensor], List[Tensor]]:
-        if image0.shape == image1.shape:
-            x_list = self.backbone(torch.cat([image0, image1]))
+        x0 = self._preprocess(x0)
+        x1 = self._preprocess(x1)
+        if x0.shape == x1.shape:
+            x_list = self.backbone(torch.cat([x0, x1]))
             x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
         else:
-            x0_list, x1_list = self.backbone(image0), self.backbone(image1)
+            x0_list, x1_list = self.backbone(x0), self.backbone(x1)
         return x0_list, x1_list
