@@ -84,7 +84,6 @@ class SelfBlock(Module):
                 dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
-        self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
             nn.LayerNorm(2 * dim),
@@ -113,7 +112,7 @@ class SelfBlock(Module):
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        _, h, w, c = x_.shape
+        n, h, w, c = x_.shape
         encoding = (
             encoding[:, :h, :w, :c]
             .flatten(start_dim=1, end_dim=2)
@@ -123,8 +122,7 @@ class SelfBlock(Module):
         q = self._apply_rotary_encoding(q, encoding)
         k = self._apply_rotary_encoding(k, encoding)
         message = self.attention(q, k, v, mask=mask)
-        message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
-        message = message.unflatten(1, (h, w))
+        message = message.transpose(1, 2).reshape(n, h, w, c)
         if self.scale != 1:
             message = self.up_proj(
                 message.permute(0, 3, 1, 2).contiguous()
@@ -160,7 +158,6 @@ class CrossBlock(Module):
                 dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
-        self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
             nn.LayerNorm(2 * dim),
@@ -188,8 +185,8 @@ class CrossBlock(Module):
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        _, h0, w0, c = x0_.shape
-        _, h1, w1, c = x1_.shape
+        n, h0, w0, c = x0_.shape
+        n, h1, w1, c = x1_.shape
         message0 = self.attention(q0, k1, v1, mask=mask)
         message1 = self.attention(
             q1,
@@ -197,14 +194,8 @@ class CrossBlock(Module):
             v0,
             mask=mask.transpose(-1, -2) if mask is not None else None,
         )
-        message0 = self.out_proj(
-            message0.transpose(1, 2).flatten(start_dim=-2)
-        )
-        message1 = self.out_proj(
-            message1.transpose(1, 2).flatten(start_dim=-2)
-        )
-        message0 = message0.unflatten(1, (h0, w0))
-        message1 = message1.unflatten(1, (h1, w1))
+        message0 = message0.transpose(1, 2).reshape(n, h0, w0, c)
+        message1 = message1.transpose(1, 2).reshape(n, h1, w1, c)
         if self.scale != 1:
             message0 = self.up_proj(
                 message0.permute(0, 3, 1, 2).contiguous()
