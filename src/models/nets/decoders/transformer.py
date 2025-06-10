@@ -3,7 +3,6 @@ from typing import Optional, Sequence, Tuple
 from warnings import warn
 
 import torch
-from kornia import create_meshgrid
 from torch import Tensor, nn
 from torch.nn import Module
 
@@ -325,28 +324,6 @@ class RegionSelectiveTransformerLayer(Module):
             [deepcopy(layer) for _ in range(num_layers)]
         )
         self.scale = kwargs["scale"]
-        delta_indices = create_meshgrid(
-            self.scale,
-            self.scale,
-            normalized_coordinates=False,
-            dtype=torch.long,
-        ).flatten(end_dim=-2)
-        self.register_buffer("delta_indices", delta_indices, persistent=False)
-
-    def map_indices(
-        self, x: Tensor, size: Sequence[int], fw: int
-    ) -> torch.Tensor:
-        row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
-        col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
-        out = row * fw * self.scale + col
-        out = (
-            out.unflatten(1, size)
-            .repeat_interleave(self.scale, dim=1)
-            .repeat_interleave(self.scale, dim=2)
-            .flatten(start_dim=1, end_dim=2)
-            .flatten(start_dim=-2)
-        )
-        return out
 
     def forward(
         self,
@@ -356,25 +333,11 @@ class RegionSelectiveTransformerLayer(Module):
         indices1_to_0: Tensor,
         size0: Sequence[int],
         size1: Sequence[int],
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
-        n = indices0_to_1.shape[0]
-        sh = sw = self.scale
+    ) -> Tuple[Tensor, Tensor]:
         h0, w0 = size0
         h1, w1 = size1
-        fh0, fw0, fh1, fw1 = h0 // sh, w0 // sw, h1 // sh, w1 // sw
-
-        indices1_to_0 = indices1_to_0.transpose(1, 2)
-        # range = torch.arange(n, device=x0.device)[:, None, None]
-        # _indices0_to_1 = (indices0_to_1 + fh1 * fw1 * range).flatten(end_dim=1)
-        # _indices1_to_0 = (indices1_to_0 + fh0 * fw0 * range).flatten(end_dim=1)
 
         for layer in self.layers:
             x0 = layer(x0, x1, indices0_to_1, (h0, w0))
             x1 = layer(x1, x0, indices1_to_0, (h1, w1))
-        selective0 = _gather(x0, indices1_to_0)
-        selective1 = _gather(x1, indices0_to_1)
-
-        indices0_to_1 = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
-        indices1_to_0 = self.map_indices(indices1_to_0, (fh1, fw1), fw0)
-        indices1_to_0 = indices1_to_0.transpose(1, 2)
-        return x0, x1, selective0, selective1, indices0_to_1, indices1_to_0
+        return x0, x1

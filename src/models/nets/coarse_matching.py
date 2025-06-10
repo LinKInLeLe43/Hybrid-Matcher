@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import einops
 import torch
+from kornia import create_meshgrid
 from torch import nn
 from torch.nn import functional as F
 
@@ -27,6 +28,14 @@ class CoarseMatching(nn.Module):
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
+
+        delta_indices = create_meshgrid(
+            self.scale,
+            self.scale,
+            normalized_coordinates=False,
+            dtype=torch.long,
+        ).flatten(end_dim=-2)
+        self.register_buffer("delta_indices", delta_indices, persistent=False)
 
     def _remove_border_for_train(
         self,
@@ -184,6 +193,21 @@ class CoarseMatching(nn.Module):
         mask.eq_(1.0)
         return mask
 
+    def map_indices(
+        self, x: torch.Tensor, size: Sequence[int], fw: int
+    ) -> torch.Tensor:
+        row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
+        col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
+        out = row * fw * self.scale + col
+        out = (
+            out.unflatten(1, size)
+            .repeat_interleave(self.scale, dim=1)
+            .repeat_interleave(self.scale, dim=2)
+            .flatten(start_dim=1, end_dim=2)
+            .flatten(start_dim=-2)
+        )
+        return out
+
     def forward(
         self,
         x0: torch.Tensor,
@@ -254,11 +278,13 @@ class CoarseMatching(nn.Module):
             .permute(0, 2, 4, 3, 5, 1)
             .reshape(n, fh1 * fw1, sh * sw, c)
         )
-        (_x0, _x1, _selective0, _selective1, idxes0_to_1, idxes1_to_0) = (
-            self.fused_selective_module(
-                x0, x1, idxes0_to_1, idxes1_to_0, (h0, w0), (h1, w1)
-            )
+        idxes1_to_0 = idxes1_to_0.transpose(1, 2)
+        _x0, _x1 = self.fused_selective_module(
+            x0, x1, idxes0_to_1, idxes1_to_0, (h0, w0), (h1, w1)
         )
+        _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
+        _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
+        _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
         x0 = (
             _x0.reshape(n, fh0, fw0, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
@@ -289,12 +315,18 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, idxes0_to_1, idxes1_to_0
+            score = confidence, _idxes0_to_1, _idxes1_to_0
             result["coarse_cls_heatmap"] = confidence
         else:
             _x0, _x1 = _x0 / c**0.5, _x1 / c**0.5
-            _selective0 = _selective0 / c**0.5
-            _selective1 = _selective1 / c**0.5
+
+            _selective0 = _x0[
+                torch.arange(n, device=_x0.device)[:, None, None], idxes1_to_0
+            ].flatten(start_dim=2, end_dim=3)
+            _selective1 = _x1[
+                torch.arange(n, device=_x1.device)[:, None, None], idxes0_to_1
+            ].flatten(start_dim=2, end_dim=3)
+
             similarity0_to_1 = torch.einsum(
                 "nmlc,nmsc->nmls", _x0, _selective1
             )
@@ -317,19 +349,19 @@ class CoarseMatching(nn.Module):
             )
             confidence0_to_1 = _confidence0_to_1 * (
                 x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, idxes1_to_0, _confidence1_to_0)
-                .gather(2, idxes0_to_1)
+                .scatter_(1, _idxes1_to_0, _confidence1_to_0)
+                .gather(2, _idxes0_to_1)
             )
             confidence1_to_0 = _confidence1_to_0 * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, idxes0_to_1, _confidence0_to_1)
-                .gather(1, idxes1_to_0)
+                .scatter_(2, _idxes0_to_1, _confidence0_to_1)
+                .gather(1, _idxes1_to_0)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                idxes0_to_1,
-                idxes1_to_0,
+                _idxes0_to_1,
+                _idxes1_to_0,
             )
 
         result.update(
