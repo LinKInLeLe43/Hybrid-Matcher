@@ -5,7 +5,7 @@ net:
     encoder: "repvgg_a1"
     rope:
         _target_: src.models.nets.RoPESinePositionalEncoding
-        depth: 256
+        depth: 288
         train_size: ???
         test_size: ???
         fp16: ${fp16}
@@ -16,7 +16,7 @@ net:
             stride: 2
             topk: 8
             dims:
-                - 256
+                - 288
                 - 128
             num_x_layers: 4
             num_y_layers: 2

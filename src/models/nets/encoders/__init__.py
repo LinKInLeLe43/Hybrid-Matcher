@@ -1,6 +1,7 @@
 from typing import List, Tuple
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
@@ -9,6 +10,7 @@ from .convnextv2 import (
     convnextv2_pico_modified,
     convnextv2_tiny,
 )
+from .dinov2.dpt import DepthAnythingV2
 from .repvgg import create_RepVGG_A1, create_RepVGG_A2
 
 
@@ -28,12 +30,77 @@ class Encoder(Module):
         else:
             raise ValueError("")
 
+        depth_anything_v2 = DepthAnythingV2(
+            encoder="vits", features=64, out_channels=[48, 96, 192, 384]
+        ).eval()
+        depth_anything_v2.load_state_dict(
+            torch.load("weights/depth_anything_v2_vits.pth")
+        )
+        self.vit = [depth_anything_v2.pretrained]
+        self.depth_head = [depth_anything_v2.depth_head]
+
+        self.register_buffer(
+            "mean",
+            torch.tensor([0.485, 0.456, 0.406])[:, None, None],
+            persistent=False,
+        )
+        self.register_buffer(
+            "std",
+            torch.tensor([0.229, 0.224, 0.225])[:, None, None],
+            persistent=False,
+        )
+
+    def _preprocess_for_vit(self, x: Tensor) -> Tensor:
+        x = (x - self.mean) / self.std
+        return x
+
+    def _preprocess_for_conv(self, x: Tensor) -> Tensor:
+        x = 0.299 * x[:, [0]] + 0.587 * x[:, [1]] + 0.114 * x[:, [2]]
+        return x
+
+    def _forward_vit(self, x: Tensor) -> Tensor:
+        if self.vit[0].cls_token.device != x.device:
+            self.vit[0] = self.vit[0].to(x.device)
+            self.depth_head[0] = self.depth_head[0].to(x.device)
+
+        with torch.no_grad():
+            patch_h, patch_w = x.shape[-2] // 16, x.shape[-1] // 16
+            x = F.interpolate(
+                x,
+                size=(patch_h * 14, patch_w * 14),
+                mode="bilinear",
+                align_corners=True,
+            )
+            features = self.vit[0].get_intermediate_layers(
+                x, [2, 5, 8, 11], return_class_token=True
+            )
+            # out = features[-1][0].unflatten(1, (patch_h, patch_w))
+            out = self.depth_head[0](features, patch_h, patch_w)
+            out = F.interpolate(
+                out,
+                size=(patch_h, patch_w),
+                mode="bilinear",
+                align_corners=True,
+            )
+            return out
+
     def forward(
         self, x0: Tensor, x1: Tensor
     ) -> Tuple[List[Tensor], List[Tensor]]:
         if x0.shape == x1.shape:
-            x_list = self.backbone(torch.cat([x0, x1]))
+            x = torch.cat([x0, x1])
+            x_list = self.backbone(self._preprocess_for_conv(x))
             x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
+
+            extra0, extra1 = self._forward_vit(
+                self._preprocess_for_vit(x)
+            ).chunk(2)
         else:
-            x0_list, x1_list = self.backbone(x0), self.backbone(x1)
+            x0_list = self.backbone(self._preprocess_for_conv(x0))
+            x1_list = self.backbone(self._preprocess_for_conv(x1))
+
+            extra0 = self._forward_vit(self._preprocess_for_vit(x0))
+            extra1 = self._forward_vit(self._preprocess_for_vit(x1))
+        x0_list[-1] = torch.cat([x0_list[-1], extra0], dim=1)
+        x1_list[-1] = torch.cat([x1_list[-1], extra1], dim=1)
         return x0_list, x1_list

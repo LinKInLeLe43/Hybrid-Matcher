@@ -68,8 +68,8 @@ class SelfBlock(Module):
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.stride = stride
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
+        self.num_heads = 9
+        self.head_dim = dim // self.num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
@@ -156,8 +156,8 @@ class CrossBlock(Module):
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
         self.stride = stride
-        self.num_heads = num_heads
-        self.head_dim = dim // num_heads
+        self.num_heads = 9
+        self.head_dim = dim // self.num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
