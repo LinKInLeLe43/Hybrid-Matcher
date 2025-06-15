@@ -6,32 +6,25 @@ from kornia import create_meshgrid
 from torch import nn
 from torch.nn import functional as F
 
-from .submodules import PyramidFuser
-
 
 class CoarseMatching(nn.Module):
     def __init__(
         self,
-        scale: int,
-        dims: Sequence[int],
-        fused_selective_module: nn.Module,
+        decoder: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
-        **kwargs,
     ) -> None:
         super().__init__()
-        assert len(dims) == 2
-        self.scale = scale
-        self.fuser = PyramidFuser(dims, **kwargs)
-        self.fused_selective_module = fused_selective_module
+        self.stride = decoder.stride
+        self.decoder = decoder
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
 
         delta_indices = create_meshgrid(
-            self.scale,
-            self.scale,
+            self.stride,
+            self.stride,
             normalized_coordinates=False,
             dtype=torch.long,
         ).flatten(end_dim=-2)
@@ -196,13 +189,13 @@ class CoarseMatching(nn.Module):
     def map_indices(
         self, x: torch.Tensor, size: Sequence[int], fw: int
     ) -> torch.Tensor:
-        row = (x[..., None] // fw) * self.scale + self.delta_indices[:, 1]
-        col = (x[..., None] % fw) * self.scale + self.delta_indices[:, 0]
-        out = row * fw * self.scale + col
+        row = (x[..., None] // fw) * self.stride + self.delta_indices[:, 1]
+        col = (x[..., None] % fw) * self.stride + self.delta_indices[:, 0]
+        out = row * fw * self.stride + col
         out = (
             out.unflatten(1, size)
-            .repeat_interleave(self.scale, dim=1)
-            .repeat_interleave(self.scale, dim=2)
+            .repeat_interleave(self.stride, dim=1)
+            .repeat_interleave(self.stride, dim=2)
             .flatten(start_dim=1, end_dim=2)
             .flatten(start_dim=-2)
         )
@@ -214,6 +207,7 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
+        encoding: torch.Tensor,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -225,90 +219,58 @@ class CoarseMatching(nn.Module):
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         ] = None,
     ) -> Dict[str, Any]:
-        n, c, h0, w0 = x0.shape
-        _, _, h1, w1 = x1.shape
-        sh = sw = self.scale
-        fh0, fw0, fh1, fw1 = [t // self.scale for t in [h0, w0, h1, w1]]
+        n, c, h0, w0 = y0.shape
+        _, _, h1, w1 = y1.shape
+        sh = sw = self.stride
+        fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
-        _y0 = y0.flatten(start_dim=2).transpose(1, 2)
-        _y1 = y1.flatten(start_dim=2).transpose(1, 2)
-        _y0, _y1 = _y0 / c**0.5, _y1 / c**0.5
-        similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
-        similarity /= self.temperature
-        if y0_mask is not None and y1_mask is not None:
-            mask = (
-                y0_mask.flatten(start_dim=1)[:, :, None]
-                & y1_mask.flatten(start_dim=1)[:, None, :]
-            )
-            similarity.masked_fill_(~mask, -1e9)
+        _y0, _y1, idxes0_to_1, idxes1_to_0, similarity = self.decoder(
+            x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
+        )
 
-        topk = 8
         result = {}
-
-        if self.training:
-            confidence0_to_1 = F.softmax(similarity, dim=2)
-            confidence1_to_0 = F.softmax(similarity, dim=1)
-            confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_coarse_cls_heatmap"] = confidence
-
-        _similarity = similarity
-        # if self.training and y_gt_idxes is not None:
-        #     _similarity = similarity.clone()
-        #     _similarity[y_gt_idxes] = 1e9
-
-        _, idxes0_to_1 = _similarity.topk(topk, dim=2)
-        _, idxes1_to_0 = _similarity.topk(topk, dim=1)
         result["extra_idxes0_to_1"] = idxes0_to_1
-        if y_gt_idxes is not None:
+        if x_gt_idxes is not None:
             extra_coarse_topk_recall_mask = self.create_bidirectional_mask(
-                idxes0_to_1, idxes1_to_0
+                idxes0_to_1, idxes1_to_0.transpose(-1, -2)
             )
             result["extra_coarse_topk_recall"] = extra_coarse_topk_recall_mask[
-                y_gt_idxes
+                x_gt_idxes
             ]
 
-        x0, x1 = self.fuser([x0, y0], [x1, y1])
-        x0 = (
-            x0.reshape(n, c, fh0, sh, fw0, sw)
-            .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n, fh0 * fw0, sh * sw, c)
-        )
-        x1 = (
-            x1.reshape(n, c, fh1, sh, fw1, sw)
-            .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n, fh1 * fw1, sh * sw, c)
-        )
-        idxes1_to_0 = idxes1_to_0.transpose(1, 2)
-        _x0, _x1 = self.fused_selective_module(
-            x0, x1, idxes0_to_1, idxes1_to_0, (h0, w0), (h1, w1)
-        )
         _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
         _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
-        x0 = (
-            _x0.reshape(n, fh0, fw0, sh, sw, c)
+        y0 = (
+            _y0.reshape(n, fh0, fw0, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
             .reshape(n, c, h0, w0)
         )
-        x1 = (
-            _x1.reshape(n, fh1, fw1, sh, sw, c)
+        y1 = (
+            _y1.reshape(n, fh1, fw1, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
             .reshape(n, c, h1, w1)
         )
-        result["x_8x"] = (x0, x1)
+        result["x_8x"] = (y0, y1)
 
         if self.training:
-            x0, x1 = x0 / c**0.5, x1 / c**0.5
+            similarity /= self.temperature
+            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
+            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
+            confidence = confidence0_to_1 * confidence1_to_0
+            result["extra_coarse_cls_heatmap"] = confidence
+
+            y0, y1 = y0 / c**0.5, y1 / c**0.5
             similarity = torch.einsum(
                 "nlc,nsc->nls",
-                x0.flatten(start_dim=2).transpose(1, 2),
-                x1.flatten(start_dim=2).transpose(1, 2),
+                y0.flatten(start_dim=2).transpose(1, 2),
+                y1.flatten(start_dim=2).transpose(1, 2),
             )
             similarity /= self.temperature
-            if x0_mask is not None and x1_mask is not None:
+            if y0_mask is not None and y1_mask is not None:
                 mask = (
-                    x0_mask.flatten(start_dim=1)[:, :, None]
-                    & x1_mask.flatten(start_dim=1)[:, None, :]
+                    y0_mask.flatten(start_dim=1)[:, :, None]
+                    & y1_mask.flatten(start_dim=1)[:, None, :]
                 )
                 similarity.masked_fill_(~mask, -1e9)
 
@@ -318,20 +280,20 @@ class CoarseMatching(nn.Module):
             score = confidence, _idxes0_to_1, _idxes1_to_0
             result["coarse_cls_heatmap"] = confidence
         else:
-            _x0, _x1 = _x0 / c**0.5, _x1 / c**0.5
+            _y0, _y1 = _y0 / c**0.5, _y1 / c**0.5
 
-            _selective0 = _x0[
-                torch.arange(n, device=_x0.device)[:, None, None], idxes1_to_0
+            _selective0 = _y0[
+                torch.arange(n, device=_y0.device)[:, None, None], idxes1_to_0
             ].flatten(start_dim=2, end_dim=3)
-            _selective1 = _x1[
-                torch.arange(n, device=_x1.device)[:, None, None], idxes0_to_1
+            _selective1 = _y1[
+                torch.arange(n, device=_y1.device)[:, None, None], idxes0_to_1
             ].flatten(start_dim=2, end_dim=3)
 
             similarity0_to_1 = torch.einsum(
-                "nmlc,nmsc->nmls", _x0, _selective1
+                "nmlc,nmsc->nmls", _y0, _selective1
             )
             similarity1_to_0 = torch.einsum(
-                "nmlc,nmsc->nmls", _x1, _selective0
+                "nmlc,nmsc->nmls", _y1, _selective0
             )
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature
@@ -348,12 +310,12 @@ class CoarseMatching(nn.Module):
                 .flatten(start_dim=2, end_dim=5)
             )
             confidence0_to_1 = _confidence0_to_1 * (
-                x1.new_zeros(n, h0 * w0, h1 * w1)
+                y1.new_zeros(n, h0 * w0, h1 * w1)
                 .scatter_(1, _idxes1_to_0, _confidence1_to_0)
                 .gather(2, _idxes0_to_1)
             )
             confidence1_to_0 = _confidence1_to_0 * (
-                x0.new_zeros(n, h0 * w0, h1 * w1)
+                y0.new_zeros(n, h0 * w0, h1 * w1)
                 .scatter_(2, _idxes0_to_1, _confidence0_to_1)
                 .gather(1, _idxes1_to_0)
             )
@@ -366,7 +328,7 @@ class CoarseMatching(nn.Module):
 
         result.update(
             self._create_coarse_matching(
-                score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes
+                score, (h0, w0), (h1, w1), y0_mask, y1_mask, y_gt_idxes
             )
         )
         result["extra_idxes0_to_1"] = einops.repeat(

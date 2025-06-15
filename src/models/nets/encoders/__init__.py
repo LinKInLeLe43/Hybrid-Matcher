@@ -29,11 +29,11 @@ class Encoder(Module):
             raise ValueError("")
 
     def forward(
-        self, image0: Tensor, image1: Tensor
+        self, x0: Tensor, x1: Tensor
     ) -> Tuple[List[Tensor], List[Tensor]]:
-        if image0.shape == image1.shape:
-            x_list = self.backbone(torch.cat([image0, image1]))
+        if x0.shape == x1.shape:
+            x_list = self.backbone(torch.cat([x0, x1]))
             x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
         else:
-            x0_list, x1_list = self.backbone(image0), self.backbone(image1)
+            x0_list, x1_list = self.backbone(x0), self.backbone(x1)
         return x0_list, x1_list

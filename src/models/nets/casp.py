@@ -11,7 +11,6 @@ class CasP(Module):
         self,
         encoder: str,
         rope: Module,
-        coarse_module: Module,
         coarse_matching: Module,
         extra_scale: Optional[int] = None,
     ) -> None:
@@ -19,7 +18,6 @@ class CasP(Module):
         self.encoder = Encoder(encoder)
         self.encoder.scales = (8, 4)
         self.rope = rope
-        self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.extra_scale = extra_scale
 
@@ -55,23 +53,21 @@ class CasP(Module):
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
-        encoding = self.rope.get_encoding()
-        x0_16x_t, x1_16x_t = self.coarse_module(
-            x0_16x, x1_16x, encoding, mask0=mask0_16x, mask1=mask1_16x
-        )
-
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
+        encoding = self.rope.get_encoding()
+
         result = self.coarse_matching(
+            x0_16x,
+            x1_16x,
             x0_8x,
             x1_8x,
-            x0_16x_t,
-            x1_16x_t,
-            x0_mask=mask0_8x,
-            x1_mask=mask1_8x,
-            y0_mask=mask0_16x,
-            y1_mask=mask1_16x,
-            x_gt_idxes=gt_idxes,
-            y_gt_idxes=extra_gt_idxes,
+            encoding,
+            x0_mask=mask0_16x,
+            x1_mask=mask1_16x,
+            y0_mask=mask0_8x,
+            y1_mask=mask1_8x,
+            x_gt_idxes=extra_gt_idxes,
+            y_gt_idxes=gt_idxes,
         )
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))

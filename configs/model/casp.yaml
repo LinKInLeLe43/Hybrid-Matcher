@@ -9,25 +9,18 @@ net:
         train_size: ???
         test_size: ???
         fp16: ${fp16}
-    coarse_module:
-        _target_: src.models.nets.decoders.Decoder
-        num_layers: 4
-        scale: 1
-        dim: 256
-        num_heads: 8
     coarse_matching:
         _target_: src.models.nets.CoarseMatching
-        scale: 2
-        dims:
-            - 128
-            - 256
-        fused_selective_module:
-            _target_: src.models.nets.decoders.RegionSelectiveTransformerLayer
-            dim: 128
+        decoder:
+            _target_: src.models.nets.decoders.Decoder
+            stride: 2
+            topk: 8
+            dims:
+                - 256
+                - 128
+            num_x_layers: 4
+            num_y_layers: 2
             num_heads: 8
-            scale: 2
-            num_layers: 2
-        temperature: 0.1
     extra_scale: 16
 
 loss:

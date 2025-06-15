@@ -1,4 +1,3 @@
-from copy import deepcopy
 from typing import Optional, Sequence, Tuple
 from warnings import warn
 
@@ -59,7 +58,7 @@ class Attention(Module):
 class SelfBlock(Module):
     def __init__(
         self,
-        scale: int,
+        stride: int,
         dim: int,
         num_heads: int,
         enable_sdpa: bool = False,
@@ -68,19 +67,29 @@ class SelfBlock(Module):
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.scale = scale
+        self.stride = stride
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        if scale > 1:
+        if stride > 1:
             self.down_proj = nn.Conv2d(
-                dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
+                dim,
+                dim,
+                self.stride,
+                stride=self.stride,
+                groups=dim,
+                bias=bias,
             )
             self.up_proj = nn.ConvTranspose2d(
-                dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
+                dim,
+                dim,
+                self.stride,
+                stride=self.stride,
+                groups=dim,
+                bias=bias,
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
@@ -93,8 +102,8 @@ class SelfBlock(Module):
 
     def _rotate_half(self, x: Tensor) -> Tensor:
         x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        x_rotated = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
-        return x_rotated
+        rotated_x = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
+        return rotated_x
 
     def _apply_rotary_encoding(self, x: Tensor, encoding: Tensor) -> Tensor:
         x = x * encoding[0] + self._rotate_half(x) * encoding[1]
@@ -103,16 +112,18 @@ class SelfBlock(Module):
     def forward(
         self, x: Tensor, encoding: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        x_ = x
-        if self.scale != 1:
-            x_ = self.down_proj(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        _, h, w, c = x.shape
+
+        _x = x
+        if self.stride != 1:
+            _x = self.down_proj(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         q, k, v = (
-            self.qkv_proj(x_.flatten(start_dim=1, end_dim=2))
+            self.qkv_proj(_x)
+            .flatten(start_dim=1, end_dim=2)
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        _, h, w, c = x_.shape
         encoding = (
             encoding[:, :h, :w, :c]
             .flatten(start_dim=1, end_dim=2)
@@ -124,7 +135,7 @@ class SelfBlock(Module):
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = message.unflatten(1, (h, w))
-        if self.scale != 1:
+        if self.stride != 1:
             message = self.up_proj(
                 message.permute(0, 3, 1, 2).contiguous()
             ).permute(0, 2, 3, 1)
@@ -135,7 +146,7 @@ class SelfBlock(Module):
 class CrossBlock(Module):
     def __init__(
         self,
-        scale: int,
+        stride: int,
         dim: int,
         num_heads: int,
         enable_sdpa: bool = False,
@@ -144,19 +155,29 @@ class CrossBlock(Module):
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.scale = scale
+        self.stride = stride
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        if scale > 1:
+        if stride > 1:
             self.down_proj = nn.Conv2d(
-                dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
+                dim,
+                dim,
+                self.stride,
+                stride=self.stride,
+                groups=dim,
+                bias=bias,
             )
             self.up_proj = nn.ConvTranspose2d(
-                dim, dim, self.scale, stride=self.scale, groups=dim, bias=bias
+                dim,
+                dim,
+                self.stride,
+                stride=self.stride,
+                groups=dim,
+                bias=bias,
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
@@ -170,25 +191,27 @@ class CrossBlock(Module):
     def forward(
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tuple[Tensor, Tensor]:
-        x0_ = x0
-        x1_ = x1
-        if self.scale != 1:
-            x0_ = self.down_proj(x0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-            x1_ = self.down_proj(x1.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        _, h0, w0, _ = x0.shape
+        _, h1, w1, _ = x1.shape
+
+        _x0, _x1 = x0, x1
+        if self.stride != 1:
+            _x0 = self.down_proj(x0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+            _x1 = self.down_proj(x1.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         q0, k0, v0 = (
-            self.qkv_proj(x0_.flatten(start_dim=1, end_dim=2))
+            self.qkv_proj(_x0)
+            .flatten(start_dim=1, end_dim=2)
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
             .transpose(1, 2)
             .unbind(dim=-1)
         )
         q1, k1, v1 = (
-            self.qkv_proj(x1_.flatten(start_dim=1, end_dim=2))
+            self.qkv_proj(_x1)
+            .flatten(start_dim=1, end_dim=2)
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        _, h0, w0, c = x0_.shape
-        _, h1, w1, c = x1_.shape
         message0 = self.attention(q0, k1, v1, mask=mask)
         message1 = self.attention(
             q1,
@@ -204,7 +227,7 @@ class CrossBlock(Module):
         )
         message0 = message0.unflatten(1, (h0, w0))
         message1 = message1.unflatten(1, (h1, w1))
-        if self.scale != 1:
+        if self.stride != 1:
             message0 = self.up_proj(
                 message0.permute(0, 3, 1, 2).contiguous()
             ).permute(0, 2, 3, 1)
@@ -237,28 +260,21 @@ class TransformerLayer(Module):
         return x0, x1
 
 
-def _gather(x: Tensor, indices: Tensor) -> Tensor:
-    out = x[
-        torch.arange(x.shape[0], device=x.device)[:, None, None], indices
-    ].flatten(start_dim=2, end_dim=3)
-    return out
-
-
 class RegionSelectiveCrossBlock(Module):
     def __init__(
         self,
+        stride: int,
         dim: int,
         num_heads: int,
-        scale: int,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
+        self.stride = stride
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = scale
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
@@ -281,9 +297,8 @@ class RegionSelectiveCrossBlock(Module):
         indices0_to_1: Tensor,
         size: Tuple[int, int],
     ) -> Tensor:
-        sh, sw = self.scale, self.scale
-        fh, fw = size[0] // sh, size[1] // sw
-        c = x0.shape[-1]
+        n = x0.shape[0]
+        fh, fw = size
 
         q = (
             self.q_proj(x0)
@@ -291,7 +306,10 @@ class RegionSelectiveCrossBlock(Module):
             .transpose(2, 3)
         )
         k, v = (
-            _gather(self.kv_proj(x1), indices0_to_1)
+            self.kv_proj(x1)[
+                torch.arange(n, device=x0.device)[:, None, None], indices0_to_1
+            ]
+            .flatten(start_dim=2, end_dim=3)
             .unflatten(-1, (self.num_heads, self.head_dim, 2))
             .transpose(2, 3)
             .unbind(dim=-1)
@@ -302,28 +320,24 @@ class RegionSelectiveCrossBlock(Module):
         )
         message = (
             torch.cat([x0, message], dim=-1)
-            .reshape(-1, fh, fw, sh, sw, 2 * c)
+            .reshape(n, fh, fw, self.stride, self.stride, -1)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(-1, 2 * c, size[0], size[1])
+            .reshape(n, -1, fh * self.stride, fw * self.stride)
         )
         message = (
             self.ffn(message)
-            .reshape(-1, c, fh, sh, fw, sw)
+            .reshape(n, -1, fh, self.stride, fw, self.stride)
             .permute(0, 2, 4, 3, 5, 1)
-            .reshape(-1, fh * fw, sh * sw, c)
+            .reshape(n, fh * fw, self.stride * self.stride, -1)
         )
         x0 = x0 + self.norm2(message)
         return x0
 
 
 class RegionSelectiveTransformerLayer(Module):
-    def __init__(self, num_layers: int, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__()
-        layer = RegionSelectiveCrossBlock(**kwargs)
-        self.layers = nn.ModuleList(
-            [deepcopy(layer) for _ in range(num_layers)]
-        )
-        self.scale = kwargs["scale"]
+        self.block = RegionSelectiveCrossBlock(*args, **kwargs)
 
     def forward(
         self,
@@ -334,10 +348,7 @@ class RegionSelectiveTransformerLayer(Module):
         size0: Sequence[int],
         size1: Sequence[int],
     ) -> Tuple[Tensor, Tensor]:
-        h0, w0 = size0
-        h1, w1 = size1
-
-        for layer in self.layers:
-            x0 = layer(x0, x1, indices0_to_1, (h0, w0))
-            x1 = layer(x1, x0, indices1_to_0, (h1, w1))
+        assert len(size0) == 2 and len(size1) == 2
+        x0 = self.block(x0, x1, indices0_to_1, size0)
+        x1 = self.block(x1, x0, indices1_to_0, size1)
         return x0, x1
