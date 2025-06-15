@@ -227,6 +227,16 @@ class CoarseMatching(nn.Module):
         _y0, _y1, idxes0_to_1, idxes1_to_0, similarity = self.decoder(
             x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
         )
+        y0 = (
+            _y0.reshape(n, fh0, fw0, sh, sw, c)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(n, c, h0, w0)
+        )
+        y1 = (
+            _y1.reshape(n, fh1, fw1, sh, sw, c)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(n, c, h1, w1)
+        )
 
         result = {}
         result["extra_idxes0_to_1"] = idxes0_to_1
@@ -241,16 +251,6 @@ class CoarseMatching(nn.Module):
         _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
         _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
-        y0 = (
-            _y0.reshape(n, fh0, fw0, sh, sw, c)
-            .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h0, w0)
-        )
-        y1 = (
-            _y1.reshape(n, fh1, fw1, sh, sw, c)
-            .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h1, w1)
-        )
         result["x_8x"] = (y0, y1)
 
         if self.training:

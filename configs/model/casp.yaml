@@ -9,7 +9,7 @@ net:
         train_size: ???
         test_size: ???
         fp16: ${fp16}
-    coarse_matching:
+    coarse_matching1:
         _target_: src.models.nets.CoarseMatching
         decoder:
             _target_: src.models.nets.decoders.Decoder
@@ -18,9 +18,10 @@ net:
             dims:
                 - 256
                 - 128
-            num_x_layers: 4
-            num_y_layers: 2
+            num_x_layers: 2
+            num_y_layers: 1
             num_heads: 8
+    coarse_matching2: ${.coarse_matching1}
     extra_scale: 16
 
 loss:
