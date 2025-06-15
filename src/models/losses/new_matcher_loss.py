@@ -159,11 +159,9 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
 
     def forward(
         self,
-        coarse_cls_heatmap1: Optional[torch.Tensor] = None,
-        coarse_cls_heatmap2: Optional[torch.Tensor] = None,
+        coarse_cls_heatmap: Optional[torch.Tensor] = None,
         coarse_gt_mask: Optional[torch.Tensor] = None,
-        extra_coarse_cls_heatmap1: Optional[torch.Tensor] = None,
-        extra_coarse_cls_heatmap2: Optional[torch.Tensor] = None,
+        extra_coarse_cls_heatmap: Optional[torch.Tensor] = None,
         extra_coarse_gt_mask: Optional[torch.Tensor] = None,
         fine_cls_heatmap: Optional[torch.Tensor] = None,
         fine_gt_mask: Optional[torch.Tensor] = None,
@@ -189,49 +187,40 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         if (self.coarse_cls_sparse is not None and
             self.coarse_cls_loss_pos_weight is not None and
             self.coarse_cls_loss_neg_weight is not None):
-            if coarse_cls_heatmap1 is not None and coarse_gt_mask is not None:
-                coarse_cls_loss = _compute_cls_loss(
-                    self.coarse_cls_sparse, coarse_cls_heatmap1, coarse_gt_mask,
-                    loss_pos_weight=self.coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.coarse_cls_loss_neg_weight,
-                    mask0=mask0, mask1=mask1)
+            if coarse_cls_heatmap is not None and coarse_gt_mask is not None:
+                coarse_cls_loss = 0.0
+                for _coarse_cls_heatmap in coarse_cls_heatmap:
+                    coarse_cls_loss += _compute_cls_loss(
+                        self.coarse_cls_sparse,
+                        _coarse_cls_heatmap,
+                        coarse_gt_mask,
+                        loss_pos_weight=self.coarse_cls_loss_pos_weight,
+                        loss_neg_weight=self.coarse_cls_loss_neg_weight,
+                        mask0=mask0,
+                        mask1=mask1,
+                    )
                 total_loss += coarse_cls_loss
-                loss["scalar"]["coarse_cls_loss1"] = (
-                    coarse_cls_loss.detach().cpu())
-            if coarse_cls_heatmap2 is not None and coarse_gt_mask is not None:
-                coarse_cls_loss = _compute_cls_loss(
-                    self.coarse_cls_sparse, coarse_cls_heatmap2, coarse_gt_mask,
-                    loss_pos_weight=self.coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.coarse_cls_loss_neg_weight,
-                    mask0=mask0, mask1=mask1)
-                total_loss += coarse_cls_loss
-                loss["scalar"]["coarse_cls_loss2"] = (
+                loss["scalar"]["coarse_cls_loss"] = (
                     coarse_cls_loss.detach().cpu())
 
         if (self.extra_coarse_cls_sparse is not None and
             self.extra_coarse_cls_loss_pos_weight is not None and
             self.extra_coarse_cls_loss_neg_weight is not None):
-            if (extra_coarse_cls_heatmap1 is not None and
+            if (extra_coarse_cls_heatmap is not None and
                 extra_coarse_gt_mask is not None):
-                extra_coarse_cls_loss = _compute_cls_loss(
-                    self.extra_coarse_cls_sparse, extra_coarse_cls_heatmap1,
-                    extra_coarse_gt_mask,
-                    loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
-                    mask0=extra_mask0, mask1=extra_mask1)
+                extra_coarse_cls_loss = 0.0
+                for _extra_coarse_cls_heatmap in extra_coarse_cls_heatmap:
+                    extra_coarse_cls_loss += _compute_cls_loss(
+                        self.extra_coarse_cls_sparse,
+                        _extra_coarse_cls_heatmap,
+                        extra_coarse_gt_mask,
+                        loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
+                        loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
+                        mask0=extra_mask0,
+                        mask1=extra_mask1,
+                    )
                 total_loss += extra_coarse_cls_loss
-                loss["scalar"]["extra_coarse_cls_loss1"] = (
-                    extra_coarse_cls_loss.detach().cpu())
-            if (extra_coarse_cls_heatmap2 is not None and
-                extra_coarse_gt_mask is not None):
-                extra_coarse_cls_loss = _compute_cls_loss(
-                    self.extra_coarse_cls_sparse, extra_coarse_cls_heatmap2,
-                    extra_coarse_gt_mask,
-                    loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
-                    mask0=extra_mask0, mask1=extra_mask1)
-                total_loss += extra_coarse_cls_loss
-                loss["scalar"]["extra_coarse_cls_loss2"] = (
+                loss["scalar"]["extra_coarse_cls_loss"] = (
                     extra_coarse_cls_loss.detach().cpu())
 
         if (self.fine_cls_sparse is not None and
