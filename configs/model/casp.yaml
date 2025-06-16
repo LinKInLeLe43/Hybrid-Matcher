@@ -17,7 +17,7 @@ net:
             topk: 8
             dims:
                 - 256
-                - 64
+                - 128
             num_x_layers: 4
             num_y_layers: 2
             num_heads: 8

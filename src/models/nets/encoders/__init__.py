@@ -74,8 +74,8 @@ class Encoder(Module):
             features = self.vit[0].get_intermediate_layers(
                 x, [2, 5, 8, 11], return_class_token=True
             )
-            # out = features[-1][0].unflatten(1, (patch_h, patch_w))
-            out = self.depth_head[0](features, patch_h, patch_w)
+            out = features[-1][0]
+            # out = self.depth_head[0](features, patch_h, patch_w)
             return out
 
     def forward(
@@ -83,16 +83,25 @@ class Encoder(Module):
     ) -> Tuple[List[Tensor], List[Tensor]]:
         if x0.shape == x1.shape:
             x = torch.cat([x0, x1])
+            patch_h, patch_w = x.shape[-2] // 32, x.shape[-1] // 32
             x_list = self.backbone(self._preprocess_for_conv(x))
             x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
 
-            x0_list[-2], x1_list[-2] = self._forward_vit(
+            x0, x1 = self._forward_vit(
                 self._preprocess_for_vit(x)
             ).chunk(2)
-        else:
-            x0_list = self.backbone(self._preprocess_for_conv(x0))
-            x1_list = self.backbone(self._preprocess_for_conv(x1))
+            sim = x0 @ x1.transpose(-1, -2)
+            _, indices = sim.topk(8, dim=-1)
+            _x = 648
+            _y = indices[0, _x]
+            result = {}
+            result["points0"] = 4 * torch.stack([_x % patch_w, _x // patch_w], dim=1).float()
+            result["points1"] = 4 * torch.stack([_y % patch_w, _y // patch_w], dim=1).float()
+            result["idxes"] = [torch.tensor([0])]
+        # else:
+        #     x0_list = self.backbone(self._preprocess_for_conv(x0))
+        #     x1_list = self.backbone(self._preprocess_for_conv(x1))
 
-            x0_list[-2] = self._forward_vit(self._preprocess_for_vit(x0))
-            x1_list[-2] = self._forward_vit(self._preprocess_for_vit(x1))
-        return x0_list, x1_list
+        #     x0_list[-2] = self._forward_vit(self._preprocess_for_vit(x0))
+        #     x1_list[-2] = self._forward_vit(self._preprocess_for_vit(x1))
+        return result
