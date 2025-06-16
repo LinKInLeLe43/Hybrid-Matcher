@@ -117,6 +117,7 @@ class SelfBlock(Module):
         _x = x
         if self.stride != 1:
             _x = self.down_proj(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+            h, w = h // self.stride, w // self.stride
         q, k, v = (
             self.qkv_proj(_x)
             .flatten(start_dim=1, end_dim=2)
@@ -198,6 +199,8 @@ class CrossBlock(Module):
         if self.stride != 1:
             _x0 = self.down_proj(x0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
             _x1 = self.down_proj(x1.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+            h0, w0 = h0 // self.stride, w0 // self.stride
+            h1, w1 = h1 // self.stride, w1 // self.stride
         q0, k0, v0 = (
             self.qkv_proj(_x0)
             .flatten(start_dim=1, end_dim=2)
