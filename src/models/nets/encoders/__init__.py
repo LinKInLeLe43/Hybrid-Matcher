@@ -64,7 +64,7 @@ class Encoder(Module):
             self.depth_head[0] = self.depth_head[0].to(x.device)
 
         with torch.no_grad():
-            patch_h, patch_w = x.shape[-2] // 16, x.shape[-1] // 16
+            patch_h, patch_w = x.shape[-2] // 32, x.shape[-1] // 32
             x = F.interpolate(
                 x,
                 size=(patch_h * 14, patch_w * 14),
@@ -76,12 +76,6 @@ class Encoder(Module):
             )
             # out = features[-1][0].unflatten(1, (patch_h, patch_w))
             out = self.depth_head[0](features, patch_h, patch_w)
-            out = F.interpolate(
-                out,
-                size=(patch_h, patch_w),
-                mode="bilinear",
-                align_corners=True,
-            )
             return out
 
     def forward(
@@ -92,15 +86,13 @@ class Encoder(Module):
             x_list = self.backbone(self._preprocess_for_conv(x))
             x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
 
-            extra0, extra1 = self._forward_vit(
+            x0_list[-2], x1_list[-2] = self._forward_vit(
                 self._preprocess_for_vit(x)
             ).chunk(2)
         else:
             x0_list = self.backbone(self._preprocess_for_conv(x0))
             x1_list = self.backbone(self._preprocess_for_conv(x1))
 
-            extra0 = self._forward_vit(self._preprocess_for_vit(x0))
-            extra1 = self._forward_vit(self._preprocess_for_vit(x1))
-        x0_list[-1] = torch.cat([x0_list[-1], extra0], dim=1)
-        x1_list[-1] = torch.cat([x1_list[-1], extra1], dim=1)
+            x0_list[-2] = self._forward_vit(self._preprocess_for_vit(x0))
+            x1_list[-2] = self._forward_vit(self._preprocess_for_vit(x1))
         return x0_list, x1_list
