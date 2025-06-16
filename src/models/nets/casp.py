@@ -71,6 +71,7 @@ class CasP(Module):
         if self.training:
             coarse_cls_heatmap, extra_coarse_cls_heatmap = [], []
         for i in range(self.num_coarse_matchings):
+            is_last = i == self.num_coarse_matchings - 1
             result = self.coarse_matchings[i](
                 x0_16x,
                 x1_16x,
@@ -83,6 +84,7 @@ class CasP(Module):
                 y1_mask=mask1_8x,
                 x_gt_idxes=extra_gt_idxes,
                 y_gt_idxes=gt_idxes,
+                only_decode=not (self.training or is_last),
             )
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
@@ -90,7 +92,7 @@ class CasP(Module):
                     result.pop("extra_coarse_cls_heatmap")
                 )
 
-            if i != self.num_coarse_matchings - 1:
+            if not is_last:
                 x0_8x, x1_8x = result.pop("x_8x")
                 if x0_8x.shape == x1_8x.shape:
                     out = torch.cat([x0_8x, x1_8x])

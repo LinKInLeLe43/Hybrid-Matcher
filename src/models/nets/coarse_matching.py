@@ -218,6 +218,7 @@ class CoarseMatching(nn.Module):
         y_gt_idxes: Optional[
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         ] = None,
+        only_decode: bool = False,
     ) -> Dict[str, Any]:
         n, c, h0, w0 = y0.shape
         _, _, h1, w1 = y1.shape
@@ -252,6 +253,8 @@ class CoarseMatching(nn.Module):
         _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
         result["x_8x"] = (y0, y1)
+        if only_decode:
+            return result
 
         if self.training:
             similarity /= self.temperature
