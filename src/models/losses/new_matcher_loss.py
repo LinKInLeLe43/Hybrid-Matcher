@@ -10,7 +10,7 @@ def _focal_loss(  # TODO: support NLL
     gamma: float = 2.0
 ) -> torch.Tensor:
     # TODO: check alpha in ELoFTR
-    output = -alpha * (1 - x).pow(gamma) * x.log()
+    output = -alpha * x.log()
     return output
 
 
