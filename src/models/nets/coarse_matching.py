@@ -13,14 +13,13 @@ class CoarseMatching(nn.Module):
         decoder: nn.Module,
         threshold: float = 0.2,
         border_removal: int = 2,
-        temperature: float = 0.1,
     ) -> None:
         super().__init__()
         self.stride = decoder.stride
         self.decoder = decoder
         self.threshold = threshold
         self.border_removal = border_removal
-        self.temperature = temperature
+        self.scale = self.decoder.dims[1] ** -0.5
 
         delta_indices = create_meshgrid(
             self.stride,
@@ -257,34 +256,25 @@ class CoarseMatching(nn.Module):
             return result
 
         if self.training:
-            similarity /= self.temperature
             confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
             confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_coarse_cls_heatmap"] = confidence
 
-            y0, y1 = y0 / c**0.5, y1 / c**0.5
-            similarity = torch.einsum(
-                "nlc,nsc->nls",
-                y0.flatten(start_dim=2).transpose(1, 2),
-                y1.flatten(start_dim=2).transpose(1, 2),
-            )
-            similarity /= self.temperature
+            y0 = y0.flatten(start_dim=2).transpose(1, 2) * self.scale
+            y1 = y1.flatten(start_dim=2).transpose(1, 2)
+            similarity = y0 @ y1.transpose(-1, -2)
             if y0_mask is not None and y1_mask is not None:
-                mask = (
-                    y0_mask.flatten(start_dim=1)[:, :, None]
-                    & y1_mask.flatten(start_dim=1)[:, None, :]
-                )
-                similarity.masked_fill_(~mask, -1e9)
+                mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
+                similarity.masked_fill_(~mask, -float("inf"))
 
-            confidence0_to_1 = F.softmax(similarity, dim=2)
-            confidence1_to_0 = F.softmax(similarity, dim=1)
+            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
+            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             score = confidence, _idxes0_to_1, _idxes1_to_0
             result["coarse_cls_heatmap"] = confidence
         else:
-            _y0, _y1 = _y0 / c**0.5, _y1 / c**0.5
-
+            _y0 = _y0 * self.scale
             _selective0 = _y0[
                 torch.arange(n, device=_y0.device)[:, None, None], idxes1_to_0
             ].flatten(start_dim=2, end_dim=3)
@@ -292,14 +282,8 @@ class CoarseMatching(nn.Module):
                 torch.arange(n, device=_y1.device)[:, None, None], idxes0_to_1
             ].flatten(start_dim=2, end_dim=3)
 
-            similarity0_to_1 = torch.einsum(
-                "nmlc,nmsc->nmls", _y0, _selective1
-            )
-            similarity1_to_0 = torch.einsum(
-                "nmlc,nmsc->nmls", _y1, _selective0
-            )
-            similarity0_to_1 /= self.temperature
-            similarity1_to_0 /= self.temperature
+            similarity0_to_1 = _y0 @ _selective1.transpose(-1, -2)
+            similarity1_to_0 = _y1 @ _selective0.transpose(-1, -2)
             _confidence0_to_1 = F.softmax(similarity0_to_1, dim=3)
             _confidence1_to_0 = F.softmax(similarity1_to_0, dim=3)
             _confidence0_to_1 = (

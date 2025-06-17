@@ -24,6 +24,7 @@ class Decoder(Module):
         assert len(dims) == 2
         self.stride = stride
         self.topk = topk
+        self.dims = dims
         self.enable_crop = enable_crop
         self.scale = dims[0] ** -0.5
 
@@ -74,7 +75,7 @@ class Decoder(Module):
             x0, x1 = _x0, _x1
 
         _x0 = x0.flatten(start_dim=1, end_dim=2) * self.scale
-        _x1 = x1.flatten(start_dim=1, end_dim=2) * self.scale
+        _x1 = x1.flatten(start_dim=1, end_dim=2)
         similarity = _x0 @ _x1.transpose(-1, -2)
         if mask0 is not None and mask1 is not None:
             mask = mask0.view(n, -1, 1) & mask1.view(n, 1, -1)
