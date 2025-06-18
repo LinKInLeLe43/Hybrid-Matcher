@@ -14,25 +14,31 @@ def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
 
 
 def _warp_point(
-    image_point0: torch.Tensor,
-    depth0: torch.Tensor,
+    points0: torch.Tensor,
+    depth_map0: torch.Tensor,
     K0: torch.Tensor,
     K1: torch.Tensor,
-    T0_to_1: torch.Tensor
+    T0_to_1: torch.Tensor,
 ) -> torch.Tensor:
-    _, h, w = depth0.shape
-
-    image_grid0 = image_point0.round().long()
-    _mask_out_of_bound(image_grid0, h, w)
-    image_depth0 = torch.stack(
-        [depth0[b, grid0[:, 1], grid0[:, 0]]
-         for b, grid0 in enumerate(image_grid0)])[:, :, None]
-    world_point = torch.cat([image_depth0 * image_point0, image_depth0], dim=2)
-    camera_point0 = K0.inverse() @ world_point.transpose(1, 2)
-    camera_point1 = T0_to_1[:, :3, :3] @ camera_point0 + T0_to_1[:, :3, 3:]
-    image_point1 = (K1 @ camera_point1).transpose(1, 2)
-    image_point1 = image_point1[:, :, :2] / (image_point1[:, :, 2:] + 1e-4)
-    return image_point1
+    # FIXME: check coordinate system
+    points0 = points0 + 0.5
+    _, h, w = depth_map0.shape
+    depths0 = F.grid_sample(
+        depth_map0[:, None],
+        (2 * points0 / points0.new_tensor([w, h]) - 1)[:, :, None],
+        mode="nearest",
+    )[:, 0, :, 0]
+    image_points0 = depths0[:, :, None] * torch.cat(
+        [points0, torch.ones_like(points0[:, :, [0]])], dim=-1
+    )
+    camera_points0 = K0.inverse() @ image_points0.transpose(-1, -2)
+    camera_points1 = T0_to_1[:, :3, :3] @ camera_points0 + T0_to_1[:, :3, 3:]
+    image_points1 = (K1 @ camera_points1).transpose(-1, -2)
+    depths1 = image_points1[:, :, 2]
+    points1 = image_points1[:, :, :2] / (depths1[:, :, None] + 1e-4)
+    # FIXME: check coordinate system
+    points1 = points1 - 0.5
+    return points1
 
 
 @torch.no_grad()

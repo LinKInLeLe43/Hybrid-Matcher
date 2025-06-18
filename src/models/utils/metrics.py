@@ -22,9 +22,10 @@ def _warp_point(
     consistent_depth_ratio: float = 0.2
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     n, h, w = depth0.shape
-
+    # FIXME: check coordinate system
+    points0 = points0 + 0.5
     image_2d_points0 = points0
-    image_2d_norm_points0 = (2 * (image_2d_points0 + 0.5) /
+    image_2d_norm_points0 = (2 * image_2d_points0 /
                              points0.new_tensor([w, h]) - 1)
     image_depth0 = F.grid_sample(
         depth0[:, None], image_2d_norm_points0[:, :, None],
@@ -48,7 +49,7 @@ def _warp_point(
     points1 = image_2d_points1
 
     if return_mask:
-        image_2d_norm_points1 = (2 * (image_2d_points1 + 0.5) /
+        image_2d_norm_points1 = (2 * image_2d_points1 /
                                  points0.new_tensor([w, h]) - 1)
         image_depth1 = F.grid_sample(
             depth1[:, None], image_2d_norm_points1[:, :, None],
@@ -66,8 +67,12 @@ def _warp_point(
         consistent_mask = ((image_depth1[:, :, 0] - camera_point1[:, 2, :]) /
                            image_depth1[:, :, 0]).abs() < consistent_depth_ratio
         mask = depth0_mask & depth1_mask & consistent_mask
+        # FIXME: check coordinate system
+        points1 = points1 - 0.5
         return points1, mask
     else:
+        # FIXME: check coordinate system
+        points1 = points1 - 0.5
         return points1
 
 
