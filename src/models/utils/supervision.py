@@ -220,13 +220,11 @@ def compute_reg_gt_biases(
     points0_to_1: torch.Tensor,
     points1: torch.Tensor,
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    fine_scale: int,
-    window_size: int
 ) -> torch.Tensor:
     b_idxes, i_idxes, j_idxes = idxes
 
     gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
-    gt_biases /= fine_scale * (window_size // 2)
+    gt_biases /= 4
     return gt_biases
 
 

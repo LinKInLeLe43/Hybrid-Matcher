@@ -20,6 +20,8 @@ class CoarseMatching(nn.Module):
         self.threshold = threshold
         self.border_removal = border_removal
         self.scale = self.decoder.dims[1] ** -0.5
+        self.train_percent = 0.2
+        self.train_min_gt_count = 200
 
         delta_indices = create_meshgrid(
             self.stride,
@@ -95,6 +97,34 @@ class CoarseMatching(nn.Module):
         out = out.flatten(start_dim=1)
         return out
 
+    def _sample_for_train(
+        self,
+        max_count: int,
+        matching_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+               Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        device = matching_idxes[0].device
+
+        train_count = int(self.train_percent * max_count)
+        rest_count = train_count - self.train_min_gt_count
+        matching_count, gt_count = len(matching_idxes[0]), len(gt_idxes[0])
+        if matching_count <= rest_count:
+            matching_subidxes = torch.arange(matching_count, device=device)
+        else:
+            matching_subidxes = torch.randint(
+                matching_count, (rest_count,), device=device)
+            matching_count = rest_count
+        gt_subidxes = torch.randint(
+            gt_count, (train_count - matching_count,), device=device)
+
+        matching_idxes = tuple(map(
+            lambda x: x[matching_subidxes], matching_idxes))
+        train_idxes = tuple(map(
+            lambda x, y: torch.cat([x, y[gt_subidxes]]),
+            matching_idxes, gt_idxes))
+        return train_idxes, matching_idxes
+
     @torch.no_grad()
     def _create_coarse_matching(
         self,
@@ -110,13 +140,16 @@ class CoarseMatching(nn.Module):
         coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             score, idxes0_to_1, idxes1_to_0 = score
+            values0_to_1, idxes0_to_1 = score.max(dim=2)
+            values1_to_0, idxes1_to_0 = score.max(dim=1)
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1
             )
-            mask &= (score == score.amax(dim=2, keepdim=True)) & (
-                score == score.amax(dim=1, keepdim=True)
+            mask &= (score == values0_to_1[:, :, None]) & (
+                score == values1_to_0[:, None, :]
             )
-            train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
+            train_idxes, matching_idxes = self._sample_for_train(
+                max_count, mask.nonzero(as_tuple=True), gt_idxes)
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
@@ -158,6 +191,7 @@ class CoarseMatching(nn.Module):
             [j_idxes % size1[1], j_idxes // size1[1]], dim=1
         ).float()
         result = {
+            "idxes0_to_1": idxes0_to_1,
             "idxes": train_idxes,
             "points0": points0,
             "points1": points1,

@@ -6,6 +6,7 @@ from torch import Tensor, nn
 from torch.nn import Module
 
 from .encoders import Encoder
+from .refiners.tiny_roma import TinyConvRefiner
 
 
 class CasP(Module):
@@ -25,6 +26,7 @@ class CasP(Module):
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
         )
+        self.refiner = TinyConvRefiner()
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -46,12 +48,17 @@ class CasP(Module):
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
+        fine_points0 = coarse_points0.clone()
+        fine_points1 = coarse_points1.clone() + 4 * result["fine_reg_biases"]
+
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
         result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = coarse_points0, coarse_points1
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -86,6 +93,7 @@ class CasP(Module):
                 y_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
+            x0_8x, x1_8x = result.pop("x_8x")
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
                 extra_coarse_cls_heatmap.append(
@@ -93,7 +101,6 @@ class CasP(Module):
                 )
 
             if not is_last:
-                x0_8x, x1_8x = result.pop("x_8x")
                 if x0_8x.shape == x1_8x.shape:
                     out = torch.cat([x0_8x, x1_8x])
                     for module in self.down_modules[i]:
@@ -110,6 +117,10 @@ class CasP(Module):
             result["extra_coarse_cls_heatmap"] = torch.stack(
                 extra_coarse_cls_heatmap
             )
+
+        delta = self.refiner(x0_8x, x1_8x, result["idxes0_to_1"])
+        b_idxes, i_idxes, j_idxes = result["coarse_cls_idxes"]
+        result["fine_reg_biases"] = delta[b_idxes, i_idxes]
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
