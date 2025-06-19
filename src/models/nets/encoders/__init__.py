@@ -1,6 +1,8 @@
 from typing import List, Tuple
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
@@ -28,12 +30,24 @@ class Encoder(Module):
         else:
             raise ValueError("")
 
+        self.stem = nn.Sequential(
+            nn.Conv2d(1, 1024, 9, stride=8, padding=4, bias=False),
+            nn.PixelShuffle(4),
+            nn.BatchNorm2d(1024 // 16),
+            nn.ReLU(inplace=True),
+        )
+
     def forward(
         self, x0: Tensor, x1: Tensor
     ) -> Tuple[List[Tensor], List[Tensor]]:
         if x0.shape == x1.shape:
-            x_list = self.backbone(torch.cat([x0, x1]))
-            x0_list, x1_list = map(list, zip(*[x.chunk(2) for x in x_list]))
+            x = torch.cat([x0, x1])
+            x_list = self.backbone(x)
+            x0_list, x1_list = map(list, zip(*[t.chunk(2) for t in x_list]))
+            x0_2x, x1_2x = self.stem(x).chunk(2)
         else:
             x0_list, x1_list = self.backbone(x0), self.backbone(x1)
+            x0_2x, x1_2x = self.stem(x0), self.stem(x1)
+        x0_list = [x0_2x, *x0_list]
+        x1_list = [x1_2x, *x1_list]
         return x0_list, x1_list

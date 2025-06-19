@@ -2,10 +2,14 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
 
 import torch
-from torch import Tensor, nn
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder
+from .submodules import PyramidFuser
+from .fine_matching import FineMatching
 
 
 class CasP(Module):
@@ -25,6 +29,8 @@ class CasP(Module):
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
         )
+        self.fuser = PyramidFuser([128, 64, 64])
+        self.fine_cls_matching = FineMatching("classification", 64, 8)
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -41,17 +47,26 @@ class CasP(Module):
         scale0: Optional[Tensor] = None,
         scale1: Optional[Tensor] = None,
     ) -> None:
+        m = len(result["points0"])
         b_idxes = result["idxes"][0]
 
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
+        biases0 = result.pop("fine_cls_biases0")[:m]
+        biases1 = result.pop("fine_cls_biases1")[:m]
+
+        fine_points0 = coarse_points0 + biases0
+        fine_points1 = coarse_points1 + biases1
+
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
         result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = coarse_points0, coarse_points1
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -66,6 +81,8 @@ class CasP(Module):
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_4x, x1_4x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_2x, x1_2x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
 
         if self.training:
@@ -110,6 +127,23 @@ class CasP(Module):
             result["extra_coarse_cls_heatmap"] = torch.stack(
                 extra_coarse_cls_heatmap
             )
+
+        b_indices, i_indices, j_indices = result["coarse_cls_idxes"]
+        x0_2x, x1_2x = self.fuser([x0_8x, x0_4x, x0_2x], [x1_8x, x1_4x, x1_2x])
+        x0 = F.interpolate(x0_2x, scale_factor=2.0, mode="bilinear")
+        x1 = F.interpolate(x1_2x, scale_factor=2.0, mode="bilinear")
+        x0 = (
+            F.unfold(x0, 8, stride=8)[b_indices, :, i_indices]
+            .unflatten(-1, (64, 64))
+            .transpose(-1, -2)
+        )
+        x1 = (
+            F.unfold(x1, 8, stride=8)[b_indices, :, j_indices]
+            .unflatten(-1, (64, 64))
+            .transpose(-1, -2)
+        )
+
+        result.update(self.fine_cls_matching(x0, x1))
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
