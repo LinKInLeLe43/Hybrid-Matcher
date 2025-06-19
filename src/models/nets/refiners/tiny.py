@@ -13,16 +13,7 @@ from torch import nn
 from PIL import Image
 from torchvision.transforms import ToTensor
 
-from .xfeat_model import XFeatModel, BasicLayer
-
-def tiny_roma_v1_outdoor_model():
-    xfeat = XFeatModel()
-    model = TinyRoMa(
-        xfeat = xfeat,
-        freeze_xfeat=False, 
-        exact_softmax=False)
-    model.load_state_dict(torch.load("weights/tiny_roma_v1_outdoor.pth"))
-    return model
+from .xfeat_model import BasicLayer
 
 def kde(x, std = 0.1, half = True, down = None):
     # use a gaussian kernel to estimate density
@@ -121,7 +112,7 @@ class TinyRoMa(nn.Module):
         return kpts
     
     def pos_embed(self, corr_volume: torch.Tensor):
-        B, H1, W1, H0, W0 = corr_volume.shape 
+        B, H0, W0, H1, W1 = corr_volume.shape 
         grid = torch.stack(
                 torch.meshgrid(
                     torch.linspace(-1+1/W1,1-1/W1, W1), 

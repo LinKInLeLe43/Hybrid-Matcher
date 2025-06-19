@@ -312,7 +312,11 @@ class CoarseMatching(nn.Module):
                 _idxes0_to_1,
                 _idxes1_to_0,
             )
-        result["confidence0_to_1"] = confidence0_to_1
+            result["confidence0_to_1"] = (
+                y0.new_zeros(n, h0 * w0, h1 * w1)
+                .scatter_(2, _idxes0_to_1, _confidence0_to_1)
+                .reshape(-1, h0, w0, h1, w1)
+            )
         result.update(
             self._create_coarse_matching(
                 score, (h0, w0), (h1, w1), y0_mask, y1_mask, y_gt_idxes

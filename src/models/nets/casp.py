@@ -6,7 +6,7 @@ from torch import Tensor, nn
 from torch.nn import Module
 
 from .encoders import Encoder
-from .tiny import tiny_roma_v1_outdoor_model
+from .refiners import tiny_roma_v1_outdoor_model
 
 
 class CasP(Module):
@@ -58,6 +58,7 @@ class CasP(Module):
     def forward(
         self,
         data: Dict[str, Any],
+        refine: bool = False, 
         gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
         extra_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
     ) -> Dict[str, Any]:
@@ -112,6 +113,18 @@ class CasP(Module):
             result["extra_coarse_cls_heatmap"] = torch.stack(
                 extra_coarse_cls_heatmap
             )
-        out = self.refiner.match(data["image0"], data["image1"], result["confidence0_to1"])
-        self._scale_points(result, data.get("scale0"), data.get("scale1"))
+
+        if not refine:
+            self._scale_points(result, data.get("scale0"), data.get("scale1"))
+        else:
+            _, _, h0, w0 = data["image0"].shape
+            _, _, h1, w1 = data["image1"].shape
+
+            warp, cert = self.refiner.match(
+                data["image0"], data["image1"], result["confidence0_to_1"]
+            )
+            warp, cert = self.refiner.sample(warp[0], cert[0])
+            result["points0"], result["points1"] = (
+                self.refiner.to_pixel_coordinates(warp, h0, w0, h1, w1)
+            )
         return result
