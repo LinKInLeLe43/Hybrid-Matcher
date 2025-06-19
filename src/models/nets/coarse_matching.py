@@ -110,13 +110,16 @@ class CoarseMatching(nn.Module):
         coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             score, idxes0_to_1, idxes1_to_0 = score
+            values0_to_1, idxes0_to_1 = score.max(dim=2)
+            values1_to_0, idxes1_to_0 = score.max(dim=1)
             mask, max_count = self._remove_border_for_train(
                 score > self.threshold, size0, size1, mask0, mask1
             )
-            mask &= (score == score.amax(dim=2, keepdim=True)) & (
-                score == score.amax(dim=1, keepdim=True)
+            mask &= (score == values0_to_1[:, :, None]) & (
+                score == values1_to_0[:, None, :]
             )
-            train_idxes = matching_idxes = mask.nonzero(as_tuple=True)
+            train_idxes, matching_idxes = self._sample_for_train(
+                max_count, mask.nonzero(as_tuple=True), gt_idxes)
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
@@ -158,6 +161,7 @@ class CoarseMatching(nn.Module):
             [j_idxes % size1[1], j_idxes // size1[1]], dim=1
         ).float()
         result = {
+            "idxes0_to_1": idxes0_to_1,
             "idxes": train_idxes,
             "points0": points0,
             "points1": points1,
@@ -312,15 +316,16 @@ class CoarseMatching(nn.Module):
                 _idxes0_to_1,
                 _idxes1_to_0,
             )
-            result["confidence0_to_1"] = (
-                y0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, _idxes0_to_1, _confidence0_to_1)
-                .reshape(-1, h0, w0, h1, w1)
-            )
+
         result.update(
             self._create_coarse_matching(
                 score, (h0, w0), (h1, w1), y0_mask, y1_mask, y_gt_idxes
             )
+        )
+        result["confidence0_to_1"] = (
+            y0.new_zeros(n, h0 * w0, h1 * w1)
+            .scatter_(2, result.pop("idxes0_to_1"), 1)
+            .reshape(-1, h0, w0, h1, w1)
         )
         result["extra_idxes0_to_1"] = einops.repeat(
             result["extra_idxes0_to_1"],
