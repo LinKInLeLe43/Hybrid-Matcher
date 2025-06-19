@@ -1,3 +1,5 @@
+# Modified from: https://github.com/Parskatt/RoMa/blob/main/romatch/models/tiny.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,22 +12,28 @@ import numpy as np
 from torch import nn
 from PIL import Image
 from torchvision.transforms import ToTensor
-from romatch.utils.kde import kde
 
-class BasicLayer(nn.Module):
-    """
-        Basic Convolutional Layer: Conv2d -> BatchNorm -> ReLU
-    """
-    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1, dilation=1, bias=False, relu = True):
-        super().__init__()
-        self.layer = nn.Sequential(
-                                        nn.Conv2d( in_channels, out_channels, kernel_size, padding = padding, stride=stride, dilation=dilation, bias = bias),
-                                        nn.BatchNorm2d(out_channels, affine=False),
-                                        nn.ReLU(inplace = True) if relu else nn.Identity()
-                                    )
+from .xfeat_model import XFeatModel, BasicLayer
 
-    def forward(self, x):
-        return self.layer(x)
+def tiny_roma_v1_outdoor_model():
+    xfeat = XFeatModel()
+    model = TinyRoMa(
+        xfeat = xfeat,
+        freeze_xfeat=False, 
+        exact_softmax=False)
+    model.load_state_dict(torch.load("weights/tiny_roma_v1_outdoor.pth"))
+    return model
+
+def kde(x, std = 0.1, half = True, down = None):
+    # use a gaussian kernel to estimate density
+    if half:
+        x = x.half() # Do it in half precision TODO: remove hardcoding
+    if down is not None:
+        scores = (-torch.cdist(x,x[::down])**2/(2*std**2)).exp()
+    else:
+        scores = (-torch.cdist(x,x)**2/(2*std**2)).exp()
+    density = scores.sum(dim=-1)
+    return density
 
 class TinyRoMa(nn.Module):
     """
@@ -120,23 +128,8 @@ class TinyRoMa(nn.Module):
                     torch.linspace(-1+1/H1,1-1/H1, H1), 
                     indexing = "xy"), 
                 dim = -1).float().to(corr_volume).reshape(H1*W1, 2)
-        down = 4
-        if not self.training and not self.exact_softmax:
-            grid_lr = torch.stack(
-                torch.meshgrid(
-                    torch.linspace(-1+down/W1,1-down/W1, W1//down), 
-                    torch.linspace(-1+down/H1,1-down/H1, H1//down), 
-                    indexing = "xy"), 
-                dim = -1).float().to(corr_volume).reshape(H1*W1 //down**2, 2)
-            cv = corr_volume
-            best_match = cv.reshape(B,H1*W1,H0,W0).argmax(dim=1) # B, HW, H, W
-            P_lowres = torch.cat((cv[:,::down,::down].reshape(B,H1*W1 // down**2,H0,W0), best_match[:,None]),dim=1).softmax(dim=1)
-            pos_embeddings = torch.einsum('bchw,cd->bdhw', P_lowres[:,:-1], grid_lr)
-            pos_embeddings += P_lowres[:,-1] * grid[best_match].permute(0,3,1,2)
-            #print("hej")
-        else:
-            P = corr_volume.reshape(B,H1*W1,H0,W0).softmax(dim=1) # B, HW, H, W
-            pos_embeddings = torch.einsum('bchw,cd->bdhw', P, grid)
+
+        pos_embeddings = (corr_volume.flatten(start_dim=-2) @ grid).permute(0, 3, 1, 2)
         return pos_embeddings
     
     def visualize_warp(self, warp, certainty, im_A = None, im_B = None, 
@@ -198,7 +191,7 @@ class TinyRoMa(nn.Module):
         return self.match(im0, im1, batched = False)
     
     @torch.inference_mode()
-    def match(self, im0, im1, *args, batched = True):
+    def match(self, im0, im1, confidence0_to_1, *args, batched = True):
         # stupid
         if isinstance(im0, (str, Path)):
             return self.match_from_path(im0, im1)
@@ -211,7 +204,7 @@ class TinyRoMa(nn.Module):
         B,C,H0,W0 = im0.shape
         B,C,H1,W1 = im1.shape
         self.train(False)
-        corresps = self.forward({"im_A":im0, "im_B":im1})
+        corresps = self.forward({"im_A":im0, "im_B":im1, "confidence0_to_1": confidence0_to_1})
         #return 1,1
         flow = F.interpolate(
             corresps[4]["flow"], 
@@ -288,7 +281,7 @@ class TinyRoMa(nn.Module):
         else:
             feats_x0_f, feats_x0_c = self.forward_single(im0)
             feats_x1_f, feats_x1_c = self.forward_single(im1)
-        corr_volume = self.corr_volume(feats_x0_c, feats_x1_c)
+        corr_volume = batch["confidence0_to_1"]
         coarse_warp = self.pos_embed(corr_volume)
         coarse_matches = torch.cat((coarse_warp, torch.zeros_like(coarse_warp[:,-1:])), dim=1)
         feats_x1_c_warped = F.grid_sample(feats_x1_c, coarse_matches.permute(0, 2, 3, 1)[...,:2], mode = 'bilinear', align_corners = False)

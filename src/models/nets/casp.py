@@ -6,6 +6,7 @@ from torch import Tensor, nn
 from torch.nn import Module
 
 from .encoders import Encoder
+from .tiny import tiny_roma_v1_outdoor_model
 
 
 class CasP(Module):
@@ -25,6 +26,7 @@ class CasP(Module):
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
         )
+        self.refiner = tiny_roma_v1_outdoor_model()
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -110,6 +112,6 @@ class CasP(Module):
             result["extra_coarse_cls_heatmap"] = torch.stack(
                 extra_coarse_cls_heatmap
             )
-
+        out = self.refiner.match(data["image0"], data["image1"], result["confidence0_to1"])
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
