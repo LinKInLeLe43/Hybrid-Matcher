@@ -9,6 +9,7 @@ from torch import distributed as dist
 from torch import nn
 
 from src.models import utils
+from .utils.superpoint import SuperPoint
 
 
 def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -60,6 +61,7 @@ class MatchingModule(pl.LightningModule):
         self.save_hyperparameters(ignore=["net", "loss"], logger=False)
 
         self.test_time_profiler = utils.InferenceProfiler()
+        self.detector = [SuperPoint().eval()]
 
     def forward(self, batch: Dict[str, Any]) -> Dict[str, Any]:
         result = self.net(batch)
@@ -87,7 +89,8 @@ class MatchingModule(pl.LightningModule):
             extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
         supervision.update(utils.create_fine_supervision(
             batch, (s1, 1), result["coarse_cls_idxes"],
-            offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+            offset=self.net.fine_cls_matching.cls_offset, return_coor=True,
+            detector=self.detector[0]))
         # supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
         #     supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
         #     result["fine_cls_idxes"], s2, self.net.reg_w)

@@ -134,7 +134,8 @@ def create_fine_supervision(
     scales: Tuple[int, int],
     idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     offset: float = 0.5,
-    return_coor: bool = False
+    return_coor: bool = False,
+    detector: nn.Module = None
 ) -> Dict[str, Any]:
     m, w, scale = len(idxes[0]), scales[0] // scales[1], scales[1]
     ww, x, device = w ** 2, batch["image0"], batch["image0"].device
@@ -205,7 +206,15 @@ def create_fine_supervision(
     gt_mask = ((idxes0_to_1[:, :, None] == idxes1[:, None, :]) &
                (idxes0[:, :, None] == idxes1_to_0[:, None, :]))
     supervision = {"fine_gt_mask": gt_mask}
-
+    if detector is not None:
+        detector.to(batch["image0"].device)
+        padded_image0 = F.pad(batch["image0"], (w // 2, 0, w // 2, 0))[:, :, :-w // 2, :-w // 2]
+        padded_image1 = F.pad(batch["image1"], (w // 2, 0, w // 2, 0))[:, :, :-w // 2, :-w // 2]
+        with torch.no_grad():
+            heatmap0 = detector(padded_image0)[b_idxes, :, i_idxes]
+            heatmap1 = detector(padded_image1)[b_idxes, :, j_idxes]
+        heatmap = (heatmap0[:, :, None] + heatmap1[:, None, :]).masked_fill_(~gt_mask, 0.0).flatten(start_dim=-2)
+        gt_mask = (heatmap == heatmap.amax(dim=-1, keepdim=True).clamp(min=1e-9)).view_as(gt_mask)
     if return_coor:
         if "scale1" in batch:
             points0_to_1 = points0_to_1 / batch["scale1"][b_idxes, None]
