@@ -8,6 +8,7 @@ from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder
+from .refiners.fcgnn import GNN
 from .submodules import PyramidFuser
 from .fine_matching import FineMatching
 
@@ -31,6 +32,7 @@ class CasP(Module):
         )
         self.fuser = PyramidFuser([128, 64, 64])
         self.fine_cls_matching = FineMatching("classification", 64, 8)
+        self.refiner = [GNN().eval()]
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -41,8 +43,10 @@ class CasP(Module):
             [deepcopy(down_module) for _ in range(num_coarse_matchings - 1)]
         )
 
+    @torch.no_grad()
     def _scale_points(
         self,
+        data: Dict[str, Any],
         result: Dict[str, Any],
         scale0: Optional[Tensor] = None,
         scale1: Optional[Tensor] = None,
@@ -58,6 +62,19 @@ class CasP(Module):
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
+
+        self.refiner[0].to(coarse_points0.device)
+        fine_points0, fine_points1 = (
+            self.refiner[0]
+            .optimize_matches(
+                data["image0"],
+                data["image1"],
+                torch.cat([fine_points0, fine_points1], dim=-1),
+                thd=0.999,
+                min_matches=10,
+            )[0]
+            .chunk(2, dim=-1)
+        )
 
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
@@ -145,5 +162,5 @@ class CasP(Module):
 
         result.update(self.fine_cls_matching(x0, x1))
 
-        self._scale_points(result, data.get("scale0"), data.get("scale1"))
+        self._scale_points(data, result, data.get("scale0"), data.get("scale1"))
         return result
