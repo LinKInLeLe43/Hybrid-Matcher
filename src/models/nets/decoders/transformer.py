@@ -58,21 +58,21 @@ class Attention(Module):
 class SelfBlock(Module):
     def __init__(
         self,
-        stride: int,
         dim: int,
         num_heads: int,
+        stride: int = 1,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.stride = stride
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
+        self.stride = stride
 
         if stride > 1:
             self.down_proj = nn.Conv2d(
@@ -110,7 +110,10 @@ class SelfBlock(Module):
         return x
 
     def forward(
-        self, x: Tensor, encoding: Tensor, mask: Optional[Tensor] = None
+        self,
+        x: Tensor,
+        encoding: Optional[Tensor] = None,
+        mask: Optional[Tensor] = None,
     ) -> Tensor:
         _, h, w, c = x.shape
 
@@ -125,14 +128,15 @@ class SelfBlock(Module):
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        encoding = (
-            encoding[:, :h, :w, :c]
-            .flatten(start_dim=1, end_dim=2)
-            .unflatten(-1, (self.num_heads, self.head_dim))
-            .transpose(1, 2)
-        )
-        q = self._apply_rotary_encoding(q, encoding)
-        k = self._apply_rotary_encoding(k, encoding)
+        if encoding is not None:
+            encoding = (
+                encoding[:, :h, :w, :c]
+                .flatten(start_dim=1, end_dim=2)
+                .unflatten(-1, (self.num_heads, self.head_dim))
+                .transpose(1, 2)
+            )
+            q = self._apply_rotary_encoding(q, encoding)
+            k = self._apply_rotary_encoding(k, encoding)
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = message.unflatten(1, (h, w))
@@ -147,21 +151,21 @@ class SelfBlock(Module):
 class CrossBlock(Module):
     def __init__(
         self,
-        stride: int,
         dim: int,
         num_heads: int,
+        stride: int = 1,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
     ) -> None:
         super().__init__()
         assert dim % num_heads == 0, "dim should be divisible by num_heads"
-        self.stride = stride
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.attention = Attention(
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
+        self.stride = stride
 
         if stride > 1:
             self.down_proj = nn.Conv2d(
@@ -252,14 +256,14 @@ class TransformerLayer(Module):
         self,
         x0: Tensor,
         x1: Tensor,
-        encoding: Tensor,
+        encoding: Optional[Tensor] = None,
         mask00: Optional[Tensor] = None,
         mask11: Optional[Tensor] = None,
         mask01: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        x0 = self.self_block(x0, encoding, mask00)
-        x1 = self.self_block(x1, encoding, mask11)
-        x0, x1 = self.cross_block(x0, x1, mask01)
+        x0 = self.self_block(x0, encoding=encoding, mask=mask00)
+        x1 = self.self_block(x1, encoding=encoding, mask=mask11)
+        x0, x1 = self.cross_block(x0, x1, mask=mask01)
         return x0, x1
 
 
