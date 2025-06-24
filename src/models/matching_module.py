@@ -80,11 +80,12 @@ class MatchingModule(pl.LightningModule):
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
         supervision = utils.create_coarse_supervision(
-            batch, s1, extra_scale=s0, return_coor=True)
+            batch, s1, extra_scale=s0, extra_extra_scale=32, return_coor=True)
         # coarse_gt_points1 = supervision.pop("gt_points1")
         result = self.net(
             batch, gt_idxes=supervision["coarse_gt_idxes"],
-            extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+            extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"),
+            extra_extra_gt_idxes=supervision.get("extra_extra_coarse_gt_idxes"))
         # supervision.update(utils.create_fine_supervision(
         #     batch, (s1, 1), result["coarse_cls_idxes"],
         #     offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
@@ -98,7 +99,9 @@ class MatchingModule(pl.LightningModule):
             **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
             mask1=batch.get(f"mask1_{s1}x"),
             extra_mask0=batch.get(f"mask0_{s0}x"),
-            extra_mask1=batch.get(f"mask1_{s0}x"))
+            extra_mask1=batch.get(f"mask1_{s0}x"),
+            extra_extra_mask0=batch.get(f"mask0_{32}x"),
+            extra_extra_mask1=batch.get(f"mask1_{32}x"))
         return result, loss
 
     def training_step(
@@ -198,9 +201,6 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "val_metric/coarse_recall",
                 metric.pop("coarse_recall"))
-            self.log(
-                "val_metric/extra_coarse_topk_recall",
-                metric.pop("extra_coarse_topk_recall"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):
@@ -300,9 +300,6 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/coarse_recall",
                 metric.pop("coarse_recall"))
-            self.log(
-                "test_metric/extra_coarse_topk_recall",
-                metric.pop("extra_coarse_topk_recall"))
             for t, m0, m1 in zip(self.hparams.end_point_thresholds,
                                  metric.pop("end_point_precisions"),
                                  metric.pop("inlier_end_point_precisions")):

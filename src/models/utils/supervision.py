@@ -40,6 +40,7 @@ def create_coarse_supervision(
     batch: Dict[str, Any],
     scale: int,
     extra_scale: Optional[int] = None,
+    extra_extra_scale: Optional[int] = None,
     return_coor: bool = False,
     return_flow: bool = False
 ) -> Dict[str, Any]:
@@ -102,13 +103,29 @@ def create_coarse_supervision(
 
         stride = extra_scale // scale
         fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
-        gt_mask = gt_mask.reshape(
-            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
-        gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
-        gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
-        gt_idxes = gt_mask.nonzero(as_tuple=True)
-        supervision["extra_coarse_gt_mask"] = gt_mask
-        supervision["extra_coarse_gt_idxes"] = gt_idxes
+        _gt_mask = gt_mask.reshape(
+            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride
+        )
+        _gt_mask = _gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+        _gt_mask = _gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+        _gt_idxes = _gt_mask.nonzero(as_tuple=True)
+        supervision["extra_coarse_gt_mask"] = _gt_mask
+        supervision["extra_coarse_gt_idxes"] = _gt_idxes
+
+    if extra_extra_scale is not None:
+        if extra_extra_scale <= scale:
+            raise ValueError("")
+
+        stride = extra_extra_scale // scale
+        fh0, fw0, fh1, fw1 = map(lambda x: x // stride, (h0, w0, h1, w1))
+        _gt_mask = gt_mask.reshape(
+            -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride
+        )
+        _gt_mask = _gt_mask.sum(dim=(2, 4, 6, 8)).bool()
+        _gt_mask = _gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
+        _gt_idxes = _gt_mask.nonzero(as_tuple=True)
+        supervision["extra_extra_coarse_gt_mask"] = _gt_mask
+        supervision["extra_extra_coarse_gt_idxes"] = _gt_idxes
 
     if return_coor:
         if "scale0" in batch:

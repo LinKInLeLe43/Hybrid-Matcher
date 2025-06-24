@@ -30,9 +30,14 @@ class CasP(Module):
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
 
         self.encoder.backbone.in_planes = 128
-        down_module = self.encoder.backbone._make_stage(256, 4, 2)
-        self.down_modules = nn.ModuleList(
-            [deepcopy(down_module) for _ in range(num_coarse_matchings - 1)]
+        down_module_y = self.encoder.backbone._make_stage(192, 2, 2)
+        self.encoder.backbone.in_planes = 192
+        down_module_x = self.encoder.backbone._make_stage(256, 2, 2)
+        self.down_modules_y = nn.ModuleList(
+            [deepcopy(down_module_y) for _ in range(num_coarse_matchings - 1)]
+        )
+        self.down_modules_x = nn.ModuleList(
+            [deepcopy(down_module_x) for _ in range(num_coarse_matchings - 1)]
         )
 
     def _scale_points(
@@ -58,32 +63,42 @@ class CasP(Module):
         data: Dict[str, Any],
         gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
         extra_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        extra_extra_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = data.get("mask0_8x"), data.get("mask1_8x")
         mask0_16x, mask1_16x = data.get("mask0_16x"), data.get("mask1_16x")
+        mask0_32x, mask1_32x = data.get("mask0_32x"), data.get("mask1_32x")
 
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
+        x0_32x, x1_32x = x0_list.pop(-1), x1_list.pop(-1)
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
 
         if self.training:
-            coarse_cls_heatmap, extra_coarse_cls_heatmap = [], []
+            (
+                coarse_cls_heatmap,
+                extra_coarse_cls_heatmap,
+                extra_extra_coarse_cls_heatmap,
+            ) = [], [], []
         for i in range(self.num_coarse_matchings):
             is_last = i == self.num_coarse_matchings - 1
             result = self.coarse_matchings[i](
+                x0_32x,
+                x1_32x,
                 x0_16x,
                 x1_16x,
                 x0_8x,
                 x1_8x,
                 encoding,
-                x0_mask=mask0_16x,
-                x1_mask=mask1_16x,
-                y0_mask=mask0_8x,
-                y1_mask=mask1_8x,
-                x_gt_idxes=extra_gt_idxes,
-                y_gt_idxes=gt_idxes,
+                x0_mask=mask0_32x,
+                x1_mask=mask1_32x,
+                y0_mask=mask0_16x,
+                y1_mask=mask1_16x,
+                z0_mask=mask0_8x,
+                z1_mask=mask1_8x,
+                z_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
             if self.training:
@@ -91,24 +106,37 @@ class CasP(Module):
                 extra_coarse_cls_heatmap.append(
                     result.pop("extra_coarse_cls_heatmap")
                 )
+                extra_extra_coarse_cls_heatmap.append(
+                    result.pop("extra_extra_coarse_cls_heatmap")
+                )
 
             if not is_last:
                 x0_8x, x1_8x = result.pop("x_8x")
                 if x0_8x.shape == x1_8x.shape:
                     out = torch.cat([x0_8x, x1_8x])
-                    for module in self.down_modules[i]:
+                    for module in self.down_modules_y[i]:
                         out = module(out)
                     x0_16x, x1_16x = out.chunk(2)
+                    for module in self.down_modules_x[i]:
+                        out = module(out)
+                    x0_32x, x1_32x = out.chunk(2)
                 else:
                     x0_16x, x1_16x = x0_8x, x1_8x
-                    for module in self.down_modules[i]:
+                    for module in self.down_modules_y[i]:
                         x0_16x = module(x0_16x)
                         x1_16x = module(x1_16x)
+                    x0_32x, x1_32x = x0_16x, x1_16x
+                    for module in self.down_modules_x[i]:
+                        x0_32x = module(x0_32x)
+                        x1_32x = module(x1_32x)
 
         if self.training:
             result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
             result["extra_coarse_cls_heatmap"] = torch.stack(
                 extra_coarse_cls_heatmap
+            )
+            result["extra_extra_coarse_cls_heatmap"] = torch.stack(
+                extra_extra_coarse_cls_heatmap
             )
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
