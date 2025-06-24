@@ -15,11 +15,11 @@ class CoarseMatching(nn.Module):
         border_removal: int = 2,
     ) -> None:
         super().__init__()
-        self.stride = decoder.stride
         self.decoder = decoder
         self.threshold = threshold
         self.border_removal = border_removal
-        self.scale = self.decoder.dims[2] ** -0.5
+        self.stride = decoder.stride_list[0]
+        self.scale = decoder.dim_list[0] ** -0.5
 
         delta_indices = create_meshgrid(
             self.stride,
@@ -225,19 +225,13 @@ class CoarseMatching(nn.Module):
         sh = sw = self.stride
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
-        _z0, _z1, idxes0_to_1, idxes1_to_0, x_similarity, y_similarity = (
+        _z0, _z1, idxes0_to_1, idxes1_to_0, similarity_list = (
             self.decoder(
-                x0,
-                x1,
-                y0,
-                y1,
-                z0,
-                z1,
+                [z0, y0, x0],
+                [z1, y1, x1],
                 encoding,
-                x0_mask=x0_mask,
-                x1_mask=x1_mask,
-                y0_mask=y0_mask,
-                y1_mask=y1_mask,
+                mask0=x0_mask,
+                mask1=x1_mask,
             )
         )
         z0 = (
@@ -262,13 +256,21 @@ class CoarseMatching(nn.Module):
             return result
 
         if self.training:
-            confidence0_to_1 = F.softmax(x_similarity, dim=2).nan_to_num()
-            confidence1_to_0 = F.softmax(x_similarity, dim=1).nan_to_num()
+            similarity = similarity_list.pop(-1)
+            if x0_mask is not None and x1_mask is not None:
+                mask = x0_mask.view(n, -1, 1) & x1_mask.view(n, 1, -1)
+                similarity.masked_fill_(~mask, -float("inf"))
+            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
+            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_extra_coarse_cls_heatmap"] = confidence
 
-            confidence0_to_1 = F.softmax(y_similarity, dim=2).nan_to_num()
-            confidence1_to_0 = F.softmax(y_similarity, dim=1).nan_to_num()
+            similarity = similarity_list.pop(-1)
+            if y0_mask is not None and y1_mask is not None:
+                mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
+                similarity.masked_fill_(~mask, -float("inf"))
+            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
+            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_coarse_cls_heatmap"] = confidence
 

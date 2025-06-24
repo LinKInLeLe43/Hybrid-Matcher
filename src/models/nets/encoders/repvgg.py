@@ -221,7 +221,7 @@ def create_RepVGG_A1(deploy=False):
 
 def create_RepVGG_A2(deploy=False):
     return RepVGG(
-        num_blocks=[2, 4, 14, 1], width_multiplier=[1.5, 1.5, 1.5, 1], deploy=deploy
+        num_blocks=[2, 4, 14, 1], width_multiplier=[1.5, 1.5, 1, 0.75], deploy=deploy
     )
 
 #   Use this for converting a RepVGG model or a bigger model with RepVGG as its component

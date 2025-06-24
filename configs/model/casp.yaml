@@ -13,15 +13,20 @@ net:
         _target_: src.models.nets.CoarseMatching
         decoder:
             _target_: src.models.nets.decoders.Decoder
-            stride: 2
-            topk: 8
-            dims:
-                - 256
-                - 192
+            dim_list:
                 - 128
-            num_x_layers: 2
-            num_y_layers: 1
-            num_z_layers: 1
+                - 192
+                - 256
+            stride_list:
+                - 2
+                - 2
+            topk_list:
+                - 8
+                - 8
+            num_layers_list:
+                - 1
+                - 1
+                - 2
             num_heads: 8
     num_coarse_matchings: 2
     extra_scale: 16
@@ -32,11 +37,11 @@ loss:
     coarse_cls_loss_pos_weight: 1.0
     coarse_cls_loss_neg_weight: 1.0
     extra_coarse_cls_sparse: false
-    extra_coarse_cls_loss_pos_weight: 0.5
-    extra_coarse_cls_loss_neg_weight: 0.5
+    extra_coarse_cls_loss_pos_weight: 0.25
+    extra_coarse_cls_loss_neg_weight: 0.25
     extra_extra_coarse_cls_sparse: false
-    extra_extra_coarse_cls_loss_pos_weight: 0.5
-    extra_extra_coarse_cls_loss_neg_weight: 0.5
+    extra_extra_coarse_cls_loss_pos_weight: 0.25
+    extra_extra_coarse_cls_loss_neg_weight: 0.25
 
 optimizer: ???
 
