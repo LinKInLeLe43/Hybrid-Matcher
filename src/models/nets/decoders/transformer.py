@@ -304,31 +304,22 @@ class RegionSelectiveCrossBlock(Module):
     ) -> Tuple[Tensor, Tensor]:
         n_range = torch.arange(x0.shape[0], device=x0.device)[:, None, None]
 
-        qkv0, qkv1 = self.qkv_proj(x0), self.qkv_proj(x1)
-        q0 = (
-            qkv0.unflatten(-1, (self.num_heads, self.head_dim, 3))
-            .transpose(2, 3)
-            .unbind(dim=-1)[0]
-        )
-        q1 = (
-            qkv1.unflatten(-1, (self.num_heads, self.head_dim, 3))
-            .transpose(2, 3)
-            .unbind(dim=-1)[0]
-        )
-        k0, v0 = (
-            qkv0[n_range, indices1_to_0]
-            .flatten(start_dim=2, end_dim=3)
+        q0, k0, v0 = (
+            self.qkv_proj(x0)
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
-            .transpose(2, 3)
-            .unbind(dim=-1)[1:]
+            .unbind(dim=-1)
         )
-        k1, v1 = (
-            qkv1[n_range, indices0_to_1]
-            .flatten(start_dim=2, end_dim=3)
+        k0 = k0[n_range, indices1_to_0].flatten(start_dim=2, end_dim=3)
+        v0 = v0[n_range, indices1_to_0].flatten(start_dim=2, end_dim=3)
+        q0, k0, v0 = [t.transpose(2, 3) for t in [q0, k0, v0]]
+        q1, k1, v1 = (
+            self.qkv_proj(x1)
             .unflatten(-1, (self.num_heads, self.head_dim, 3))
-            .transpose(2, 3)
-            .unbind(dim=-1)[1:]
+            .unbind(dim=-1)
         )
+        k1 = k1[n_range, indices0_to_1].flatten(start_dim=2, end_dim=3)
+        v1 = v1[n_range, indices0_to_1].flatten(start_dim=2, end_dim=3)
+        q1, k1, v1 = [t.transpose(2, 3) for t in [q1, k1, v1]]
         message0 = self.attention(q0, k1, v1)
         message1 = self.attention(q1, k0, v0)
         message0 = self.out_proj(
@@ -337,7 +328,6 @@ class RegionSelectiveCrossBlock(Module):
         message1 = self.out_proj(
             message1.transpose(2, 3).flatten(start_dim=-2)
         )
-
         x0 = x0 + self.ffn(torch.cat([x0, message0], dim=-1))
         x1 = x1 + self.ffn(torch.cat([x1, message1], dim=-1))
         return x0, x1
