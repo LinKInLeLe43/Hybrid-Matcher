@@ -115,9 +115,7 @@ class SelectiveDecoder(Module):
             .reshape(n, fh1 * fw1, self.stride * self.stride, -1)
         )
         for layer in self.layers:
-            x0, x1 = layer(
-                x0, x1, indices0_to_1, indices1_to_0, (fh0, fw0), (fh1, fw1)
-            )
+            x0, x1 = layer(x0, x1, indices0_to_1, indices1_to_0)
         if do_reshape:
             x0 = (
                 x0.reshape(n, fh0, fw0, self.stride, self.stride, -1)

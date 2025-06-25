@@ -1,4 +1,4 @@
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
 from warnings import warn
 
 import torch
@@ -286,65 +286,14 @@ class RegionSelectiveCrossBlock(Module):
             enable_sdpa=enable_sdpa, enable_flash=enable_flash
         )
 
-        self.q_proj = nn.Linear(dim, dim, bias=bias)
-        self.kv_proj = nn.Linear(dim, 2 * dim, bias=bias)
+        self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
-        self.norm1 = nn.LayerNorm(dim)
         self.ffn = nn.Sequential(
-            nn.Conv2d(2 * dim, 2 * dim, 1, bias=bias),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(2 * dim, dim, 3, padding=1, bias=bias),
+            nn.Linear(2 * dim, 2 * dim, bias=bias),
+            nn.LayerNorm(2 * dim),
+            nn.GELU(),
+            nn.Linear(2 * dim, dim, bias=bias),
         )
-        self.norm2 = nn.LayerNorm(dim)
-
-    def forward(
-        self,
-        x0: Tensor,
-        x1: Tensor,
-        indices0_to_1: Tensor,
-        size: Tuple[int, int],
-    ) -> Tensor:
-        n = x0.shape[0]
-        fh, fw = size
-
-        q = (
-            self.q_proj(x0)
-            .unflatten(-1, (self.num_heads, self.head_dim))
-            .transpose(2, 3)
-        )
-        k, v = (
-            self.kv_proj(x1)[
-                torch.arange(n, device=x0.device)[:, None, None], indices0_to_1
-            ]
-            .flatten(start_dim=2, end_dim=3)
-            .unflatten(-1, (self.num_heads, self.head_dim, 2))
-            .transpose(2, 3)
-            .unbind(dim=-1)
-        )
-        message = self.attention(q, k, v)
-        message = self.norm1(
-            self.out_proj(message.transpose(2, 3).flatten(start_dim=-2))
-        )
-        message = (
-            torch.cat([x0, message], dim=-1)
-            .reshape(n, fh, fw, self.stride, self.stride, -1)
-            .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, -1, fh * self.stride, fw * self.stride)
-        )
-        message = (
-            self.ffn(message)
-            .reshape(n, -1, fh, self.stride, fw, self.stride)
-            .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n, fh * fw, self.stride * self.stride, -1)
-        )
-        x0 = x0 + self.norm2(message)
-        return x0
-
-
-class RegionSelectiveTransformerLayer(Module):
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__()
-        self.block = RegionSelectiveCrossBlock(*args, **kwargs)
 
     def forward(
         self,
@@ -352,10 +301,46 @@ class RegionSelectiveTransformerLayer(Module):
         x1: Tensor,
         indices0_to_1: Tensor,
         indices1_to_0: Tensor,
-        size0: Sequence[int],
-        size1: Sequence[int],
     ) -> Tuple[Tensor, Tensor]:
-        assert len(size0) == 2 and len(size1) == 2
-        x0 = self.block(x0, x1, indices0_to_1, size0)
-        x1 = self.block(x1, x0, indices1_to_0, size1)
+        n_range = torch.arange(x0.shape[0], device=x0.device)[:, None, None]
+
+        qkv0, qkv1 = self.qkv_proj(x0), self.qkv_proj(x1)
+        q0 = (
+            qkv0.unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(2, 3)
+            .unbind(dim=-1)[0]
+        )
+        q1 = (
+            qkv1.unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(2, 3)
+            .unbind(dim=-1)[0]
+        )
+        k0, v0 = (
+            qkv0[n_range, indices1_to_0]
+            .flatten(start_dim=2, end_dim=3)
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(2, 3)
+            .unbind(dim=-1)[1:]
+        )
+        k1, v1 = (
+            qkv1[n_range, indices0_to_1]
+            .flatten(start_dim=2, end_dim=3)
+            .unflatten(-1, (self.num_heads, self.head_dim, 3))
+            .transpose(2, 3)
+            .unbind(dim=-1)[1:]
+        )
+        message0 = self.attention(q0, k1, v1)
+        message1 = self.attention(q1, k0, v0)
+        message0 = self.out_proj(
+            message0.transpose(2, 3).flatten(start_dim=-2)
+        )
+        message1 = self.out_proj(
+            message1.transpose(2, 3).flatten(start_dim=-2)
+        )
+
+        x0 = x0 + self.ffn(torch.cat([x0, message0], dim=-1))
+        x1 = x1 + self.ffn(torch.cat([x1, message1], dim=-1))
         return x0, x1
+
+
+RegionSelectiveTransformerLayer = RegionSelectiveCrossBlock
