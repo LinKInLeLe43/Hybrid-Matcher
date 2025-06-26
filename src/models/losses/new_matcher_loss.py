@@ -10,7 +10,7 @@ def _focal_loss(  # TODO: support NLL
     gamma: float = 2.0
 ) -> torch.Tensor:
     # TODO: check alpha in ELoFTR
-    output = -alpha * x.log()
+    output = -alpha * x
     return output
 
 
@@ -44,7 +44,7 @@ def _compute_cls_loss(
         if weight is not None:
             weight[0, 0, 0] = 0.0
 
-    heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
+    # heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
     pos_losses = _focal_loss(heatmap[pos_mask])
     if weight is not None:
         pos_losses *= weight[pos_mask]

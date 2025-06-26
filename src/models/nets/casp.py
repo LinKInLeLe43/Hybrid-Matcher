@@ -2,7 +2,8 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
 
 import torch
-from torch import Tensor, nn
+import torch.nn as nn
+from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder
@@ -69,7 +70,7 @@ class CasP(Module):
         encoding = self.rope.get_encoding()
 
         if self.training:
-            coarse_cls_heatmap, extra_coarse_cls_heatmap = [], []
+            coarse_cls_heatmap = []
         for i in range(self.num_coarse_matchings):
             is_last = i == self.num_coarse_matchings - 1
             result = self.coarse_matchings[i](
@@ -86,14 +87,11 @@ class CasP(Module):
                 y_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
+            x0_8x, x1_8x = result.pop("x_8x")
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
-                extra_coarse_cls_heatmap.append(
-                    result.pop("extra_coarse_cls_heatmap")
-                )
 
             if not is_last:
-                x0_8x, x1_8x = result.pop("x_8x")
                 if x0_8x.shape == x1_8x.shape:
                     out = torch.cat([x0_8x, x1_8x])
                     for module in self.down_modules[i]:
@@ -107,9 +105,6 @@ class CasP(Module):
 
         if self.training:
             result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
-            result["extra_coarse_cls_heatmap"] = torch.stack(
-                extra_coarse_cls_heatmap
-            )
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result

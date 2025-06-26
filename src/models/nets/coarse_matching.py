@@ -259,7 +259,16 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
             confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_coarse_cls_heatmap"] = confidence
+            confidence = (
+                confidence.reshape(n, fh0, fw0, fh1, fw1)
+                .repeat_interleave(self.stride, dim=1)
+                .repeat_interleave(self.stride, dim=2)
+                .repeat_interleave(self.stride, dim=3)
+                .repeat_interleave(self.stride, dim=4)
+                .reshape(n, h0 * w0, h1 * w1)
+            )
+            confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
+            result["extra_coarse_cls_heatmap"] = 0.5 * confidence
 
             y0 = y0.flatten(start_dim=2).transpose(1, 2) * self.scale
             y1 = y1.flatten(start_dim=2).transpose(1, 2)
@@ -271,8 +280,11 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
             confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
+            confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
             score = confidence, _idxes0_to_1, _idxes1_to_0
-            result["coarse_cls_heatmap"] = confidence
+            result["coarse_cls_heatmap"] = confidence + result.pop(
+                "extra_coarse_cls_heatmap"
+            )
         else:
             _y0 = _y0 * self.scale
             _selective0 = _y0[
