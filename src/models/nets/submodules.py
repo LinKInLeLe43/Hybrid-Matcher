@@ -4,7 +4,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.nn import Module
+from torch.nn import Module, Sequential
+
+
+class FFN(Sequential):
+    def __init__(
+        self, in_dim: int, hidden_dim: int, out_dim: int, bias: bool = False
+    ) -> None:
+        super().__init__(
+            nn.Linear(in_dim, hidden_dim, bias=bias),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            nn.Linear(hidden_dim, out_dim, bias=bias),
+        )
 
 
 class PyramidFuser(Module):

@@ -32,6 +32,7 @@ loss:
     extra_coarse_cls_sparse: false
     extra_coarse_cls_loss_pos_weight: 0.5
     extra_coarse_cls_loss_neg_weight: 0.5
+    rle_loss_weight: 1.0
 
 optimizer: ???
 

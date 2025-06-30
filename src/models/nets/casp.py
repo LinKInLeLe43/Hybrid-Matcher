@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder
+from .fine_matching import FineMatching
 
 
 class CasP(Module):
@@ -26,6 +27,7 @@ class CasP(Module):
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
         )
+        self.fine_matching = FineMatching()
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -47,12 +49,20 @@ class CasP(Module):
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
+        biases0 = result.pop("fine_reg_biases0")
+        biases1 = result.pop("fine_reg_biases1")
+
+        fine_points0 = coarse_points0 + biases0
+        fine_points1 = coarse_points1 + biases1
+
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
         result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = coarse_points0, coarse_points1
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -66,7 +76,7 @@ class CasP(Module):
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
-        x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_8x_ori, x1_8x_ori = x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
 
         if self.training:
@@ -105,6 +115,12 @@ class CasP(Module):
 
         if self.training:
             result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
+
+        result.update(
+            self.fine_matching(
+                x0_8x_ori, x1_8x_ori, x0_8x, x1_8x, result["coarse_cls_idxes"]
+            )
+        )
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
