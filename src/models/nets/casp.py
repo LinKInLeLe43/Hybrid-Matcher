@@ -32,7 +32,7 @@ class CasP(Module):
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
 
-        self.encoder.backbone.in_planes = 128
+        self.encoder.backbone.in_planes = 256
         down_module = self.encoder.backbone._make_stage(256, 4, 2)
         self.down_modules = nn.ModuleList(
             [deepcopy(down_module) for _ in range(num_coarse_matchings - 1)]
@@ -86,8 +86,8 @@ class CasP(Module):
             result = self.coarse_matchings[i](
                 x0_16x,
                 x1_16x,
-                x0_8x,
-                x1_8x,
+                x0_8x_ori,
+                x1_8x_ori,
                 encoding,
                 x0_mask=mask0_16x,
                 x1_mask=mask1_16x,

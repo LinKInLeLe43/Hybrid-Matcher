@@ -162,8 +162,8 @@ class FineMatching(Module):
         # network
         self.fine_conv = nn.Sequential(
             self._make_layer(BasicBlock, dim // 2, dim // 2, stride=1),
-            conv1x1(dim // 2, dim // 2),
-            nn.BatchNorm2d(dim // 2),
+            conv1x1(dim // 2, dim),
+            nn.BatchNorm2d(dim),
         )
 
         self.query_encoder = nn.Sequential(
@@ -212,10 +212,10 @@ class FineMatching(Module):
             return out
 
         feat_f0, feat_f1 = self.fine_conv(feat_f0), self.fine_conv(feat_f1)
-        feat0 = torch.cat([feat_f0, feat_c0], dim=1).flatten(start_dim=-2)[
+        feat0 = (feat_f0 + feat_c0).flatten(start_dim=-2)[
             None, b_indices, :, i_indices
         ]
-        feat1 = torch.cat([feat_f1, feat_c1], dim=1).flatten(start_dim=-2)[
+        feat1 = (feat_f1 + feat_c1).flatten(start_dim=-2)[
             None, b_indices, :, j_indices
         ]
 
@@ -255,9 +255,7 @@ class FineMatching(Module):
         out = {"pred_mu": mu, "pred_sigma": sigma}
 
         with torch.no_grad():
-            offsets0_to_1, offsets1_to_0 = (mu * self.local_resolution).chunk(
-                2
-            )
+            offsets0_to_1, offsets1_to_0 = (mu * self.local_resolution).chunk(2)
             scores0_to_1, scores1_to_0 = (1.0 - sigma.mean(dim=-1)).chunk(2)
             offsets1_to_0[scores1_to_0 < scores0_to_1] = 0.0
             offsets0_to_1[scores0_to_1 < scores1_to_0] = 0.0

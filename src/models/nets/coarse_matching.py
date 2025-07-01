@@ -19,7 +19,7 @@ class CoarseMatching(nn.Module):
         self.decoder = decoder
         self.threshold = threshold
         self.border_removal = border_removal
-        self.scale = self.decoder.dims[1] ** -0.5
+        self.scale = self.decoder.dims[0] ** -0.5
         self.train_percent = 0.2
         self.train_min_gt_count = 200
 
@@ -259,14 +259,14 @@ class CoarseMatching(nn.Module):
             x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
         )
         y0 = (
-            _y0.reshape(n, fh0, fw0, sh, sw, c)
+            _y0.reshape(n, fh0, fw0, sh, sw, -1)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h0, w0)
+            .reshape(n, -1, h0, w0)
         )
         y1 = (
-            _y1.reshape(n, fh1, fw1, sh, sw, c)
+            _y1.reshape(n, fh1, fw1, sh, sw, -1)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h1, w1)
+            .reshape(n, -1, h1, w1)
         )
 
         result = {}

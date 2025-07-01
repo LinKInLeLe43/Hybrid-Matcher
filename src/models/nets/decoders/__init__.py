@@ -34,7 +34,7 @@ class Decoder(Module):
             [deepcopy(x_layer) for _ in range(num_x_layers)]
         )
         self.fuser = PyramidFuser(dims)
-        y_layer = RegionSelectiveTransformerLayer(stride, dims[1], **kwargs)
+        y_layer = RegionSelectiveTransformerLayer(stride, dims[0], **kwargs)
         self.y_layers = nn.ModuleList(
             [deepcopy(y_layer) for _ in range(num_y_layers)]
         )
