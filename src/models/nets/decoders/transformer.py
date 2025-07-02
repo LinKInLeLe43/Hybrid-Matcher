@@ -2,7 +2,8 @@ from typing import Optional, Sequence, Tuple
 from warnings import warn
 
 import torch
-from torch import Tensor, nn
+import torch.nn as nn
+from torch import Tensor
 from torch.nn import Module
 
 try:
@@ -76,20 +77,10 @@ class SelfBlock(Module):
 
         if stride > 1:
             self.down_proj = nn.Conv2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
+                dim, dim, self.stride, stride=self.stride, groups=dim, bias=bias
             )
             self.up_proj = nn.ConvTranspose2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
+                dim, dim, self.stride, stride=self.stride, groups=dim, bias=bias
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
@@ -169,20 +160,10 @@ class CrossBlock(Module):
 
         if stride > 1:
             self.down_proj = nn.Conv2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
+                dim, dim, self.stride, stride=self.stride, groups=dim, bias=bias
             )
             self.up_proj = nn.ConvTranspose2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
+                dim, dim, self.stride, stride=self.stride, groups=dim, bias=bias
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
@@ -226,12 +207,8 @@ class CrossBlock(Module):
             v0,
             mask=mask.transpose(-1, -2) if mask is not None else None,
         )
-        message0 = self.out_proj(
-            message0.transpose(1, 2).flatten(start_dim=-2)
-        )
-        message1 = self.out_proj(
-            message1.transpose(1, 2).flatten(start_dim=-2)
-        )
+        message0 = self.out_proj(message0.transpose(1, 2).flatten(start_dim=-2))
+        message1 = self.out_proj(message1.transpose(1, 2).flatten(start_dim=-2))
         message0 = message0.unflatten(1, (h0, w0))
         message1 = message1.unflatten(1, (h1, w1))
         if self.stride != 1:

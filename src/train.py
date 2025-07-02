@@ -2,7 +2,12 @@ import hydra
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 
-from src.utils import RankedLogger, instantiate_callbacks, instantiate_loggers
+from src.utils import (
+    RankedLogger,
+    instantiate_callbacks,
+    instantiate_loggers,
+    log_hyperparameters,
+)
 
 log = RankedLogger(__name__, rank_zero_only=True)
 
@@ -26,6 +31,10 @@ def train(cfg: DictConfig) -> None:
     trainer = hydra.utils.instantiate(
         cfg.trainer, callbacks=callbacks, logger=logger
     )
+
+    if logger:
+        log.info("Logging hyperparameters!")
+        log_hyperparameters(cfg=cfg, model=model, trainer=trainer)
 
     log.info("Starting training!")
     trainer.fit(

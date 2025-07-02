@@ -2,7 +2,8 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
 
 import torch
-from torch import Tensor, nn
+import torch.nn as nn
+from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder

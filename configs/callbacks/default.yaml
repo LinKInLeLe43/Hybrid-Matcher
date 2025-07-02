@@ -8,6 +8,6 @@ defaults:
 model_checkpoint:
     filename: "epoch={epoch}-coarse_precision={val_metric/coarse_precision:.3f}"
     monitor: "val_metric/coarse_precision"
-    save_top_k: 15
+    save_top_k: 15 # [FIXME]: reset when release
     mode: "max"
     auto_insert_metric_name: false
