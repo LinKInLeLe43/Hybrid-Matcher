@@ -2,12 +2,12 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import kornia as K
-from kornia import geometry
 import numpy as np
-from numpy import linalg
 import poselib
 import torch
-from torch.nn import functional as F
+import torch.nn.functional as F
+from kornia import geometry
+from numpy import linalg
 
 
 def _warp_point(
@@ -403,53 +403,58 @@ def compute_error(
 def _compute_precision(
     errors_per_batch: np.ndarray,
     thresholds: List[float]
-) -> np.ndarray:
-    precisions_per_threshold = []
+) -> Dict[float, float]:
+    precisions_per_threshold = {}
     for threshold in thresholds:
         precisions = []
         for b in range(len(errors_per_batch)):
             mask = errors_per_batch[b] < threshold
             precisions.append(mask.mean() if len(mask) != 0 else 0.0)
-        precisions_per_threshold.append(np.mean(precisions))
-    precisions_per_threshold = np.array(precisions_per_threshold)
+        precisions_per_threshold[threshold] = np.mean(precisions)
     return precisions_per_threshold
 
 
-def _compute_aucs(errors: np.ndarray, thresholds: List[int]) -> np.ndarray:
+def _compute_aucs(
+    errors: np.ndarray, thresholds: List[float]
+) -> Dict[float, float]:
     errors = np.sort(np.append(errors, 0))
     recalls = np.linspace(0, 1, num=len(errors))
-    aucs = []
+    aucs = {}
     for threshold in thresholds:
         idx = np.searchsorted(errors, threshold)
         y = np.append(recalls[:idx], recalls[idx - 1])
         x = np.append(errors[:idx] / threshold, 1)
-        aucs.append(np.trapz(y, x=x))
-    aucs = np.array(aucs)
+        aucs[threshold] = np.trapz(y, x=x)
     return aucs
 
 
 def compute_metric(
     error: Dict[str, Any],
-    end_point_thresholds: List[float],
-    epipolar_thresholds: List[float],
-    pose_thresholds: List[int],
+    config: Dict[str, Any],
     advanced: bool = False
 ) -> Dict[str, Any]:
     n = len(error["identifiers"])
     idxes = np.unique(error["identifiers"], return_index=True)[1]
     epipolar_precisions = _compute_precision(
-        error["epipolar_errors_per_batch"][idxes], epipolar_thresholds)
+        error["epipolar_errors_per_batch"][idxes],
+        config["sym_epi"]["thresholds"],
+    )
     pose_errors = np.maximum(error["R_errors"], error["t_errors"])
     pose_aucs = _compute_aucs(
-        pose_errors.reshape(n, -1)[idxes].reshape(-1), pose_thresholds)
+        pose_errors.reshape(n, -1)[idxes].reshape(-1),
+        config["rel_pose"]["thresholds"],
+    )
     metric = {"epipolar_precisions": epipolar_precisions,
               "pose_aucs": pose_aucs}
     if advanced:
         metric["end_point_precisions"] = _compute_precision(
-            error["end_point_errors_per_batch"][idxes], end_point_thresholds)
+            error["end_point_errors_per_batch"][idxes],
+            config["rel_pose"]["thresholds"],
+        )
         metric["inlier_end_point_precisions"] = _compute_precision(
             error["inlier_end_point_errors_per_batch"][idxes],
-            end_point_thresholds)
+            config["end_point"]["thresholds"],
+        )
         metric["true_coarse_count"] = error["true_coarse_counts"][idxes].mean()
         metric["inlier_true_coarse_count"] = (
             error["inlier_true_coarse_counts"][idxes].mean())

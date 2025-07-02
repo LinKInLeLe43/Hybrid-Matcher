@@ -38,7 +38,13 @@ canonical_batch_size: ???
 canonical_learning_rate: ???
 canonical_warmup_step_count: ???
 warmup_ratio: ???
-end_point_thresholds: ???
-epipolar_thresholds: ???
-pose_ransac_count: ???
-pose_thresholds: ???
+metric_config:
+    sym_epi:
+        thresholds: [1e-4, 5e-4]
+    end_point:
+        thresholds: [1.0, 3.0, 5.0]
+    rel_pose:
+        num_evals: 5
+        ransac_type: "ransac"
+        thresholds: [5.0, 10.0, 20.0]
+

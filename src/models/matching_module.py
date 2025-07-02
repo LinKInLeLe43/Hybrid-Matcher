@@ -42,10 +42,7 @@ class MatchingModule(pl.LightningModule):
         canonical_learning_rate: float,
         canonical_warmup_step_count: int,
         warmup_ratio: float,
-        end_point_thresholds: List[float],
-        epipolar_thresholds: List[float],
-        pose_ransac_count: int,
-        pose_thresholds: List[float],
+        metric_config: Dict[str, Any],
         train_plot_enabled: bool = False,
         val_plot_count: int = 32,
         test_fp16_precision: bool = False,
@@ -115,9 +112,9 @@ class MatchingModule(pl.LightningModule):
             self.trainer.global_rank == 0 and
             self.trainer._logger_connector.should_update_logs):
             error = utils.compute_error(
-                batch, result, self.hparams.pose_ransac_count)
+                batch, result, self.hparams.metric_config["rel_pose"]["num_evals"])
             figures = utils.plot_evaluation_figures(
-                batch, result, error, self.hparams.epipolar_thresholds[0])
+                batch, result, error, self.hparams.metric_config["sym_epi"]["thresholds"][0])
             self.logger.experiment.add_figure(
                 "train_plot", figures, global_step=self.global_step)
         return loss
@@ -143,13 +140,13 @@ class MatchingModule(pl.LightningModule):
         result, loss = self.model_step(batch)
         loss = loss.pop("scalar")
         error = utils.compute_error(
-            batch, result, self.hparams.pose_ransac_count,
+            batch, result, self.hparams.metric_config["rel_pose"]["num_evals"],
             advanced=self.hparams.advanced_metrics,
             coarse_scale=self.net.scales[0])
         figures = []
         if batch_idx % self.hparams.val_plot_intervals[0] == 0:
             figures = utils.plot_evaluation_figures(
-                batch, result, error, self.hparams.epipolar_thresholds[0])
+                batch, result, error, self.hparams.metric_config["sym_epi"]["thresholds"][0])
         output = {"loss": loss, "error": error, "figures": figures}
         return output
 
@@ -164,13 +161,13 @@ class MatchingModule(pl.LightningModule):
         error = {k: np.concatenate(v)
                  for k, v in gathered_output.pop("error").items()}
         metric = utils.compute_metric(
-            error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
-            advanced=self.hparams.advanced_metrics)
-        for t, m in zip(self.hparams.epipolar_thresholds,
-                        metric.pop("epipolar_precisions")):
+            error,
+            self.hparams.metric_config,
+            advanced=self.hparams.advanced_metrics,
+        )
+        for t, m in metric.pop("epipolar_precisions").items():
             self.log(f"val_metric/epipolar_precision@{t}", m)
-        for t, m in zip(self.hparams.pose_thresholds, metric.pop("pose_aucs")):
+        for t, m in metric.pop("pose_aucs").items():
             self.log(f"val_metric/pose_auc@{t}", m)
         if self.hparams.advanced_metrics:
             self.log(
@@ -201,11 +198,10 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "val_metric/extra_coarse_topk_recall",
                 metric.pop("extra_coarse_topk_recall"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
-                self.log(f"val_metric/end_point_precision@{t}", m0)
-                self.log(f"val_metric/inlier_end_point_precision@{t}", m1)
+            for t, m in metric.pop("end_point_precisions").items():
+                self.log(f"val_metric/end_point_precision@{t}", m)
+            for t, m in metric.pop("inlier_end_point_precisions").items():
+                self.log(f"val_metric/inlier_end_point_precision@{t}", m)
 
         if not self.trainer.sanity_checking:
             figures = np.concatenate(gathered_output.pop("figures"))
@@ -243,7 +239,7 @@ class MatchingModule(pl.LightningModule):
                 extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
         with self.test_time_profiler.profile("error"):
             error = utils.compute_error(
-                batch, result, self.hparams.pose_ransac_count,
+                batch, result, self.hparams.metric_config["rel_pose"]["num_evals"],
                 enable_loransac=self.hparams.test_enable_loransac,
                 advanced=self.hparams.advanced_metrics,
                 coarse_scale=self.net.scales[0])
@@ -265,13 +261,13 @@ class MatchingModule(pl.LightningModule):
         error = {k: np.concatenate(v)
                  for k, v in gathered_output.pop("error").items()}
         metric = utils.compute_metric(
-            error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
-            advanced=self.hparams.advanced_metrics)
-        for t, m in zip(self.hparams.epipolar_thresholds,
-                        metric.pop("epipolar_precisions")):
+            error,
+            self.hparams.metric_config,
+            advanced=self.hparams.advanced_metrics,
+        )
+        for t, m in metric.pop("epipolar_precisions").items():
             self.log(f"test_metric/epipolar_precision@{t}", m)
-        for t, m in zip(self.hparams.pose_thresholds, metric.pop("pose_aucs")):
+        for t, m in metric.pop("pose_aucs").items():
             self.log(f"test_metric/pose_auc@{t}", m)
         if self.hparams.advanced_metrics:
             self.log(
@@ -303,11 +299,10 @@ class MatchingModule(pl.LightningModule):
             self.log(
                 "test_metric/extra_coarse_topk_recall",
                 metric.pop("extra_coarse_topk_recall"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
-                self.log(f"test_metric/end_point_precision@{t}", m0)
-                self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
+            for t, m in metric.pop("end_point_precisions").items():
+                self.log(f"test_metric/end_point_precision@{t}", m)
+            for t, m in metric.pop("inlier_end_point_precisions").items():
+                self.log(f"test_metric/inlier_end_point_precision@{t}", m)
 
         if self.hparams.dump_dir is not None:
             pathlib.Path(
