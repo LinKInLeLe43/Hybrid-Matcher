@@ -19,7 +19,7 @@ class CoarseMatching(nn.Module):
         self.decoder = decoder
         self.threshold = threshold
         self.border_removal = border_removal
-        self.scale = self.decoder.dims[0] ** -0.5
+        self.scale = self.decoder.dims[1] ** -0.5
         self.train_percent = 0.2
         self.train_min_gt_count = 200
 
@@ -255,18 +255,21 @@ class CoarseMatching(nn.Module):
         sh = sw = self.stride
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
-        _y0, _y1, idxes0_to_1, idxes1_to_0, similarity = self.decoder(
-            x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
+        out0_list, out1_list, idxes0_to_1, idxes1_to_0, similarity = (
+            self.decoder(
+                x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
+            )
         )
-        y0 = (
-            _y0.reshape(n, fh0, fw0, sh, sw, -1)
+        _y0, _y1 = out0_list[0], out1_list[0]
+        out0_list[0] = y0 = (
+            _y0.reshape(n, fh0, fw0, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, -1, h0, w0)
+            .reshape(n, c, h0, w0)
         )
-        y1 = (
-            _y1.reshape(n, fh1, fw1, sh, sw, -1)
+        out1_list[0] = y1 = (
+            _y1.reshape(n, fh1, fw1, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, -1, h1, w1)
+            .reshape(n, c, h1, w1)
         )
 
         result = {}
@@ -282,7 +285,7 @@ class CoarseMatching(nn.Module):
         _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
         _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
-        result["x_8x"] = (y0, y1)
+        result["x"] = (out0_list, out1_list)
         if only_decode:
             return result
 

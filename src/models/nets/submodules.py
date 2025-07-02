@@ -31,16 +31,16 @@ class PyramidFuser(Module):
 
         self.lateral_convs = nn.ModuleList()
         self.fusion_blocks = nn.ModuleList()
-        dim = dims[0]
-        self.lateral_convs.append(nn.Conv2d(dim, dim, 1, bias=bias))
+        self.lateral_convs.append(nn.Conv2d(dims[0], dims[0], 1, bias=bias))
         for i in range(len(dims) - 1):
-            self.lateral_convs.append(nn.Conv2d(dims[i + 1], dim, 1, bias=bias))
+            dim0, dim1 = dims[i : i + 2]
+            self.lateral_convs.append(nn.Conv2d(dim1, dim0, 1, bias=bias))
             self.fusion_blocks.append(
                 nn.Sequential(
-                    nn.Conv2d(dim, dim, 3, padding=1, bias=bias),
-                    nn.BatchNorm2d(dim),
+                    nn.Conv2d(dim0, dim0, 3, padding=1, bias=bias),
+                    nn.BatchNorm2d(dim0),
                     nn.LeakyReLU(inplace=True),
-                    nn.Conv2d(dim, dim, 3, padding=1, bias=bias),
+                    nn.Conv2d(dim0, dim1, 3, padding=1, bias=bias),
                 )
             )
 
