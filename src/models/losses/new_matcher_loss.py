@@ -1,6 +1,7 @@
 from typing import Any, Dict, Optional
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -12,6 +13,52 @@ def _focal_loss(  # TODO: support NLL
     # TODO: check alpha in ELoFTR
     output = -alpha * x.log()
     return output
+
+
+def _compute_extra_cls_loss(
+    sparse: bool,
+    heatmap: torch.Tensor,
+    gt_mask: torch.Tensor,
+    loss_pos_weight: float = 1.0,
+    loss_neg_weight: float = 1.0,
+    mask0: Optional[torch.Tensor] = None,
+    mask1: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    dtype = heatmap.dtype
+    Tp, Tn = 4.0, 1.0
+
+    weight0 = weight1 = None
+    if mask0 is not None:
+        weight0 = mask0.flatten(start_dim=1).float()
+        weight1 = mask1.flatten(start_dim=1).float()
+    if not gt_mask.any():
+        gt_mask[0, 0, 0] = True
+        loss_pos_weight = 0.0
+        if weight0 is not None:
+            weight0[0, 0] = 0.0
+        if weight1 is not None:
+            weight1[0, 0] = 0.0
+
+    valid_mask0, valid_mask1 = gt_mask.any(dim=-1), gt_mask.any(dim=-2)
+
+    pos_mask = torch.zeros_like(gt_mask, dtype=dtype).masked_fill(~gt_mask, -1e9)
+    pos0 = (torch.logsumexp(-heatmap / Tp + pos_mask, dim=-1) * Tp)[valid_mask0]
+    pos1 = (torch.logsumexp(-heatmap / Tp + pos_mask, dim=-2) * Tp)[valid_mask1]
+
+    neg_mask = torch.zeros_like(gt_mask, dtype=dtype).masked_fill(gt_mask, -1e9)
+    if mask0 is not None:
+        mask = mask0.flatten(start_dim=1)[:, :, None] & mask1.flatten(start_dim=1)[:, None, :]
+        neg_mask.masked_fill_(~mask, -1e9)
+    neg0 = (torch.logsumexp(heatmap / Tn + neg_mask, dim=-1) * Tn)[valid_mask0]
+    neg1 = (torch.logsumexp(heatmap / Tn + neg_mask, dim=-2) * Tn)[valid_mask1]
+
+    losses0 = 0.25 * F.softplus(pos0 + neg0).clamp(max=6.9)
+    losses1 = 0.25 * F.softplus(pos1 + neg1).clamp(max=6.9)
+    if weight0 is not None:
+        losses0 *= weight0[valid_mask0]
+        losses1 *= weight1[valid_mask1]
+    loss = loss_pos_weight * (losses0.mean() + losses1.mean())
+    return loss
 
 
 def _compute_cls_loss(
@@ -220,7 +267,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 extra_coarse_gt_mask is not None):
                 extra_coarse_cls_loss = 0.0
                 for _extra_coarse_cls_heatmap in extra_coarse_cls_heatmap:
-                    extra_coarse_cls_loss += _compute_cls_loss(
+                    extra_coarse_cls_loss += _compute_extra_cls_loss(
                         self.extra_coarse_cls_sparse,
                         _extra_coarse_cls_heatmap,
                         extra_coarse_gt_mask,
@@ -240,7 +287,7 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
                 extra_extra_coarse_gt_mask is not None):
                 extra_extra_coarse_cls_loss = 0.0
                 for _extra_extra_coarse_cls_heatmap in extra_extra_coarse_cls_heatmap:
-                    extra_extra_coarse_cls_loss += _compute_cls_loss(
+                    extra_extra_coarse_cls_loss += _compute_extra_cls_loss(
                         self.extra_extra_coarse_cls_sparse,
                         _extra_extra_coarse_cls_heatmap,
                         extra_extra_coarse_gt_mask,

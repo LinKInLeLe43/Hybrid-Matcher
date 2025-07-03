@@ -259,20 +259,14 @@ class CoarseMatching(nn.Module):
             similarity = similarity_list.pop(-1)
             if x0_mask is not None and x1_mask is not None:
                 mask = x0_mask.view(n, -1, 1) & x1_mask.view(n, 1, -1)
-                similarity.masked_fill_(~mask, -float("inf"))
-            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
-            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
-            confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_extra_coarse_cls_heatmap"] = confidence
+                similarity.masked_fill_(~mask, -1e9)
+            result["extra_extra_coarse_cls_heatmap"] = similarity
 
             similarity = similarity_list.pop(-1)
             if y0_mask is not None and y1_mask is not None:
                 mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
-                similarity.masked_fill_(~mask, -float("inf"))
-            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
-            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
-            confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_coarse_cls_heatmap"] = confidence
+                similarity.masked_fill_(~mask, -1e9)
+            result["extra_coarse_cls_heatmap"] = similarity
 
             z0 = z0.flatten(start_dim=2).transpose(1, 2) * self.scale
             z1 = z1.flatten(start_dim=2).transpose(1, 2)
