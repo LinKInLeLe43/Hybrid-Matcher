@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import Optional, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -48,7 +48,7 @@ class Decoder(Module):
         encoding: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    ) -> Tuple[List[Tensor], List[Tensor], Tensor, Tensor, Tensor]:
         n, _, fh0, fw0 = x0.shape
         _, _, fh1, fw1 = x1.shape
 
@@ -100,4 +100,4 @@ class Decoder(Module):
             y0, y1 = layer(
                 y0, y1, indices0_to_1, indices1_to_0, (fh0, fw0), (fh1, fw1)
             )
-        return y0, y1, indices0_to_1, indices1_to_0, similarity
+        return [y0, x0], [y1, x1], indices0_to_1, indices1_to_0, similarity

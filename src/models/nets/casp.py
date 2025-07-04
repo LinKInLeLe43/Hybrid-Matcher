@@ -3,10 +3,48 @@ from typing import Any, Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
 from .encoders import Encoder
+from .fine_matching import FineMatching
+
+
+class Conv2d_BN_Act(nn.Sequential):
+    def __init__(
+        self,
+        a,
+        b,
+        ks=1,
+        stride=1,
+        pad=0,
+        dilation=1,
+        groups=1,
+        bn_weight_init=1,
+        act=None,
+        drop=None,
+    ):
+        super().__init__()
+        self.inp_channel = a
+        self.out_channel = b
+        self.ks = ks
+        self.pad = pad
+        self.stride = stride
+        self.dilation = dilation
+        self.groups = groups
+
+        self.add_module(
+            "c", nn.Conv2d(a, b, ks, stride, pad, dilation, groups, bias=False)
+        )
+        bn = nn.BatchNorm2d(b)
+        nn.init.constant_(bn.weight, bn_weight_init)
+        nn.init.constant_(bn.bias, 0)
+        self.add_module("bn", bn)
+        if act != None:
+            self.add_module("a", act)
+        if drop != None:
+            self.add_module("d", nn.Dropout(drop))
 
 
 class CasP(Module):
@@ -26,6 +64,7 @@ class CasP(Module):
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
         )
+        self.fine_matching = FineMatching()
         self.extra_scale = extra_scale
 
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
@@ -34,6 +73,33 @@ class CasP(Module):
         down_module = self.encoder.backbone._make_stage(256, 4, 2)
         self.down_modules = nn.ModuleList(
             [deepcopy(down_module) for _ in range(num_coarse_matchings - 1)]
+        )
+
+        self.drop = None
+        self.block_dims = [128, 256]
+        self.fc16 = Conv2d_BN_Act(
+            self.block_dims[-1], self.block_dims[-1], 1, drop=self.drop
+        )
+        self.fc8 = Conv2d_BN_Act(
+            self.block_dims[-2], self.block_dims[-1], 1, drop=self.drop
+        )
+        self.att16 = Conv2d_BN_Act(
+            self.block_dims[-1],
+            self.block_dims[-1],
+            1,
+            act=nn.Sigmoid(),
+            drop=self.drop,
+        )
+        self.dwconv8 = nn.Sequential(
+            Conv2d_BN_Act(
+                self.block_dims[-1],
+                self.block_dims[-1],
+                ks=3,
+                pad=1,
+                groups=self.block_dims[-1],
+                act=nn.GELU(),
+            ),
+            Conv2d_BN_Act(self.block_dims[-1], self.block_dims[-1], 1),
         )
 
     def _scale_points(
@@ -47,12 +113,20 @@ class CasP(Module):
         coarse_points0 = self.scales[0] * result["points0"]
         coarse_points1 = self.scales[0] * result["points1"]
 
+        biases0 = result.pop("fine_reg_biases0")
+        biases1 = result.pop("fine_reg_biases1")
+
+        fine_points0 = coarse_points0 + biases0
+        fine_points1 = coarse_points1 + biases1
+
         if scale0 is not None and scale1 is not None:
             coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
             coarse_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
         result["coarse_points0"] = coarse_points0
         result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = coarse_points0, coarse_points1
+        result["points0"], result["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -66,7 +140,7 @@ class CasP(Module):
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
-        x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
+        x0_8x_ori, x1_8x_ori = x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
 
         if self.training:
@@ -76,8 +150,8 @@ class CasP(Module):
             result = self.coarse_matchings[i](
                 x0_16x,
                 x1_16x,
-                x0_8x,
-                x1_8x,
+                x0_8x_ori,
+                x1_8x_ori,
                 encoding,
                 x0_mask=mask0_16x,
                 x1_mask=mask1_16x,
@@ -87,7 +161,7 @@ class CasP(Module):
                 y_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
-            x0_8x, x1_8x = result.pop("x_8x")
+            (x0_8x, x0_16x), (x1_8x, x1_16x) = result.pop("x")
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
 
@@ -105,6 +179,24 @@ class CasP(Module):
 
         if self.training:
             result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
+
+        f8, f16 = torch.cat([x0_8x, x1_8x]), torch.cat([x0_16x, x1_16x])
+
+        f16 = self.fc16(f16)
+        f16_up = F.interpolate(f16, scale_factor=2.0, mode="bilinear")
+        att16_up = F.interpolate(
+            self.att16(f16), scale_factor=2.0, mode="bilinear"
+        )
+        f8 = self.fc8(f8)
+        f8 = self.dwconv8(f8 * att16_up + f16_up)
+
+        x0_8x, x1_8x = f8.chunk(2)
+
+        result.update(
+            self.fine_matching(
+                x0_8x_ori, x1_8x_ori, x0_8x, x1_8x, result["coarse_cls_idxes"]
+            )
+        )
 
         self._scale_points(result, data.get("scale0"), data.get("scale1"))
         return result
