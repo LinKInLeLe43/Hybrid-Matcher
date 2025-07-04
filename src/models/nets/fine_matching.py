@@ -4,10 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from torch.nn import Module, Sequential
+from torch.nn import Module
 
-# from .submodules import FFN
-
+from .submodules import FFN
 
 # class FineMatching(Module):
 #     def __init__(
@@ -110,37 +109,6 @@ class BasicBlock(nn.Module):
         return self.relu(x + y)
 
 
-class Conv1d_BN_Act(Sequential):
-    def __init__(
-        self,
-        a,
-        b,
-        ks=1,
-        stride=1,
-        pad=0,
-        dilation=1,
-        groups=1,
-        bn_weight_init=1,
-    ):
-        super().__init__()
-        self.inp_channel = a
-        self.out_channel = b
-        self.ks = ks
-        self.pad = pad
-        self.stride = stride
-        self.dilation = dilation
-        self.groups = groups
-
-        self.add_module(
-            "c", nn.Conv1d(a, b, ks, stride, pad, dilation, groups, bias=False)
-        )
-        bn = nn.BatchNorm1d(b)
-        nn.init.constant_(bn.weight, bn_weight_init)
-        nn.init.constant_(bn.bias, 0)
-        self.add_module("bn", bn)
-        self.add_module("a", nn.GELU())
-
-
 def soft_argmax(x, temperature=1.0):
     L = x.shape[1]
     assert L % 2  # L is odd to ensure symmetry
@@ -166,26 +134,15 @@ class FineMatching(Module):
             nn.BatchNorm2d(dim),
         )
 
-        self.query_encoder = nn.Sequential(
-            Conv1d_BN_Act(dim, dim), Conv1d_BN_Act(dim, dim)
+        bias = False
+        self.query_encoder = FFN(dim, dim, dim, bias=bias)
+        self.reference_encoder = FFN(dim, dim, dim, bias=bias)
+        self.merge_qr = FFN(dim * 2, dim * 2, dim * 2, bias=bias)
+        self.x_head = FFN(
+            dim * 2, dim * 2, (self.coord_length + 1) + 1, bias=bias
         )
-
-        self.reference_encoder = nn.Sequential(
-            Conv1d_BN_Act(dim, dim), Conv1d_BN_Act(dim, dim)
-        )
-
-        self.merge_qr = nn.Sequential(
-            Conv1d_BN_Act(dim * 2, dim * 2), Conv1d_BN_Act(dim * 2, dim * 2)
-        )
-
-        self.x_head = nn.Sequential(
-            Conv1d_BN_Act(dim * 2, dim * 2),
-            nn.Conv1d(dim * 2, self.coord_length + 2, 1),
-        )
-
-        self.y_head = nn.Sequential(
-            Conv1d_BN_Act(dim * 2, dim * 2),
-            nn.Conv1d(dim * 2, self.coord_length + 2, 1),
+        self.y_head = FFN(
+            dim * 2, dim * 2, (self.coord_length + 1) + 1, bias=bias
         )
 
     def _make_layer(self, block, in_dim, out_dim, stride=1):
@@ -219,16 +176,12 @@ class FineMatching(Module):
             None, b_indices, :, j_indices
         ]
 
-        q = self.query_encoder(
-            torch.cat([feat0, feat1], dim=1).transpose(-1, -2)
-        )
-        r = self.reference_encoder(
-            torch.cat([feat1, feat0], dim=1).transpose(-1, -2)
-        )
-        out = self.merge_qr(torch.cat([q, r], dim=1))
+        q = self.query_encoder(torch.cat([feat0, feat1], dim=1))
+        r = self.reference_encoder(torch.cat([feat1, feat0], dim=1))
+        out = self.merge_qr(torch.cat([q, r], dim=-1))
 
-        x = self.x_head(out).permute(0, 2, 1).contiguous()
-        y = self.y_head(out).permute(0, 2, 1).contiguous()
+        x = self.x_head(out)
+        y = self.y_head(out)
 
         x01, x10 = x.chunk(2, dim=1)
         x01 = x01.reshape(-1, self.coord_length + 2)
