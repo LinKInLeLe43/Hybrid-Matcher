@@ -12,12 +12,17 @@ from .transformer import RegionSelectiveTransformerLayer, TransformerLayer
 
 class GlobalDecoder(Module):
     def __init__(
-        self, dim: int, num_layers: int, enable_crop: bool = True, **kwargs
+        self,
+        dim: int,
+        num_heads: int,
+        num_layers: int,
+        enable_crop: bool = True,
+        **kwargs,
     ) -> None:
         super().__init__()
         self.enable_crop = enable_crop
 
-        layer = TransformerLayer(dim, **kwargs)
+        layer = TransformerLayer(dim, num_heads, **kwargs)
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )
@@ -67,6 +72,7 @@ class SelectiveDecoder(Module):
     def __init__(
         self,
         dim_list: Sequence[int],
+        num_heads: int,
         stride: int,
         topk: int,
         num_layers: int,
@@ -79,7 +85,9 @@ class SelectiveDecoder(Module):
         self.scale = dim_list[1] ** -0.5
 
         self.fuser = PyramidFuser(dim_list)
-        layer = RegionSelectiveTransformerLayer(stride, dim_list[0], **kwargs)
+        layer = RegionSelectiveTransformerLayer(
+            dim_list[0], num_heads, stride, **kwargs
+        )
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )
@@ -134,6 +142,7 @@ class Decoder(Module):
     def __init__(
         self,
         dim_list: Sequence[int],
+        num_heads_list: Sequence[int],
         stride_list: Sequence[int],
         topk_list: Sequence[int],
         num_layers_list: Sequence[int],
@@ -146,6 +155,7 @@ class Decoder(Module):
 
         self.global_decoder = GlobalDecoder(
             dim_list[-1],
+            num_heads_list[-1],
             num_layers_list[-1],
             enable_crop=enable_crop,
             **kwargs,
@@ -155,6 +165,7 @@ class Decoder(Module):
             self.selective_decoders.append(
                 SelectiveDecoder(
                     dim_list[i : i + 2],
+                    num_heads_list[i],
                     stride_list[i],
                     topk_list[i],
                     num_layers_list[i],

@@ -17,6 +17,10 @@ net:
                 - 128
                 - 192
                 - 256
+            num_heads_list:
+                - 8
+                - 8
+                - 8
             stride_list:
                 - 2
                 - 2
@@ -27,7 +31,6 @@ net:
                 - 1
                 - 1
                 - 2
-            num_heads: 8
     num_coarse_matchings: 2
     extra_scale: 16
 
