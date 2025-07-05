@@ -24,7 +24,7 @@ class CoarseMatching(nn.Module):
         self.train_percent = train_percent
         self.train_min_gt_count = train_min_gt_count
 
-        self.scale = fused_selective_module.scale
+        self.stride = fused_selective_module.stride
 
     def _remove_border_for_train(
         self,
@@ -216,15 +216,15 @@ class CoarseMatching(nn.Module):
         _, idxes1_to_0 = _similarity.transpose(1, 2).topk(topk, dim=2)
 
         _x0, _x1, _x0_to_1, _x1_to_0, _idxes0_to_1, _idxes1_to_0 = self.fused_selective_module(
-            x0, x1, y0, y1, idxes0_to_1, idxes1_to_0)
+            [x0, y0], [x1, y1], idxes0_to_1, idxes1_to_0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
         x0 = rearrange(
             _x0, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h0 // self.scale, sh=self.scale
+            fh=h0 // self.stride, sh=self.stride
         )
         x1 = rearrange(
             _x1, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h1 // self.scale, sh=self.scale
+            fh=h1 // self.stride, sh=self.stride
         )
         result["x_8x"] = (x0, x1)
 
@@ -249,11 +249,11 @@ class CoarseMatching(nn.Module):
             similarity1_to_0 = torch.einsum("npkc,npqc->nkpq", _x1_to_0, _x1)
             similarity0_to_1 = rearrange(
                 similarity0_to_1, "n (fh fw) (sh sw) k -> n (fh sh fw sw) k",
-                fh=h0 // self.scale, sh=self.scale
+                fh=h0 // self.stride, sh=self.stride
             )
             similarity1_to_0 = rearrange(
                 similarity1_to_0, "n k (fh fw) (sh sw) -> n k (fh sh fw sw)",
-                fh=h1 // self.scale, sh=self.scale
+                fh=h1 // self.stride, sh=self.stride
             )
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature

@@ -477,7 +477,7 @@ class MergeBlock(nn.Module):
 class GlobalCoC(nn.Module):
     def __init__(
         self,
-        scale: int,
+        stride: int,
         in_depth: int,
         hidden_depth: int,
         heads_count: int,
@@ -487,7 +487,7 @@ class GlobalCoC(nn.Module):
     ) -> None:
         super().__init__()
 
-        merge_block = MergeBlock(scale, in_depth, bias=bias)
+        merge_block = MergeBlock(stride, in_depth, bias=bias)
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in range(layer_count)])
 
@@ -536,9 +536,9 @@ class GlobalCoC(nn.Module):
             # mask11 = x1_mask[:, :, None] & y1_mask[:, None, :]
             xy_mask01 = x0_mask[:, :, None] & y1_mask[:, None, :]
             xy_mask10 = xy_mask01.transpose(-1, -2)
-            yy_mask00 = y0_mask[:, :, None] & y0_mask[:, None, :]
-            yy_mask11 = y1_mask[:, :, None] & y1_mask[:, None, :]
-            yy_mask01 = y0_mask[:, :, None] & y1_mask[:, None, :]
+            yy_mask00 = y0_mask[:, None, :, None] & y0_mask[:, None, None, :]
+            yy_mask11 = y1_mask[:, None, :, None] & y1_mask[:, None, None, :]
+            yy_mask01 = y0_mask[:, None, :, None] & y1_mask[:, None, None, :]
             yy_mask10 = yy_mask01.transpose(-1, -2)
 
         for merge_block, global_block, self_block, cross_block in zip(
