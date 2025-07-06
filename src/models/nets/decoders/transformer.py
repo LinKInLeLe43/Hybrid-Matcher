@@ -279,10 +279,10 @@ class RegionSelectiveCrossBlock(Module):
         self.qkv_proj = nn.Linear(dim, dim * 3, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.ffn = nn.Sequential(
-            nn.Linear(dim * 2, dim * 2, bias=bias),
-            nn.LayerNorm(dim * 2),
+            nn.Conv2d(dim * 2, dim * 2, 1, bias=bias),
+            nn.BatchNorm2d(dim * 2),
             nn.GELU(),
-            nn.Linear(dim * 2, dim, bias=bias),
+            nn.Conv2d(dim * 2, dim, 3, padding=1, bias=bias),
         )
 
     def forward(
@@ -291,7 +291,12 @@ class RegionSelectiveCrossBlock(Module):
         x1: Tensor,
         indices0_to_1: Tensor,
         indices1_to_0: Tensor,
+        size0: Tuple[int, int],
+        size1: Tuple[int, int],
     ) -> Tuple[Tensor, Tensor]:
+        n = x0.shape[0]
+        fh0, fw0 = size0
+        fh1, fw1 = size1
         n_range = torch.arange(x0.shape[0], device=x0.device)[:, None, None]
 
         q0, k0, v0 = (
@@ -318,8 +323,31 @@ class RegionSelectiveCrossBlock(Module):
             self.attention(q1, k0, v0).transpose(-3, -2).flatten(start_dim=-2)
         )
         message0, message1 = self.out_proj(message0), self.out_proj(message1)
-        x0 = x0 + self.ffn(torch.cat([x0, message0], dim=-1))
-        x1 = x1 + self.ffn(torch.cat([x1, message1], dim=-1))
+        message0 = (
+            torch.cat([x0, message0], dim=-1)
+            .reshape(n, fh0, fw0, self.stride, self.stride, -1)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(n, -1, fh0 * self.stride, fw0 * self.stride)
+        )
+        message0 = (
+            self.ffn(message0)
+            .reshape(n, -1, fh0, self.stride, fw0, self.stride)
+            .permute(0, 2, 4, 3, 5, 1)
+            .reshape(n, fh0 * fw0, self.stride * self.stride, -1)
+        )
+        message1 = (
+            torch.cat([x1, message1], dim=-1)
+            .reshape(n, fh1, fw1, self.stride, self.stride, -1)
+            .permute(0, 5, 1, 3, 2, 4)
+            .reshape(n, -1, fh1 * self.stride, fw1 * self.stride)
+        )
+        message1 = (
+            self.ffn(message1)
+            .reshape(n, -1, fh1, self.stride, fw1, self.stride)
+            .permute(0, 2, 4, 3, 5, 1)
+            .reshape(n, fh1 * fw1, self.stride * self.stride, -1)
+        )
+        x0, x1 = x0 + message0, x1 + message1
         return x0, x1
 
 
