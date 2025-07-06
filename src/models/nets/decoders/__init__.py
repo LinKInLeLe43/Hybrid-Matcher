@@ -180,10 +180,14 @@ class Decoder(Module):
         encoding: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
-    ) -> Tuple[Tensor, Tensor, Tensor, Tensor, List[Optional[Tensor]]]:
+    ) -> Tuple[
+        List[Tensor], List[Tensor], Tensor, Tensor, List[Optional[Tensor]]
+    ]:
         x0, x1 = self.global_decoder(
             x0_list[-1], x1_list[-1], encoding, mask0=mask0, mask1=mask1
         )
+        out0_list = [x0]
+        out1_list = [x1]
         similarity_list = []
         for i in reversed(range(len(self.selective_decoders))):
             x0, x1, indices0_to_1, indices1_to_0, similarity = (
@@ -191,5 +195,13 @@ class Decoder(Module):
                     x0_list[i], x1_list[i], x0, x1, do_reshape=i != 0
                 )
             )
+            out0_list.insert(0, x0)
+            out1_list.insert(0, x1)
             similarity_list.insert(0, similarity)
-        return x0, x1, indices0_to_1, indices1_to_0, similarity_list
+        return (
+            out0_list,
+            out1_list,
+            indices0_to_1,
+            indices1_to_0,
+            similarity_list,
+        )
