@@ -157,7 +157,7 @@ class RepVGG(nn.Module):
 
     def __init__(self, num_blocks, num_classes=1000, width_multiplier=None, override_groups_map=None, deploy=False, use_se=False, use_checkpoint=False):
         super(RepVGG, self).__init__()
-        assert len(width_multiplier) == 4
+        assert len(width_multiplier) == 3
         self.deploy = deploy
         self.override_groups_map = override_groups_map or dict()
         assert 0 not in self.override_groups_map
@@ -170,7 +170,7 @@ class RepVGG(nn.Module):
         self.stage1 = self._make_stage(int(64 * width_multiplier[0]), num_blocks[0], stride=2)
         self.stage2 = self._make_stage(int(128 * width_multiplier[1]), num_blocks[1], stride=2)
         self.stage3 = self._make_stage(int(256 * width_multiplier[2]), num_blocks[2], stride=2)
-        self.stage4 = self._make_stage(int(512 * width_multiplier[3]), num_blocks[3], stride=2)
+        # self.stage4 = self._make_stage(int(512 * width_multiplier[3]), num_blocks[3], stride=2)
         # self.gap = nn.AdaptiveAvgPool2d(output_size=1)
         # self.linear = nn.Linear(int(512 * width_multiplier[3]), num_classes)
 
@@ -208,20 +208,17 @@ class RepVGG(nn.Module):
         for block in self.stage3:
             out = block(out)
         x_16x = out
-        for block in self.stage4:
-            out = block(out)
-        x_32x = out
 
-        return x_4x, x_8x, x_16x, x_32x
+        return x_4x, x_8x, x_16x
 
 def create_RepVGG_A1(deploy=False):
     return RepVGG(
-        num_blocks=[2, 4, 14, 1], width_multiplier=[1, 1, 0.75, 0.5], deploy=deploy
+        num_blocks=[2, 4, 14], width_multiplier=[1, 1, 1], deploy=deploy
     )
 
 def create_RepVGG_A2(deploy=False):
     return RepVGG(
-        num_blocks=[2, 4, 14, 1], width_multiplier=[1.5, 1.5, 1, 0.75], deploy=deploy
+        num_blocks=[2, 4, 14], width_multiplier=[1.5, 1.5, 1.5], deploy=deploy
     )
 
 #   Use this for converting a RepVGG model or a bigger model with RepVGG as its component

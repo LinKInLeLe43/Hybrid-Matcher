@@ -70,33 +70,18 @@ class CasP(Module):
         self.scales = (self.encoder.scales[0], self.encoder.scales[1])
 
         self.encoder.backbone.in_planes = 128
-        down_module_y = self.encoder.backbone._make_stage(192, 2, 2)
-        self.encoder.backbone.in_planes = 192
-        down_module_x = self.encoder.backbone._make_stage(256, 2, 2)
-        self.down_modules_y = nn.ModuleList(
-            [deepcopy(down_module_y) for _ in range(num_coarse_matchings - 1)]
-        )
-        self.down_modules_x = nn.ModuleList(
-            [deepcopy(down_module_x) for _ in range(num_coarse_matchings - 1)]
+        down_module = self.encoder.backbone._make_stage(256, 4, 2)
+        self.down_modules = nn.ModuleList(
+            [deepcopy(down_module) for _ in range(num_coarse_matchings - 1)]
         )
 
         self.drop = None
-        self.block_dims = [128, 192, 256]
-        self.fc32 = Conv2d_BN_Act(
+        self.block_dims = [128, 256]
+        self.fc16 = Conv2d_BN_Act(
             self.block_dims[-1], self.block_dims[-1], 1, drop=self.drop
         )
-        self.fc16 = Conv2d_BN_Act(
-            self.block_dims[-2], self.block_dims[-1], 1, drop=self.drop
-        )
         self.fc8 = Conv2d_BN_Act(
-            self.block_dims[-3], self.block_dims[-1], 1, drop=self.drop
-        )
-        self.att32 = Conv2d_BN_Act(
-            self.block_dims[-1],
-            self.block_dims[-1],
-            1,
-            act=nn.Sigmoid(),
-            drop=self.drop,
+            self.block_dims[-2], self.block_dims[-1], 1, drop=self.drop
         )
         self.att16 = Conv2d_BN_Act(
             self.block_dims[-1],
@@ -104,17 +89,6 @@ class CasP(Module):
             1,
             act=nn.Sigmoid(),
             drop=self.drop,
-        )
-        self.dwconv16 = nn.Sequential(
-            Conv2d_BN_Act(
-                self.block_dims[-1],
-                self.block_dims[-1],
-                ks=3,
-                pad=1,
-                groups=self.block_dims[-1],
-                act=nn.GELU(),
-            ),
-            Conv2d_BN_Act(self.block_dims[-1], self.block_dims[-1], 1),
         )
         self.dwconv8 = nn.Sequential(
             Conv2d_BN_Act(
@@ -167,11 +141,7 @@ class CasP(Module):
 
         x0_list, x1_list = self.encoder(data["image0"], data["image1"])
 
-        x0_32x, x1_32x = x0_list.pop(-1), x1_list.pop(-1)
-        x0_16x_ori, x1_16x_ori = x0_16x, x1_16x = (
-            x0_list.pop(-1),
-            x1_list.pop(-1),
-        )
+        x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
         x0_8x_ori, x1_8x_ori = x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
         encoding = self.rope.get_encoding()
 
@@ -182,59 +152,38 @@ class CasP(Module):
             result = self.coarse_matchings[i](
                 x0_8x_ori,
                 x1_8x_ori,
-                x0_16x_ori,
-                x1_16x_ori,
-                x0_32x,
-                x1_32x,
+                x0_16x,
+                x1_16x,
                 encoding,
                 x0_mask=mask0_8x,
                 x1_mask=mask1_8x,
                 y0_mask=mask0_16x,
                 y1_mask=mask1_16x,
-                z0_mask=mask0_32x,
-                z1_mask=mask1_32x,
                 x_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
-            (x0_8x, x0_16x, x0_32x), (x1_8x, x1_16x, x1_32x) = result.pop("x")
+            (x0_8x, x0_16x), (x1_8x, x1_16x) = result.pop("x")
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
 
             if not is_last:
                 if x0_8x.shape == x1_8x.shape:
                     out = torch.cat([x0_8x, x1_8x])
-                    for module in self.down_modules_y[i]:
+                    for module in self.down_modules[i]:
                         out = module(out)
                     x0_16x, x1_16x = out.chunk(2)
-                    for module in self.down_modules_x[i]:
-                        out = module(out)
-                    x0_32x, x1_32x = out.chunk(2)
                 else:
                     x0_16x, x1_16x = x0_8x, x1_8x
-                    for module in self.down_modules_y[i]:
+                    for module in self.down_modules[i]:
                         x0_16x = module(x0_16x)
                         x1_16x = module(x1_16x)
-                    x0_32x, x1_32x = x0_16x, x1_16x
-                    for module in self.down_modules_x[i]:
-                        x0_32x = module(x0_32x)
-                        x1_32x = module(x1_32x)
 
         if self.training:
             result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
 
-        f8, f16, f32 = (
-            torch.cat([x0_8x, x1_8x]),
-            torch.cat([x0_16x, x1_16x]),
-            torch.cat([x0_32x, x1_32x]),
-        )
+        f8, f16 = torch.cat([x0_8x, x1_8x]), torch.cat([x0_16x, x1_16x])
 
-        f32 = self.fc32(f32)
-        f32_up = F.interpolate(f32, scale_factor=2.0, mode="bilinear")
-        att32_up = F.interpolate(
-            self.att32(f32), scale_factor=2.0, mode="bilinear"
-        )
         f16 = self.fc16(f16)
-        f16 = self.dwconv16(f16 * att32_up + f32_up)
         f16_up = F.interpolate(f16, scale_factor=2.0, mode="bilinear")
         att16_up = F.interpolate(
             self.att16(f16), scale_factor=2.0, mode="bilinear"

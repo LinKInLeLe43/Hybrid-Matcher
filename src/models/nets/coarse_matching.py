@@ -247,15 +247,11 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
         encoding: torch.Tensor,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
         y1_mask: Optional[torch.Tensor] = None,
-        z0_mask: Optional[torch.Tensor] = None,
-        z1_mask: Optional[torch.Tensor] = None,
         x_gt_idxes: Optional[
             Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         ] = None,
@@ -268,11 +264,7 @@ class CoarseMatching(nn.Module):
 
         out0_list, out1_list, idxes0_to_1, idxes1_to_0, similarity_list = (
             self.decoder(
-                [x0, y0, z0],
-                [x1, y1, z1],
-                encoding,
-                mask0=z0_mask,
-                mask1=z1_mask,
+                [x0, y0], [x1, y1], encoding, mask0=y0_mask, mask1=y1_mask
             )
         )
         _x0, _x1 = out0_list[0], out1_list[0]
@@ -299,30 +291,6 @@ class CoarseMatching(nn.Module):
 
         if self.training:
             similarity = similarity_list.pop(-1)
-            if z0_mask is not None and z1_mask is not None:
-                mask = z0_mask.view(n, -1, 1) & z1_mask.view(n, 1, -1)
-                similarity.masked_fill_(~mask, -float("inf"))
-            confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
-            confidence1_to_0 = F.softmax(similarity, dim=1).nan_to_num()
-            confidence = confidence0_to_1 * confidence1_to_0
-            confidence = (
-                confidence.reshape(
-                    n,
-                    fh0 // self.stride,
-                    fw0 // self.stride,
-                    fh1 // self.stride,
-                    fw1 // self.stride,
-                )
-                .repeat_interleave(self.stride**2, dim=1)
-                .repeat_interleave(self.stride**2, dim=2)
-                .repeat_interleave(self.stride**2, dim=3)
-                .repeat_interleave(self.stride**2, dim=4)
-                .reshape(n, h0 * w0, h1 * w1)
-            )
-            confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            result["extra_extra_coarse_cls_heatmap"] = 0.25 * confidence
-
-            similarity = similarity_list.pop(-1)
             if y0_mask is not None and y1_mask is not None:
                 mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
                 similarity.masked_fill_(~mask, -float("inf"))
@@ -338,7 +306,7 @@ class CoarseMatching(nn.Module):
                 .reshape(n, h0 * w0, h1 * w1)
             )
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            result["extra_coarse_cls_heatmap"] = 0.25 * confidence
+            result["extra_coarse_cls_heatmap"] = 0.5 * confidence
 
             x0 = x0.flatten(start_dim=2).transpose(1, 2) * self.scale
             x1 = x1.flatten(start_dim=2).transpose(1, 2)
@@ -352,10 +320,8 @@ class CoarseMatching(nn.Module):
             confidence = confidence0_to_1 * confidence1_to_0
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
             score = confidence, _idxes0_to_1, _idxes1_to_0
-            result["coarse_cls_heatmap"] = (
-                confidence
-                + result.pop("extra_coarse_cls_heatmap")
-                + result.pop("extra_extra_coarse_cls_heatmap")
+            result["coarse_cls_heatmap"] = confidence + result.pop(
+                "extra_coarse_cls_heatmap"
             )
         else:
             _x0 = _x0 * self.scale
