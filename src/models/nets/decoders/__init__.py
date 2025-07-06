@@ -149,6 +149,7 @@ class Decoder(Module):
         topk_list: Sequence[int],
         num_layers_list: Sequence[int],
         enable_crop: bool = True,
+        global_stride: int = 1,
         **kwargs,
     ) -> None:
         super().__init__()
@@ -160,6 +161,7 @@ class Decoder(Module):
             num_heads_list[-1],
             num_layers_list[-1],
             enable_crop=enable_crop,
+            stride = global_stride,
             **kwargs,
         )
         self.selective_decoders = nn.ModuleList()
