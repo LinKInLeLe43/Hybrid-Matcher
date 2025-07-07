@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
+from .utils import window_unpartition
 
 class CoarseMatching(nn.Module):
     def __init__(
@@ -247,18 +248,8 @@ class CoarseMatching(nn.Module):
             )
         )
         indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
-        x0 = rearrange(
-            x0_,
-            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h0 // self.stride,
-            sh=self.stride,
-        )
-        x1 = rearrange(
-            x1_,
-            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h1 // self.stride,
-            sh=self.stride,
-        )
+        x0 = window_unpartition(x0_, (fh0, fw0), self.stride)
+        x1 = window_unpartition(x1_, (fh1, fw1), self.stride)
         result["x_8x"] = (x0, x1)
 
         if self.training:
