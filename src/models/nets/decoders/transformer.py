@@ -2,6 +2,7 @@ from typing import Optional, Sequence, Tuple
 from warnings import warn
 
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 from torch.nn import Module
 
@@ -83,14 +84,6 @@ class SelfBlock(Module):
                 groups=dim,
                 bias=bias,
             )
-            self.up_proj = nn.ConvTranspose2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
-            )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.ffn = nn.Sequential(
@@ -141,8 +134,11 @@ class SelfBlock(Module):
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = message.unflatten(1, (h, w))
         if self.stride != 1:
-            message = self.up_proj(
-                message.permute(0, 3, 1, 2).contiguous()
+            message = F.interpolate(
+                message.permute(0, 3, 1, 2),
+                scale_factor=self.stride,
+                mode="bilinear",
+                align_corners=False,
             ).permute(0, 2, 3, 1)
         x = x + self.ffn(torch.cat([x, message], dim=-1))
         return x
@@ -169,14 +165,6 @@ class CrossBlock(Module):
 
         if stride > 1:
             self.down_proj = nn.Conv2d(
-                dim,
-                dim,
-                self.stride,
-                stride=self.stride,
-                groups=dim,
-                bias=bias,
-            )
-            self.up_proj = nn.ConvTranspose2d(
                 dim,
                 dim,
                 self.stride,
@@ -235,11 +223,17 @@ class CrossBlock(Module):
         message0 = message0.unflatten(1, (h0, w0))
         message1 = message1.unflatten(1, (h1, w1))
         if self.stride != 1:
-            message0 = self.up_proj(
-                message0.permute(0, 3, 1, 2).contiguous()
+            message0 = F.interpolate(
+                message0.permute(0, 3, 1, 2),
+                scale_factor=self.stride,
+                mode="bilinear",
+                align_corners=False,
             ).permute(0, 2, 3, 1)
-            message1 = self.up_proj(
-                message1.permute(0, 3, 1, 2).contiguous()
+            message1 = F.interpolate(
+                message1.permute(0, 3, 1, 2),
+                scale_factor=self.stride,
+                mode="bilinear",
+                align_corners=False,
             ).permute(0, 2, 3, 1)
         x0 = x0 + self.ffn(torch.cat([x0, message0], dim=-1))
         x1 = x1 + self.ffn(torch.cat([x1, message1], dim=-1))

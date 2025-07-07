@@ -29,7 +29,7 @@ class Decoder(Module):
         self.enable_crop = enable_crop
         self.scale = dims[0] ** -0.5
 
-        x_layer = TransformerLayer(dims[0], **kwargs)
+        x_layer = TransformerLayer(dims[0], stride=2, **kwargs)
         self.x_layers = nn.ModuleList(
             [deepcopy(x_layer) for _ in range(num_x_layers)]
         )
