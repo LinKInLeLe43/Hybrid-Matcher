@@ -94,7 +94,7 @@ class CasP(Module):
                 x_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
-            x0_8x, x1_8x = result.pop("x_8x")
+            x0_8x, x1_8x = result.pop("feat")
             if self.training:
                 coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
 

@@ -205,25 +205,26 @@ class CoarseMatching(Module):
         x_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
         only_decode: bool = False,
     ) -> Dict[str, Any]:
-        n, c, h0, w0 = x0_list[0].shape
+        n, _, h0, w0 = x0_list[0].shape
         _, _, h1, w1 = x1_list[0].shape
-        fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
+        _, _, fh0, fw0 = x0_list[1].shape
+        _, _, fh1, fw1 = x1_list[1].shape
+        out = {}
 
-        x0_, x1_, indices0_to_1, indices1_to_0, similarity_list = self.decoder(
-            x0_list, x1_list, encoding, mask0=z0_mask, mask1=z1_mask
+        x0_, x1_, indices0_to_1_, indices1_to_0_, similarity_list = (
+            self.decoder(
+                x0_list, x1_list, encoding, mask0=z0_mask, mask1=z1_mask
+            )
         )
         x0 = window_unpartition(x0_, (fh0, fw0), self.stride)
         x1 = window_unpartition(x1_, (fh1, fw1), self.stride)
-
-        result = {}
-        result["extra_idxes0_to_1"] = indices0_to_1
-
-        indices0_to_1_ = self._map_indices(indices0_to_1, (fh0, fw0), fw1)
-        indices1_to_0_ = self._map_indices(indices1_to_0, (fh1, fw1), fw0)
-        indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
-        result["x_8x"] = (x0, x1)
+        indices0_to_1 = self._map_indices(indices0_to_1_, (fh0, fw0), fw1)
+        indices1_to_0 = self._map_indices(indices1_to_0_, (fh1, fw1), fw0)
+        indices1_to_0 = indices1_to_0.transpose(-2, -1)
+        out["extra_idxes0_to_1"] = indices0_to_1_
+        out["feat"] = (x0, x1)
         if only_decode:
-            return result
+            return out
 
         if self.training:
             similarity = similarity_list.pop(-1)
@@ -248,7 +249,7 @@ class CoarseMatching(Module):
                 .reshape(n, h0 * w0, h1 * w1)
             )
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            result["extra_extra_coarse_cls_heatmap"] = 0.25 * confidence
+            out["extra_extra_coarse_cls_heatmap"] = 0.25 * confidence
 
             similarity = similarity_list.pop(-1)
             if y0_mask is not None and y1_mask is not None:
@@ -266,7 +267,7 @@ class CoarseMatching(Module):
                 .reshape(n, h0 * w0, h1 * w1)
             )
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            result["extra_coarse_cls_heatmap"] = 0.25 * confidence
+            out["extra_coarse_cls_heatmap"] = 0.25 * confidence
 
             x0 = x0.flatten(start_dim=2).transpose(1, 2) * self.scale
             x1 = x1.flatten(start_dim=2).transpose(1, 2)
@@ -279,19 +280,21 @@ class CoarseMatching(Module):
             confidence1_to_0 = F.softmax(y_similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            score = confidence, indices0_to_1_, indices1_to_0_
-            result["coarse_cls_heatmap"] = (
+            score = confidence, indices0_to_1, indices1_to_0
+            out["coarse_cls_heatmap"] = (
                 confidence
-                + result.pop("extra_coarse_cls_heatmap")
-                + result.pop("extra_extra_coarse_cls_heatmap")
+                + out.pop("extra_coarse_cls_heatmap")
+                + out.pop("extra_extra_coarse_cls_heatmap")
             )
         else:
             x0_ = x0_ * self.scale
             attended0 = x0_[
-                torch.arange(n, device=x0_.device)[:, None, None], indices1_to_0
+                torch.arange(n, device=x0_.device)[:, None, None],
+                indices1_to_0_,
             ].flatten(start_dim=2, end_dim=3)
             attended1 = x1_[
-                torch.arange(n, device=x1_.device)[:, None, None], indices0_to_1
+                torch.arange(n, device=x1_.device)[:, None, None],
+                indices0_to_1_,
             ].flatten(start_dim=2, end_dim=3)
 
             similarity0_to_1 = x0_ @ attended1.transpose(-1, -2)
@@ -314,32 +317,32 @@ class CoarseMatching(Module):
             )
             confidence0_to_1 = confidence0_to_1_ * (
                 x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, indices1_to_0_, confidence1_to_0_)
-                .gather(2, indices0_to_1_)
+                .scatter_(1, indices1_to_0, confidence1_to_0_)
+                .gather(2, indices0_to_1)
             )
             confidence1_to_0 = confidence1_to_0_ * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, indices0_to_1_, confidence0_to_1_)
-                .gather(1, indices1_to_0_)
+                .scatter_(2, indices0_to_1, confidence0_to_1_)
+                .gather(1, indices1_to_0)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                indices0_to_1_,
-                indices1_to_0_,
+                indices0_to_1,
+                indices1_to_0,
             )
 
-        result.update(
+        out.update(
             self._create_coarse_matching(
                 score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes
             )
         )
-        result["extra_idxes0_to_1"] = einops.repeat(
-            result["extra_idxes0_to_1"],
+        out["extra_idxes0_to_1"] = einops.repeat(
+            out["extra_idxes0_to_1"],
             "n (fh fw) k -> n (fh sh fw sw) k",
             fh=h0 // 2,
             sh=2,
             fw=w0 // 2,
             sw=2,
-        )[result["idxes"][0], result["idxes"][1]]
-        return result
+        )[out["idxes"][0], out["idxes"][1]]
+        return out
