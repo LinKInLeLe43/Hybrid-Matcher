@@ -1,16 +1,17 @@
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
+from torch import Tensor
+from torch.nn import Module
 
 from .utils import window_unpartition
 
-class CoarseMatching(nn.Module):
+
+class CoarseMatching(Module):
     def __init__(
         self,
-        fused_selective_module: nn.Module,
+        fused_selective_module: Module,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -29,12 +30,12 @@ class CoarseMatching(nn.Module):
 
     def _remove_border_for_train(
         self,
-        x: torch.Tensor,
+        x: Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, int]:
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+    ) -> Tuple[Tensor, int]:
         r = self.border_removal
         (h0, w0), (h1, w1) = size0, size1
 
@@ -67,11 +68,8 @@ class CoarseMatching(nn.Module):
         return out, max_count
 
     def _remove_border_for_eval(
-        self,
-        x: torch.Tensor,
-        size: Tuple[int, int],
-        mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
+        self, x: Tensor, size: Tuple[int, int], mask: Optional[Tensor]
+    ) -> Tensor:
         r = self.border_removal
 
         if r == 0:
@@ -96,12 +94,9 @@ class CoarseMatching(nn.Module):
     def _sample_for_train(
         self,
         max_count: int,
-        matching_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    ) -> Tuple[
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    ]:
+        matching_idxes: Tuple[Tensor, Tensor, Tensor],
+        gt_idxes: Tuple[Tensor, Tensor, Tensor],
+    ) -> Tuple[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, Tensor, Tensor]]:
         device = matching_idxes[0].device
 
         train_count = int(self.train_percent * max_count)
@@ -133,14 +128,12 @@ class CoarseMatching(nn.Module):
     @torch.no_grad()
     def _create_coarse_matching(
         self,
-        score: Union[
-            torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ],
+        score: Union[Tensor, Tuple[Tensor, Tensor, Tensor]],
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+        gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]],
     ) -> Dict[str, Any]:
         if self.training and gt_idxes is not None:
             score, idxes0_to_1, idxes1_to_0 = score
@@ -200,28 +193,23 @@ class CoarseMatching(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        y0: torch.Tensor,
-        y1: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None,
-        x_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
-        y_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
+        x0_list: Sequence[Tensor],
+        x1_list: Sequence[Tensor],
+        x0_mask: Optional[Tensor] = None,
+        x1_mask: Optional[Tensor] = None,
+        y0_mask: Optional[Tensor] = None,
+        y1_mask: Optional[Tensor] = None,
+        x_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        y_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
     ) -> Dict[str, Any]:
-        n, c, h0, w0 = x0.shape
-        _, _, h1, w1 = x1.shape
+        assert len(x0_list) == 2 and len(x1_list) == 2
+        n, c, h0, w0 = x0_list[0].shape
+        _, _, h1, w1 = x1_list[0].shape
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
-        y0_ = y0.flatten(start_dim=2) / c**0.5
-        y1_ = y1.flatten(start_dim=2) / c**0.5
-        similarity = y0_.transpose(-2, -1) @ y1_
+        x0_16x_ = x0_list[1].flatten(start_dim=-2) * c**-0.5
+        x1_16x_ = x1_list[1].flatten(start_dim=-2) * c**-0.5
+        similarity = x0_16x_.transpose(-2, -1) @ x1_16x_
         similarity /= self.temperature
         if y0_mask is not None and y1_mask is not None:
             mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
@@ -244,7 +232,7 @@ class CoarseMatching(nn.Module):
 
         x0_, x1_, attended0, attended1, indices0_to_1_, indices1_to_0_ = (
             self.fused_selective_module(
-                [x0, y0], [x1, y1], indices0_to_1, indices1_to_0
+                x0_list, x1_list, indices0_to_1, indices1_to_0
             )
         )
         indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
