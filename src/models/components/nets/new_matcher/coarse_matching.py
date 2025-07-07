@@ -14,7 +14,7 @@ class CoarseMatching(nn.Module):
         border_removal: int = 2,
         temperature: float = 0.1,
         train_percent: float = 0.2,
-        train_min_gt_count: int = 200
+        train_min_gt_count: int = 200,
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
@@ -32,7 +32,7 @@ class CoarseMatching(nn.Module):
         size0: Tuple[int, int],
         size1: Tuple[int, int],
         mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor]
+        mask1: Optional[torch.Tensor],
     ) -> Tuple[torch.Tensor, int]:
         r = self.border_removal
         (h0, w0), (h1, w1) = size0, size1
@@ -50,10 +50,10 @@ class CoarseMatching(nn.Module):
             w1s = mask1.sum(dim=2).amax(dim=1).int()
             max_count = torch.minimum(h0s * w0s, h1s * w1s).sum().item()
             for b, (_h0, _w0, _h1, _w1) in enumerate(zip(h0s, w0s, h1s, w1s)):
-                out[b, _h0 - r:, :, :, :] = False
-                out[b, :, _w0 - r:, :, :] = False
-                out[b, :, :, _h1 - r:, :] = False
-                out[b, :, :, :, _w1 - r:] = False
+                out[b, _h0 - r :, :, :, :] = False
+                out[b, :, _w0 - r :, :, :] = False
+                out[b, :, :, _h1 - r :, :] = False
+                out[b, :, :, :, _w1 - r :] = False
         else:
             max_count = len(x) * min(h0 * w0, h1 * w1)
             if r > 0:
@@ -69,7 +69,7 @@ class CoarseMatching(nn.Module):
         self,
         x: torch.Tensor,
         size: Tuple[int, int],
-        mask: Optional[torch.Tensor]
+        mask: Optional[torch.Tensor],
     ) -> torch.Tensor:
         r = self.border_removal
 
@@ -84,8 +84,8 @@ class CoarseMatching(nn.Module):
             hs = mask.sum(dim=1).amax(dim=1).int()
             ws = mask.sum(dim=2).amax(dim=1).int()
             for b, (h, w) in enumerate(zip(hs, ws)):
-                out[b, h - r:, :] = 0
-                out[b, :, w - r:] = 0
+                out[b, h - r :, :] = 0
+                out[b, :, w - r :] = 0
         else:
             out[:, -r:, :] = 0
             out[:, :, -r:] = 0
@@ -96,9 +96,11 @@ class CoarseMatching(nn.Module):
         self,
         max_count: int,
         matching_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-               Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> Tuple[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
         device = matching_idxes[0].device
 
         train_count = int(self.train_percent * max_count)
@@ -108,51 +110,70 @@ class CoarseMatching(nn.Module):
             matching_subidxes = torch.arange(matching_count, device=device)
         else:
             matching_subidxes = torch.randint(
-                matching_count, (rest_count,), device=device)
+                matching_count, (rest_count,), device=device
+            )
             matching_count = rest_count
         gt_subidxes = torch.randint(
-            gt_count, (train_count - matching_count,), device=device)
+            gt_count, (train_count - matching_count,), device=device
+        )
 
-        matching_idxes = tuple(map(
-            lambda x: x[matching_subidxes], matching_idxes))
-        train_idxes = tuple(map(
-            lambda x, y: torch.cat([x, y[gt_subidxes]]),
-            matching_idxes, gt_idxes))
+        matching_idxes = tuple(
+            map(lambda x: x[matching_subidxes], matching_idxes)
+        )
+        train_idxes = tuple(
+            map(
+                lambda x, y: torch.cat([x, y[gt_subidxes]]),
+                matching_idxes,
+                gt_idxes,
+            )
+        )
         return train_idxes, matching_idxes
 
     @torch.no_grad()
     def _create_coarse_matching(
         self,
-        score: Union[torch.Tensor,
-                     Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        score: Union[
+            torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ],
         size0: Tuple[int, int],
         size1: Tuple[int, int],
         mask0: Optional[torch.Tensor],
         mask1: Optional[torch.Tensor],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]
+        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
     ) -> Dict[str, Any]:
         if self.training and gt_idxes is not None:
             score, idxes0_to_1, idxes1_to_0 = score
             mask, max_count = self._remove_border_for_train(
-                score > self.threshold, size0, size1, mask0, mask1)
-            mask &= ((score == score.amax(dim=2, keepdim=True)) &
-                     (score == score.amax(dim=1, keepdim=True)))
+                score > self.threshold, size0, size1, mask0, mask1
+            )
+            mask &= (score == score.amax(dim=2, keepdim=True)) & (
+                score == score.amax(dim=1, keepdim=True)
+            )
             train_idxes, matching_idxes = self._sample_for_train(
-                max_count, mask.nonzero(as_tuple=True), gt_idxes)
+                max_count, mask.nonzero(as_tuple=True), gt_idxes
+            )
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
             score0_to_1, score1_to_0, idxes0_to_1, idxes1_to_0 = score
             values0_to_1, sub_idxes0_to_1 = score0_to_1.max(dim=2)
             sub_idxes1_to_0 = score1_to_0.argmax(dim=1)
-            idxes0_to_1 = idxes0_to_1.gather(2, sub_idxes0_to_1[:, :, None])[:, :, 0]
-            idxes1_to_0 = idxes1_to_0.gather(1, sub_idxes1_to_0[:, None, :])[:, 0, :]
+            idxes0_to_1 = idxes0_to_1.gather(2, sub_idxes0_to_1[:, :, None])[
+                :, :, 0
+            ]
+            idxes1_to_0 = idxes1_to_0.gather(1, sub_idxes1_to_0[:, None, :])[
+                :, 0, :
+            ]
             idxes0_to_1 = self._remove_border_for_eval(
-                idxes0_to_1, size0, mask0)
+                idxes0_to_1, size0, mask0
+            )
             idxes1_to_0 = self._remove_border_for_eval(
-                idxes1_to_0, size1, mask1)
+                idxes1_to_0, size1, mask1
+            )
             biprojection = idxes1_to_0.gather(1, idxes0_to_1)
-            mask = biprojection == torch.arange(score0_to_1.shape[1], device=score0_to_1.device)
+            mask = biprojection == torch.arange(
+                score0_to_1.shape[1], device=score0_to_1.device
+            )
             if self.border_removal > 0:
                 mask[:, 0] = False
             mask &= values0_to_1 > self.threshold
@@ -161,15 +182,19 @@ class CoarseMatching(nn.Module):
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
 
-        points0 = torch.stack([i_idxes % size0[1],
-                               i_idxes // size0[1]], dim=1).float()
-        points1 = torch.stack([j_idxes % size1[1],
-                               j_idxes // size1[1]], dim=1).float()
-        result = {"idxes": train_idxes,
-                  "points0": points0,
-                  "points1": points1,
-                  "scores": scores,
-                  "coarse_cls_idxes": train_idxes}
+        points0 = torch.stack(
+            [i_idxes % size0[1], i_idxes // size0[1]], dim=1
+        ).float()
+        points1 = torch.stack(
+            [j_idxes % size1[1], j_idxes // size1[1]], dim=1
+        ).float()
+        result = {
+            "idxes": train_idxes,
+            "points0": points0,
+            "points1": points1,
+            "scores": scores,
+            "coarse_cls_idxes": train_idxes,
+        }
         return result
 
     def forward(
@@ -182,22 +207,26 @@ class CoarseMatching(nn.Module):
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
         y1_mask: Optional[torch.Tensor] = None,
-        x_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        y_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+        x_gt_idxes: Optional[
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = None,
+        y_gt_idxes: Optional[
+            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
+        ] = None,
     ) -> Dict[str, Any]:
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
 
         _y0 = y0.flatten(start_dim=2).transpose(1, 2)
         _y1 = y1.flatten(start_dim=2).transpose(1, 2)
-        _y0, _y1 = _y0 / c ** 0.5, _y1 / c ** 0.5
+        _y0, _y1 = _y0 / c**0.5, _y1 / c**0.5
         similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
         similarity /= self.temperature
         if y0_mask is not None and y1_mask is not None:
-            mask = (y0_mask.flatten(start_dim=1)[:, :, None] &
-                    y1_mask.flatten(start_dim=1)[:, None, :])
+            mask = (
+                y0_mask.flatten(start_dim=1)[:, :, None]
+                & y1_mask.flatten(start_dim=1)[:, None, :]
+            )
             similarity.masked_fill_(~mask, -1e9)
 
         topk = 8
@@ -215,26 +244,39 @@ class CoarseMatching(nn.Module):
         _, idxes0_to_1 = _similarity.topk(topk, dim=2)
         _, idxes1_to_0 = _similarity.transpose(1, 2).topk(topk, dim=2)
 
-        _x0, _x1, _x0_to_1, _x1_to_0, _idxes0_to_1, _idxes1_to_0 = self.fused_selective_module(
-            [x0, y0], [x1, y1], idxes0_to_1, idxes1_to_0)
+        _x0, _x1, _x0_to_1, _x1_to_0, _idxes0_to_1, _idxes1_to_0 = (
+            self.fused_selective_module(
+                [x0, y0], [x1, y1], idxes0_to_1, idxes1_to_0
+            )
+        )
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
         x0 = rearrange(
-            _x0, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h0 // self.stride, sh=self.stride
+            _x0,
+            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            fh=h0 // self.stride,
+            sh=self.stride,
         )
         x1 = rearrange(
-            _x1, "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
-            fh=h1 // self.stride, sh=self.stride
+            _x1,
+            "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
+            fh=h1 // self.stride,
+            sh=self.stride,
         )
         result["x_8x"] = (x0, x1)
 
         if self.training:
-            x0, x1 = x0 / c ** 0.5, x1 / c ** 0.5
-            similarity = torch.einsum("nlc,nsc->nls", x0.flatten(start_dim=2).transpose(1, 2), x1.flatten(start_dim=2).transpose(1, 2))
+            x0, x1 = x0 / c**0.5, x1 / c**0.5
+            similarity = torch.einsum(
+                "nlc,nsc->nls",
+                x0.flatten(start_dim=2).transpose(1, 2),
+                x1.flatten(start_dim=2).transpose(1, 2),
+            )
             similarity /= self.temperature
             if x0_mask is not None and x1_mask is not None:
-                mask = (x0_mask.flatten(start_dim=1)[:, :, None] &
-                        x1_mask.flatten(start_dim=1)[:, None, :])
+                mask = (
+                    x0_mask.flatten(start_dim=1)[:, :, None]
+                    & x1_mask.flatten(start_dim=1)[:, None, :]
+                )
                 similarity.masked_fill_(~mask, -1e9)
 
             confidence0_to_1 = F.softmax(similarity, dim=2)
@@ -243,17 +285,21 @@ class CoarseMatching(nn.Module):
             score = confidence, _idxes0_to_1, _idxes1_to_0
             result["coarse_cls_heatmap"] = confidence
         else:
-            _x0, _x1 = _x0 / c ** 0.5, _x1 / c ** 0.5
-            _x1_to_0, _x0_to_1 = _x1_to_0 / c ** 0.5, _x0_to_1 / c ** 0.5
+            _x0, _x1 = _x0 / c**0.5, _x1 / c**0.5
+            _x1_to_0, _x0_to_1 = _x1_to_0 / c**0.5, _x0_to_1 / c**0.5
             similarity0_to_1 = torch.einsum("npqc,npkc->npqk", _x0, _x0_to_1)
             similarity1_to_0 = torch.einsum("npkc,npqc->nkpq", _x1_to_0, _x1)
             similarity0_to_1 = rearrange(
-                similarity0_to_1, "n (fh fw) (sh sw) k -> n (fh sh fw sw) k",
-                fh=h0 // self.stride, sh=self.stride
+                similarity0_to_1,
+                "n (fh fw) (sh sw) k -> n (fh sh fw sw) k",
+                fh=h0 // self.stride,
+                sh=self.stride,
             )
             similarity1_to_0 = rearrange(
-                similarity1_to_0, "n k (fh fw) (sh sw) -> n k (fh sh fw sw)",
-                fh=h1 // self.stride, sh=self.stride
+                similarity1_to_0,
+                "n k (fh fw) (sh sw) -> n k (fh sh fw sw)",
+                fh=h1 // self.stride,
+                sh=self.stride,
             )
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature
@@ -269,8 +315,16 @@ class CoarseMatching(nn.Module):
                 .scatter_(2, _idxes0_to_1, _confidence0_to_1)
                 .gather(1, _idxes1_to_0)
             )
-            score = confidence0_to_1, confidence1_to_0, _idxes0_to_1, _idxes1_to_0
+            score = (
+                confidence0_to_1,
+                confidence1_to_0,
+                _idxes0_to_1,
+                _idxes1_to_0,
+            )
 
-        result.update(self._create_coarse_matching(
-            score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes))
+        result.update(
+            self._create_coarse_matching(
+                score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes
+            )
+        )
         return result
