@@ -2,19 +2,17 @@ from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import einops
 import torch
+import torch.nn.functional as F
 from kornia import create_meshgrid
-from torch import nn
-from torch.nn import functional as F
+from torch import Tensor
+from torch.nn import Module
 
 from .utils import window_unpartition
 
 
-class CoarseMatching(nn.Module):
+class CoarseMatching(Module):
     def __init__(
-        self,
-        decoder: nn.Module,
-        threshold: float = 0.2,
-        border_removal: int = 2,
+        self, decoder: Module, threshold: float = 0.2, border_removal: int = 2
     ) -> None:
         super().__init__()
         self.decoder = decoder
@@ -32,12 +30,12 @@ class CoarseMatching(nn.Module):
 
     def _remove_border_for_train(
         self,
-        x: torch.Tensor,
+        x: Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, int]:
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+    ) -> Tuple[Tensor, int]:
         r = self.border_removal
         (h0, w0), (h1, w1) = size0, size1
 
@@ -70,11 +68,8 @@ class CoarseMatching(nn.Module):
         return out, max_count
 
     def _remove_border_for_eval(
-        self,
-        x: torch.Tensor,
-        size: Tuple[int, int],
-        mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
+        self, x: Tensor, size: Tuple[int, int], mask: Optional[Tensor]
+    ) -> Tensor:
         r = self.border_removal
 
         if r == 0:
@@ -99,14 +94,12 @@ class CoarseMatching(nn.Module):
     @torch.no_grad()
     def _create_coarse_matching(
         self,
-        score: Union[
-            torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ],
+        score: Union[Tensor, Tuple[Tensor, Tensor, Tensor]],
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+        gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]],
     ) -> Dict[str, Any]:
         coarse_recall_mask = None
         if self.training and gt_idxes is not None:
@@ -170,8 +163,8 @@ class CoarseMatching(nn.Module):
         return result
 
     def create_bidirectional_mask(
-        self, indices0_to_1: torch.Tensor, indices1_to_0: torch.Tensor
-    ) -> torch.Tensor:
+        self, indices0_to_1: Tensor, indices1_to_0: Tensor
+    ) -> Tensor:
         n, l0, _ = indices0_to_1.shape
         _, _, l1 = indices1_to_0.shape
         device = indices0_to_1.device
@@ -186,9 +179,7 @@ class CoarseMatching(nn.Module):
         mask.eq_(1.0)
         return mask
 
-    def _map_indices(
-        self, x: torch.Tensor, size: Sequence[int], w: int
-    ) -> torch.Tensor:
+    def _map_indices(self, x: Tensor, size: Sequence[int], w: int) -> Tensor:
         row = (x[..., None] // w) * self.stride + self.delta_indices[:, 1]
         col = (x[..., None] % w) * self.stride + self.delta_indices[:, 0]
         x = (
@@ -202,30 +193,24 @@ class CoarseMatching(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        y0: torch.Tensor,
-        y1: torch.Tensor,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
-        encoding: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None,
-        z0_mask: Optional[torch.Tensor] = None,
-        z1_mask: Optional[torch.Tensor] = None,
-        x_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
+        x0_list: Sequence[Tensor],
+        x1_list: Sequence[Tensor],
+        encoding: Tensor,
+        x0_mask: Optional[Tensor] = None,
+        x1_mask: Optional[Tensor] = None,
+        y0_mask: Optional[Tensor] = None,
+        y1_mask: Optional[Tensor] = None,
+        z0_mask: Optional[Tensor] = None,
+        z1_mask: Optional[Tensor] = None,
+        x_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
         only_decode: bool = False,
     ) -> Dict[str, Any]:
-        n, c, h0, w0 = x0.shape
-        _, _, h1, w1 = x1.shape
+        n, c, h0, w0 = x0_list[0].shape
+        _, _, h1, w1 = x1_list[0].shape
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
         x0_, x1_, indices0_to_1, indices1_to_0, similarity_list = self.decoder(
-            [x0, y0, z0], [x1, y1, z1], encoding, mask0=z0_mask, mask1=z1_mask
+            x0_list, x1_list, encoding, mask0=z0_mask, mask1=z1_mask
         )
         x0 = window_unpartition(x0_, (fh0, fw0), self.stride)
         x1 = window_unpartition(x1_, (fh1, fw1), self.stride)

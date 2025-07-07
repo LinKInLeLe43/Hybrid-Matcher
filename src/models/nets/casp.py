@@ -82,12 +82,8 @@ class CasP(Module):
         for i in range(self.num_coarse_matchings):
             is_last = i == self.num_coarse_matchings - 1
             result = self.coarse_matchings[i](
-                x0_8x,
-                x1_8x,
-                x0_16x,
-                x1_16x,
-                x0_32x,
-                x1_32x,
+                [x0_8x, x0_16x, x0_32x],
+                [x1_8x, x1_16x, x1_32x],
                 encoding,
                 x0_mask=mask0_8x,
                 x1_mask=mask1_8x,
