@@ -222,19 +222,19 @@ class CoarseMatching(nn.Module):
     ) -> Dict[str, Any]:
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
-        sh = sw = self.stride
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
+        sh = sw = self.stride
 
-        _x0, _x1, idxes0_to_1, idxes1_to_0, similarity_list = self.decoder(
+        x0_, x1_, idxes0_to_1, idxes1_to_0, similarity_list = self.decoder(
             [x0, y0, z0], [x1, y1, z1], encoding, mask0=z0_mask, mask1=z1_mask
         )
         x0 = (
-            _x0.reshape(n, fh0, fw0, sh, sw, c)
+            x0_.reshape(n, fh0, fw0, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
             .reshape(n, c, h0, w0)
         )
         x1 = (
-            _x1.reshape(n, fh1, fw1, sh, sw, c)
+            x1_.reshape(n, fh1, fw1, sh, sw, c)
             .permute(0, 5, 1, 3, 2, 4)
             .reshape(n, c, h1, w1)
         )
@@ -242,9 +242,9 @@ class CoarseMatching(nn.Module):
         result = {}
         result["extra_idxes0_to_1"] = idxes0_to_1
 
-        _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
-        _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
-        _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
+        idxes0_to_1_ = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
+        idxes1_to_0_ = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
+        idxes1_to_0_ = idxes1_to_0_.transpose(1, 2)
         result["x_8x"] = (x0, x1)
         if only_decode:
             return result
@@ -303,50 +303,50 @@ class CoarseMatching(nn.Module):
             confidence1_to_0 = F.softmax(y_similarity, dim=1).nan_to_num()
             confidence = confidence0_to_1 * confidence1_to_0
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            score = confidence, _idxes0_to_1, _idxes1_to_0
+            score = confidence, idxes0_to_1_, idxes1_to_0_
             result["coarse_cls_heatmap"] = (
                 confidence
                 + result.pop("extra_coarse_cls_heatmap")
                 + result.pop("extra_extra_coarse_cls_heatmap")
             )
         else:
-            _x0 = _x0 * self.scale
-            _selective0 = _x0[
-                torch.arange(n, device=_x0.device)[:, None, None], idxes1_to_0
+            x0_ = x0_ * self.scale
+            attended0 = x0_[
+                torch.arange(n, device=x0_.device)[:, None, None], idxes1_to_0
             ].flatten(start_dim=2, end_dim=3)
-            _selective1 = _x1[
-                torch.arange(n, device=_x1.device)[:, None, None], idxes0_to_1
+            attended1 = x1_[
+                torch.arange(n, device=x1_.device)[:, None, None], idxes0_to_1
             ].flatten(start_dim=2, end_dim=3)
 
-            similarity0_to_1 = _x0 @ _selective1.transpose(-1, -2)
-            similarity1_to_0 = _x1 @ _selective0.transpose(-1, -2)
-            _confidence0_to_1 = F.softmax(similarity0_to_1, dim=3)
-            _confidence1_to_0 = F.softmax(similarity1_to_0, dim=3)
-            _confidence0_to_1 = (
-                _confidence0_to_1.reshape(n, fh0, fw0, sh, sw, -1)
+            similarity0_to_1 = x0_ @ attended1.transpose(-1, -2)
+            similarity1_to_0 = x1_ @ attended0.transpose(-1, -2)
+            confidence0_to_1_ = F.softmax(similarity0_to_1, dim=3)
+            confidence1_to_0_ = F.softmax(similarity1_to_0, dim=3)
+            confidence0_to_1_ = (
+                confidence0_to_1_.reshape(n, fh0, fw0, sh, sw, -1)
                 .permute(0, 1, 3, 2, 4, 5)
                 .flatten(start_dim=1, end_dim=4)
             )
-            _confidence1_to_0 = (
-                _confidence1_to_0.reshape(n, fh1, fw1, sh, sw, -1)
+            confidence1_to_0_ = (
+                confidence1_to_0_.reshape(n, fh1, fw1, sh, sw, -1)
                 .permute(0, 5, 1, 3, 2, 4)
                 .flatten(start_dim=2, end_dim=5)
             )
-            confidence0_to_1 = _confidence0_to_1 * (
+            confidence0_to_1 = confidence0_to_1_ * (
                 x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, _idxes1_to_0, _confidence1_to_0)
-                .gather(2, _idxes0_to_1)
+                .scatter_(1, idxes1_to_0_, confidence1_to_0_)
+                .gather(2, idxes0_to_1_)
             )
-            confidence1_to_0 = _confidence1_to_0 * (
+            confidence1_to_0 = confidence1_to_0_ * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, _idxes0_to_1, _confidence0_to_1)
-                .gather(1, _idxes1_to_0)
+                .scatter_(2, idxes0_to_1_, confidence0_to_1_)
+                .gather(1, idxes1_to_0_)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                _idxes0_to_1,
-                _idxes1_to_0,
+                idxes0_to_1_,
+                idxes1_to_0_,
             )
 
         result.update(
