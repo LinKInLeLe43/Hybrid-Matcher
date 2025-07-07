@@ -12,6 +12,7 @@ class CoarseMatching(Module):
     def __init__(
         self,
         fused_selective_module: Module,
+        topk: int = 8,
         threshold: float = 0.2,
         border_removal: int = 2,
         temperature: float = 0.1,
@@ -20,6 +21,7 @@ class CoarseMatching(Module):
     ) -> None:
         super().__init__()
         self.fused_selective_module = fused_selective_module
+        self.topk = topk
         self.threshold = threshold
         self.border_removal = border_removal
         self.temperature = temperature
@@ -205,40 +207,38 @@ class CoarseMatching(Module):
         assert len(x0_list) == 2 and len(x1_list) == 2
         n, c, h0, w0 = x0_list[0].shape
         _, _, h1, w1 = x1_list[0].shape
-        fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
+        _, _, fh0, fw0 = x0_list[1].shape
+        _, _, fh1, fw1 = x1_list[1].shape
+        out = {}
 
         x0_16x_ = x0_list[1].flatten(start_dim=-2) * c**-0.5
         x1_16x_ = x1_list[1].flatten(start_dim=-2) * c**-0.5
         similarity = x0_16x_.transpose(-2, -1) @ x1_16x_
-        similarity /= self.temperature
         if y0_mask is not None and y1_mask is not None:
             mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
             similarity.masked_fill_(~mask, -1e9)
 
-        topk = 8
-        result = {}
         similarity_ = similarity
         if self.training:
-            confidence0_to_1 = F.softmax(similarity, dim=2)
-            confidence1_to_0 = F.softmax(similarity, dim=1)
-            confidence = confidence0_to_1 * confidence1_to_0
-            result["extra_coarse_cls_heatmap"] = confidence
+            similarity = similarity / self.temperature
+            out["extra_coarse_cls_heatmap"] = F.softmax(
+                similarity, dim=-1
+            ) * F.softmax(similarity, dim=-2)
             if y_gt_idxes is not None:
                 similarity_ = similarity.clone()
-                similarity_[y_gt_idxes] = 1e9
+                similarity_[y_gt_idxes] = 100
 
-        _, indices0_to_1 = similarity_.topk(topk, dim=-1)
-        _, indices1_to_0 = similarity_.transpose(-2, -1).topk(topk, dim=-1)
-
-        x0_, x1_, attended0, attended1, indices0_to_1_, indices1_to_0_ = (
+        _, indices0_to_1 = similarity_.topk(self.topk, dim=-1)
+        _, indices1_to_0 = similarity_.transpose(-2, -1).topk(self.topk, dim=-1)
+        x0_, x1_, attended0, attended1, indices0_to_1, indices1_to_0 = (
             self.fused_selective_module(
                 x0_list, x1_list, indices0_to_1, indices1_to_0
             )
         )
-        indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
+        indices1_to_0 = indices1_to_0.transpose(-2, -1)
         x0 = window_unpartition(x0_, (fh0, fw0), self.stride)
         x1 = window_unpartition(x1_, (fh1, fw1), self.stride)
-        result["x_8x"] = (x0, x1)
+        out["feat"] = (x0, x1)
 
         if self.training:
             x0, x1 = x0 / c**0.5, x1 / c**0.5
@@ -258,8 +258,8 @@ class CoarseMatching(Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, indices0_to_1_, indices1_to_0_
-            result["coarse_cls_heatmap"] = confidence
+            score = confidence, indices0_to_1, indices1_to_0
+            out["coarse_cls_heatmap"] = confidence
         else:
             x0_, x1_ = x0_ / c**0.5, x1_ / c**0.5
             attended0, attended1 = attended0 / c**0.5, attended1 / c**0.5
@@ -285,24 +285,24 @@ class CoarseMatching(Module):
             )
             confidence0_to_1 = confidence0_to_1_ * (
                 x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, indices1_to_0_, confidence1_to_0_)
-                .gather(2, indices0_to_1_)
+                .scatter_(1, indices1_to_0, confidence1_to_0_)
+                .gather(2, indices0_to_1)
             )
             confidence1_to_0 = confidence1_to_0_ * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, indices0_to_1_, confidence0_to_1_)
-                .gather(1, indices1_to_0_)
+                .scatter_(2, indices0_to_1, confidence0_to_1_)
+                .gather(1, indices1_to_0)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                indices0_to_1_,
-                indices1_to_0_,
+                indices0_to_1,
+                indices1_to_0,
             )
 
-        result.update(
+        out.update(
             self._create_coarse_matching(
                 score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes
             )
         )
-        return result
+        return out

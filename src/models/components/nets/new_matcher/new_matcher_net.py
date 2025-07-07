@@ -152,7 +152,7 @@ class NewMatcherNet(nn.Module):
             [x0s[-1], x0_16x], [x1s[-1], x1_16x], x0_mask=mask0_8x,
             x1_mask=mask1_8x, y0_mask=mask0_16x, y1_mask=mask1_16x,
             x_gt_idxes=gt_idxes, y_gt_idxes=extra_gt_idxes)
-        x0s[-1], x1s[-1] = result.pop("x_8x")
+        x0s[-1], x1s[-1] = result.pop("feat")
 
         x0_reg, x1_reg = self.fine_preprocess(
             x0s, x1s, result["coarse_cls_idxes"])
