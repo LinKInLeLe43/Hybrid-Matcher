@@ -206,10 +206,11 @@ class CoarseMatching(Module):
         _, _, h1, w1 = x1_list[0].shape
         _, _, fh0, fw0 = x0_list[1].shape
         _, _, fh1, fw1 = x1_list[1].shape
+        scale = c**-0.5
         out = {}
 
-        x0_ = x0_list[1].flatten(start_dim=-2) * c**-0.5
-        x1_ = x1_list[1].flatten(start_dim=-2) * c**-0.5
+        x0_ = x0_list[1].flatten(start_dim=-2) * scale
+        x1_ = x1_list[1].flatten(start_dim=-2) * scale
         similarity = x0_.transpose(-2, -1) @ x1_
         if mask0 is not None and mask1 is not None:
             mask0_ = F.max_pool2d(
@@ -242,8 +243,8 @@ class CoarseMatching(Module):
         out["feat"] = (x0, x1)
 
         if self.training:
-            x0_ = x0.flatten(start_dim=-2) * c**-0.5
-            x1_ = x1.flatten(start_dim=-2) * c**-0.5
+            x0_ = x0.flatten(start_dim=-2) * scale
+            x1_ = x1.flatten(start_dim=-2) * scale
             similarity = x0_.transpose(-2, -1) @ x1_
             if mask0 is not None and mask1 is not None:
                 mask = mask0.view(n, -1, 1) & mask1.view(n, 1, -1)
@@ -254,9 +255,8 @@ class CoarseMatching(Module):
             out["coarse_cls_heatmap"] = confidence
             score = confidence, indices0_to_1, indices1_to_0
         else:
-            x0_p, x1_p = x0_p * c**-0.5, x1_p * c**-0.5
-            attended0_p = attended0_p * c**-0.5
-            attended1_p = attended1_p * c**-0.5
+            x0_p, x1_p = x0_p * scale, x1_p * scale
+            attended0_p, attended1_p = attended0_p * scale, attended1_p * scale
             similarity0_to_1_p = x0_p @ attended1_p.transpose(-2, -1)
             similarity1_to_0_p = x1_p @ attended0_p.transpose(-2, -1)
             confidence0_to_1_p = (
