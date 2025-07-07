@@ -116,14 +116,15 @@ class SelfBlock(Module):
             h, w = h // self.stride, w // self.stride
         q, k, v = (
             self.qkv_proj(x_)
-            .reshape(n, -1, self.num_heads, self.head_dim, 3)
+            .view(n, -1, self.num_heads, self.head_dim, 3)
             .transpose(-4, -3)
             .unbind(dim=-1)
         )
         if encoding is not None:
             encoding = (
                 encoding[:, :h, :w, :c]
-                .reshape(2, -1, self.num_heads, self.head_dim)
+                .contiguous()
+                .view(2, -1, self.num_heads, self.head_dim)
                 .transpose(-3, -2)
             )
             q = self._apply_rotary_encoding(q, encoding)
@@ -135,6 +136,7 @@ class SelfBlock(Module):
         )
         message = self.out_proj(message).unflatten(1, (h, w))
         if self.stride > 1:
+            # [TODO]: test contiguous()
             message = F.interpolate(
                 message.permute(0, 3, 1, 2),
                 scale_factor=self.stride,
@@ -187,17 +189,16 @@ class CrossBlock(Module):
         if self.stride > 1:
             x0_ = self.down_proj(x0.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
             x1_ = self.down_proj(x1.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
-            h0, w0 = h0 // self.stride, w0 // self.stride
-            h1, w1 = h1 // self.stride, w1 // self.stride
+            h0, w0, h1, w1 = [t // self.stride for t in [h0, w0, h1, w1]]
         q0, k0, v0 = (
             self.qkv_proj(x0_)
-            .reshape(n, -1, self.num_heads, self.head_dim, 3)
+            .view(n, -1, self.num_heads, self.head_dim, 3)
             .transpose(-4, -3)
             .unbind(dim=-1)
         )
         q1, k1, v1 = (
             self.qkv_proj(x1_)
-            .reshape(n, -1, self.num_heads, self.head_dim, 3)
+            .view(n, -1, self.num_heads, self.head_dim, 3)
             .transpose(-4, -3)
             .unbind(dim=-1)
         )
@@ -219,6 +220,7 @@ class CrossBlock(Module):
         message0 = self.out_proj(message0).unflatten(1, (h0, w0))
         message1 = self.out_proj(message1).unflatten(1, (h1, w1))
         if self.stride != 1:
+            # [TODO]: test contiguous()
             message0 = F.interpolate(
                 message0.permute(0, 3, 1, 2),
                 scale_factor=self.stride,
