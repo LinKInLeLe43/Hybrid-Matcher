@@ -7,6 +7,7 @@ from torch import Tensor
 from torch.nn import Module
 
 from ..submodules import PyramidFuser
+from ..utils import window_partition, window_unpartition
 from .transformer import RegionSelectiveTransformerLayer, TransformerLayer
 
 
@@ -112,29 +113,13 @@ class SelectiveDecoder(Module):
             similarity = None
 
         x0, x1 = self.fuser([x0, prior0], [x1, prior1])
-        x0 = (
-            x0.reshape(n, -1, fh0, self.stride, fw0, self.stride)
-            .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n, fh0 * fw0, self.stride * self.stride, -1)
-        )
-        x1 = (
-            x1.reshape(n, -1, fh1, self.stride, fw1, self.stride)
-            .permute(0, 2, 4, 3, 5, 1)
-            .reshape(n, fh1 * fw1, self.stride * self.stride, -1)
-        )
+        x0 = window_partition(x0, self.stride)
+        x1 = window_partition(x1, self.stride)
         for layer in self.layers:
             x0, x1 = layer(x0, x1, indices0_to_1, indices1_to_0)
         if do_reshape:
-            x0 = (
-                x0.reshape(n, fh0, fw0, self.stride, self.stride, -1)
-                .permute(0, 5, 1, 3, 2, 4)
-                .reshape(n, -1, fh0 * self.stride, fw0 * self.stride)
-            )
-            x1 = (
-                x1.reshape(n, fh1, fw1, self.stride, self.stride, -1)
-                .permute(0, 5, 1, 3, 2, 4)
-                .reshape(n, -1, fh1 * self.stride, fw1 * self.stride)
-            )
+            x0 = window_unpartition(x0, (fh0, fw0), self.stride)
+            x1 = window_unpartition(x1, (fh1, fw1), self.stride)
         return x0, x1, indices0_to_1, indices1_to_0, similarity
 
 

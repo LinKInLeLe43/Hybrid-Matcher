@@ -6,6 +6,8 @@ from kornia import create_meshgrid
 from torch import nn
 from torch.nn import functional as F
 
+from .utils import window_unpartition
+
 
 class CoarseMatching(nn.Module):
     def __init__(
@@ -20,7 +22,6 @@ class CoarseMatching(nn.Module):
         self.border_removal = border_removal
         self.stride = decoder.stride_list[0]
         self.scale = decoder.dim_list[0] ** -0.5
-
         delta_indices = create_meshgrid(
             self.stride,
             self.stride,
@@ -185,20 +186,19 @@ class CoarseMatching(nn.Module):
         mask.eq_(1.0)
         return mask
 
-    def map_indices(
-        self, x: torch.Tensor, size: Sequence[int], fw: int
+    def _map_indices(
+        self, x: torch.Tensor, size: Sequence[int], w: int
     ) -> torch.Tensor:
-        row = (x[..., None] // fw) * self.stride + self.delta_indices[:, 1]
-        col = (x[..., None] % fw) * self.stride + self.delta_indices[:, 0]
-        out = row * fw * self.stride + col
-        out = (
-            out.unflatten(1, size)
+        row = (x[..., None] // w) * self.stride + self.delta_indices[:, 1]
+        col = (x[..., None] % w) * self.stride + self.delta_indices[:, 0]
+        x = (
+            (row * w * self.stride + col)
+            .view(x.shape[0], *size, -1)
             .repeat_interleave(self.stride, dim=1)
             .repeat_interleave(self.stride, dim=2)
             .flatten(start_dim=1, end_dim=2)
-            .flatten(start_dim=-2)
         )
-        return out
+        return x
 
     def forward(
         self,
@@ -227,22 +227,14 @@ class CoarseMatching(nn.Module):
         x0_, x1_, indices0_to_1, indices1_to_0, similarity_list = self.decoder(
             [x0, y0, z0], [x1, y1, z1], encoding, mask0=z0_mask, mask1=z1_mask
         )
-        x0 = (
-            x0_.reshape(n, fh0, fw0, self.stride, self.stride, c)
-            .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h0, w0)
-        )
-        x1 = (
-            x1_.reshape(n, fh1, fw1, self.stride, self.stride, c)
-            .permute(0, 5, 1, 3, 2, 4)
-            .reshape(n, c, h1, w1)
-        )
+        x0 = window_unpartition(x0_, (fh0, fw0), self.stride)
+        x1 = window_unpartition(x1_, (fh1, fw1), self.stride)
 
         result = {}
         result["extra_idxes0_to_1"] = indices0_to_1
 
-        indices0_to_1_ = self.map_indices(indices0_to_1, (fh0, fw0), fw1)
-        indices1_to_0_ = self.map_indices(indices1_to_0, (fh1, fw1), fw0)
+        indices0_to_1_ = self._map_indices(indices0_to_1, (fh0, fw0), fw1)
+        indices1_to_0_ = self._map_indices(indices1_to_0, (fh1, fw1), fw0)
         indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
         result["x_8x"] = (x0, x1)
         if only_decode:
