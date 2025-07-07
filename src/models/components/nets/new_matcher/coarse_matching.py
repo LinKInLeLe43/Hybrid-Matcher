@@ -1,9 +1,9 @@
 from typing import Any, Dict, Optional, Tuple, Union
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
-from torch import nn
-from torch.nn import functional as F
 
 
 class CoarseMatching(nn.Module):
@@ -216,48 +216,46 @@ class CoarseMatching(nn.Module):
     ) -> Dict[str, Any]:
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
+        fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
+        sh = sw = self.stride
 
-        _y0 = y0.flatten(start_dim=2).transpose(1, 2)
-        _y1 = y1.flatten(start_dim=2).transpose(1, 2)
-        _y0, _y1 = _y0 / c**0.5, _y1 / c**0.5
-        similarity = torch.einsum("nlc,nsc->nls", _y0, _y1)
+        y0_ = y0.flatten(start_dim=2) / c**0.5
+        y1_ = y1.flatten(start_dim=2) / c**0.5
+        similarity = y0_.transpose(-2, -1) @ y1_
         similarity /= self.temperature
         if y0_mask is not None and y1_mask is not None:
-            mask = (
-                y0_mask.flatten(start_dim=1)[:, :, None]
-                & y1_mask.flatten(start_dim=1)[:, None, :]
-            )
+            mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
             similarity.masked_fill_(~mask, -1e9)
 
         topk = 8
         result = {}
-        _similarity = similarity
+        similarity_ = similarity
         if self.training:
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
             result["extra_coarse_cls_heatmap"] = confidence
             if y_gt_idxes is not None:
-                _similarity = similarity.clone()
-                _similarity[y_gt_idxes] = 1e9
+                similarity_ = similarity.clone()
+                similarity_[y_gt_idxes] = 1e9
 
-        _, idxes0_to_1 = _similarity.topk(topk, dim=2)
-        _, idxes1_to_0 = _similarity.transpose(1, 2).topk(topk, dim=2)
+        _, idxes0_to_1 = similarity_.topk(topk, dim=2)
+        _, idxes1_to_0 = similarity_.transpose(1, 2).topk(topk, dim=2)
 
-        _x0, _x1, _x0_to_1, _x1_to_0, _idxes0_to_1, _idxes1_to_0 = (
+        x0_, x1_, attended1, attended0, idxes0_to_1_, idxes1_to_0_ = (
             self.fused_selective_module(
                 [x0, y0], [x1, y1], idxes0_to_1, idxes1_to_0
             )
         )
-        _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
+        idxes1_to_0_ = idxes1_to_0_.transpose(1, 2)
         x0 = rearrange(
-            _x0,
+            x0_,
             "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
             fh=h0 // self.stride,
             sh=self.stride,
         )
         x1 = rearrange(
-            _x1,
+            x1_,
             "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
             fh=h1 // self.stride,
             sh=self.stride,
@@ -282,44 +280,42 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, _idxes0_to_1, _idxes1_to_0
+            score = confidence, idxes0_to_1_, idxes1_to_0_
             result["coarse_cls_heatmap"] = confidence
         else:
-            _x0, _x1 = _x0 / c**0.5, _x1 / c**0.5
-            _x1_to_0, _x0_to_1 = _x1_to_0 / c**0.5, _x0_to_1 / c**0.5
-            similarity0_to_1 = torch.einsum("npqc,npkc->npqk", _x0, _x0_to_1)
-            similarity1_to_0 = torch.einsum("npkc,npqc->nkpq", _x1_to_0, _x1)
-            similarity0_to_1 = rearrange(
-                similarity0_to_1,
-                "n (fh fw) (sh sw) k -> n (fh sh fw sw) k",
-                fh=h0 // self.stride,
-                sh=self.stride,
-            )
-            similarity1_to_0 = rearrange(
-                similarity1_to_0,
-                "n k (fh fw) (sh sw) -> n k (fh sh fw sw)",
-                fh=h1 // self.stride,
-                sh=self.stride,
-            )
+            x0_, x1_ = x0_ / c**0.5, x1_ / c**0.5
+            attended0, attended1 = attended0 / c**0.5, attended1 / c**0.5
+            similarity0_to_1 = x0_ @ attended1.transpose(-1, -2)
+            similarity1_to_0 = x1_ @ attended0.transpose(-1, -2)
             similarity0_to_1 /= self.temperature
             similarity1_to_0 /= self.temperature
-            _confidence0_to_1 = F.softmax(similarity0_to_1, dim=2)
-            _confidence1_to_0 = F.softmax(similarity1_to_0, dim=1)
-            confidence0_to_1 = _confidence0_to_1 * (
-                x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, _idxes1_to_0, _confidence1_to_0)
-                .gather(2, _idxes0_to_1)
+            confidence0_to_1_ = F.softmax(similarity0_to_1, dim=3)
+            confidence1_to_0_ = F.softmax(similarity1_to_0, dim=3)
+            confidence0_to_1_ = (
+                confidence0_to_1_.reshape(n, fh0, fw0, sh, sw, -1)
+                .permute(0, 1, 3, 2, 4, 5)
+                .flatten(start_dim=1, end_dim=4)
             )
-            confidence1_to_0 = _confidence1_to_0 * (
+            confidence1_to_0_ = (
+                confidence1_to_0_.reshape(n, fh1, fw1, sh, sw, -1)
+                .permute(0, 5, 1, 3, 2, 4)
+                .flatten(start_dim=2, end_dim=5)
+            )
+            confidence0_to_1 = confidence0_to_1_ * (
+                x1.new_zeros(n, h0 * w0, h1 * w1)
+                .scatter_(1, idxes1_to_0_, confidence1_to_0_)
+                .gather(2, idxes0_to_1_)
+            )
+            confidence1_to_0 = confidence1_to_0_ * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, _idxes0_to_1, _confidence0_to_1)
-                .gather(1, _idxes1_to_0)
+                .scatter_(2, idxes0_to_1_, confidence0_to_1_)
+                .gather(1, idxes1_to_0_)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                _idxes0_to_1,
-                _idxes1_to_0,
+                idxes0_to_1_,
+                idxes1_to_0_,
             )
 
         result.update(
