@@ -217,7 +217,6 @@ class CoarseMatching(nn.Module):
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = x1.shape
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
-        sh = sw = self.stride
 
         y0_ = y0.flatten(start_dim=2) / c**0.5
         y1_ = y1.flatten(start_dim=2) / c**0.5
@@ -239,15 +238,15 @@ class CoarseMatching(nn.Module):
                 similarity_ = similarity.clone()
                 similarity_[y_gt_idxes] = 1e9
 
-        _, idxes0_to_1 = similarity_.topk(topk, dim=2)
-        _, idxes1_to_0 = similarity_.transpose(1, 2).topk(topk, dim=2)
+        _, indices0_to_1 = similarity_.topk(topk, dim=-1)
+        _, indices1_to_0 = similarity_.transpose(-2, -1).topk(topk, dim=-1)
 
-        x0_, x1_, attended1, attended0, idxes0_to_1_, idxes1_to_0_ = (
+        x0_, x1_, attended0, attended1, indices0_to_1_, indices1_to_0_ = (
             self.fused_selective_module(
-                [x0, y0], [x1, y1], idxes0_to_1, idxes1_to_0
+                [x0, y0], [x1, y1], indices0_to_1, indices1_to_0
             )
         )
-        idxes1_to_0_ = idxes1_to_0_.transpose(1, 2)
+        indices1_to_0_ = indices1_to_0_.transpose(-2, -1)
         x0 = rearrange(
             x0_,
             "n (fh fw) (sh sw) c -> n c (fh sh) (fw sw)",
@@ -280,7 +279,7 @@ class CoarseMatching(nn.Module):
             confidence0_to_1 = F.softmax(similarity, dim=2)
             confidence1_to_0 = F.softmax(similarity, dim=1)
             confidence = confidence0_to_1 * confidence1_to_0
-            score = confidence, idxes0_to_1_, idxes1_to_0_
+            score = confidence, indices0_to_1_, indices1_to_0_
             result["coarse_cls_heatmap"] = confidence
         else:
             x0_, x1_ = x0_ / c**0.5, x1_ / c**0.5
@@ -292,30 +291,34 @@ class CoarseMatching(nn.Module):
             confidence0_to_1_ = F.softmax(similarity0_to_1, dim=3)
             confidence1_to_0_ = F.softmax(similarity1_to_0, dim=3)
             confidence0_to_1_ = (
-                confidence0_to_1_.reshape(n, fh0, fw0, sh, sw, -1)
+                confidence0_to_1_.reshape(
+                    n, fh0, fw0, self.stride, self.stride, -1
+                )
                 .permute(0, 1, 3, 2, 4, 5)
-                .flatten(start_dim=1, end_dim=4)
+                .flatten(start_dim=1, end_dim=-2)
             )
             confidence1_to_0_ = (
-                confidence1_to_0_.reshape(n, fh1, fw1, sh, sw, -1)
+                confidence1_to_0_.reshape(
+                    n, fh1, fw1, self.stride, self.stride, -1
+                )
                 .permute(0, 5, 1, 3, 2, 4)
-                .flatten(start_dim=2, end_dim=5)
+                .flatten(start_dim=2, end_dim=-1)
             )
             confidence0_to_1 = confidence0_to_1_ * (
                 x1.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(1, idxes1_to_0_, confidence1_to_0_)
-                .gather(2, idxes0_to_1_)
+                .scatter_(1, indices1_to_0_, confidence1_to_0_)
+                .gather(2, indices0_to_1_)
             )
             confidence1_to_0 = confidence1_to_0_ * (
                 x0.new_zeros(n, h0 * w0, h1 * w1)
-                .scatter_(2, idxes0_to_1_, confidence0_to_1_)
-                .gather(1, idxes1_to_0_)
+                .scatter_(2, indices0_to_1_, confidence0_to_1_)
+                .gather(1, indices1_to_0_)
             )
             score = (
                 confidence0_to_1,
                 confidence1_to_0,
-                idxes0_to_1_,
-                idxes1_to_0_,
+                indices0_to_1_,
+                indices1_to_0_,
             )
 
         result.update(

@@ -275,11 +275,11 @@ class RegionSelectiveTransformer(Module):
         x1 = window_partition(x1, self.stride)
 
         for layer in self.layers:
-            attended0 = self._gather_attended(x1, indices0_to_1)
-            x0 = layer(x0, attended0, (fh0, fw0))
-            attended1 = self._gather_attended(x0, indices1_to_0)
-            x1 = layer(x1, attended1, (fh1, fw1))
-        attended0 = self._gather_attended(x1, indices0_to_1)
+            attended1 = self._gather_attended(x1, indices0_to_1)
+            x0 = layer(x0, attended1, (fh0, fw0))
+            attended0 = self._gather_attended(x0, indices1_to_0)
+            x1 = layer(x1, attended0, (fh1, fw1))
+        attended1 = self._gather_attended(x1, indices0_to_1)
         indices0_to_1 = self._map_indices(indices0_to_1, (fh0, fw0), fw1)
         indices1_to_0 = self._map_indices(indices1_to_0, (fh1, fw1), fw0)
         return x0, x1, attended0, attended1, indices0_to_1, indices1_to_0
