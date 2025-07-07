@@ -197,14 +197,11 @@ class CoarseMatching(Module):
         self,
         x0_list: Sequence[Tensor],
         x1_list: Sequence[Tensor],
-        x0_mask: Optional[Tensor] = None,
-        x1_mask: Optional[Tensor] = None,
-        y0_mask: Optional[Tensor] = None,
-        y1_mask: Optional[Tensor] = None,
-        x_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
-        y_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        gt_indices_list: Sequence[Optional[Tuple[Tensor, Tensor, Tensor]]],
+        mask0: Optional[Tensor] = None,
+        mask1: Optional[Tensor] = None,
     ) -> Dict[str, Any]:
-        assert len(x0_list) == 2 and len(x1_list) == 2
+        assert len(x0_list) == len(x1_list) == len(gt_indices_list) == 2
         n, c, h0, w0 = x0_list[0].shape
         _, _, h1, w1 = x1_list[0].shape
         _, _, fh0, fw0 = x0_list[1].shape
@@ -214,20 +211,23 @@ class CoarseMatching(Module):
         x0_ = x0_list[1].flatten(start_dim=-2) * c**-0.5
         x1_ = x1_list[1].flatten(start_dim=-2) * c**-0.5
         similarity = x0_.transpose(-2, -1) @ x1_
-        if y0_mask is not None and y1_mask is not None:
-            mask = y0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
+        if mask0 is not None and mask1 is not None:
+            mask0_ = F.max_pool2d(
+                mask0.float(), self.stride, stride=self.stride
+            ).bool()
+            mask1_ = F.max_pool2d(
+                mask1.float(), self.stride, stride=self.stride
+            ).bool()
+            mask = mask0_.view(n, -1, 1) & mask1_.view(n, 1, -1)
             similarity.masked_fill_(~mask, -1e9)
 
         similarity_ = similarity
         if self.training:
             similarity = similarity / self.temperature
-            confidence = F.softmax(similarity, dim=-1) * F.softmax(
-                similarity, dim=-2
-            )
+            confidence = similarity.softmax(dim=-1) * similarity.softmax(dim=-2)
             out["extra_coarse_cls_heatmap"] = confidence
-            if y_gt_idxes is not None:
-                similarity_ = similarity.clone()
-                similarity_[y_gt_idxes] = 100
+            if gt_indices_list[1] is not None:
+                similarity_[gt_indices_list[1]] = 100
 
         _, indices0_to_1 = similarity_.topk(self.topk, dim=-1)
         _, indices1_to_0 = similarity_.transpose(-2, -1).topk(self.topk, dim=-1)
@@ -245,14 +245,12 @@ class CoarseMatching(Module):
             x0_ = x0.flatten(start_dim=-2) * c**-0.5
             x1_ = x1.flatten(start_dim=-2) * c**-0.5
             similarity = x0_.transpose(-2, -1) @ x1_
-            if x0_mask is not None and x1_mask is not None:
-                mask = x0_mask.view(n, -1, 1) & x1_mask.view(n, 1, -1)
+            if mask0 is not None and mask1 is not None:
+                mask = mask0.view(n, -1, 1) & mask1.view(n, 1, -1)
                 similarity.masked_fill_(~mask, -1e9)
 
             similarity = similarity / self.temperature
-            confidence = F.softmax(similarity, dim=-1) * F.softmax(
-                similarity, dim=-2
-            )
+            confidence = similarity.softmax(dim=-1) * similarity.softmax(dim=-2)
             out["coarse_cls_heatmap"] = confidence
             score = confidence, indices0_to_1, indices1_to_0
         else:
@@ -268,14 +266,14 @@ class CoarseMatching(Module):
                 similarity1_to_0_p / self.temperature
             ).softmax(dim=-1)
             confidence0_to_1_ = (
-                confidence0_to_1_p.reshape(
+                confidence0_to_1_p.view(
                     n, fh0, fw0, self.stride, self.stride, -1
                 )
                 .permute(0, 1, 3, 2, 4, 5)
                 .flatten(start_dim=1, end_dim=-2)
             )
             confidence1_to_0_ = (
-                confidence1_to_0_p.reshape(
+                confidence1_to_0_p.view(
                     n, fh1, fw1, self.stride, self.stride, -1
                 )
                 .permute(0, 5, 1, 3, 2, 4)
@@ -300,7 +298,12 @@ class CoarseMatching(Module):
 
         out.update(
             self._create_coarse_matching(
-                score, (h0, w0), (h1, w1), x0_mask, x1_mask, x_gt_idxes
+                score,
+                (h0, w0),
+                (h1, w1),
+                mask0=mask0,
+                mask1=mask1,
+                gt_idxes=gt_indices_list[0],
             )
         )
         return out
