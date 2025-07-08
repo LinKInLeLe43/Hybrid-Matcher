@@ -16,7 +16,7 @@ class MegaDepthDataset(data.Dataset):
         data_root: str,
         image_size: int,
         image_factor: int,
-        mask_factors: List[int],
+        mask_factor: int,
         fp16: bool = False,
         load_depth: bool = True,
         min_overlap_score: float = 0.0
@@ -25,7 +25,7 @@ class MegaDepthDataset(data.Dataset):
         self.data_root = data_root
         self.image_size = image_size
         self.image_factor = image_factor
-        self.mask_factors = mask_factors
+        self.mask_factor = mask_factor
         self.fp16 = fp16
         self.load_depth = load_depth
 
@@ -110,9 +110,9 @@ class MegaDepthDataset(data.Dataset):
                     data[key] = torch.from_numpy(value).float()
 
         mask = torch.stack([data.pop("mask0"), data.pop("mask1")])
-        for factor in self.mask_factors:
-            data[f"mask0_{factor}x"], data[f"mask1_{factor}x"] = F.max_pool2d(
-                mask, factor, stride=factor).bool()
+        data["mask0"], data["mask1"] = F.max_pool2d(
+            mask, self.mask_factor
+        ).bool()
         return data
 
     def __len__(self) -> int:

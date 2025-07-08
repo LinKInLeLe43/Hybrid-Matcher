@@ -301,7 +301,9 @@ class CoarseMatching(Module):
                 (h1, w1),
                 mask0=mask0,
                 mask1=mask1,
-                gt_idxes=gt_indices_list or gt_indices_list[0],
+                gt_idxes=gt_indices_list[0]
+                if gt_indices_list is not None
+                else None,
             )
         )
         return out

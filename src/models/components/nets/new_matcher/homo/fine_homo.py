@@ -236,7 +236,7 @@ class FineHomo(nn.Module):
         # 4. Output
         # coords1,H = self.get_flow_now_k(four_point_disp, k=1) 
         if local_matches is not None:
-            points, r_points = local_matches.chunk(2, dim=1)
+            points, r_points = ((self.W-1) * local_matches).chunk(2, dim=1)
             points = torch.cat([points, torch.ones_like(points[:, [0]])], dim=1)[:, :, None]
             if self.padding:
                 _points = points.new_zeros((M, 3, 1))

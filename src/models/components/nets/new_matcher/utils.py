@@ -29,7 +29,7 @@ def window_unpartition(x: Tensor, size: Sequence[int], stride: int) -> Tensor:
 
 def crop_by_mask(x: Tensor, mask: Tensor) -> List[Tensor]:
     x_list = []
-    for b in range(len(x.shape[0])):
+    for b in range(x.shape[0]):
         b_h, b_w = mask[b].sum(dim=0).amax(), mask[b].sum(dim=1).amax()
         x_list.append(x[[b], :, :b_h, :b_w])
     return x_list
