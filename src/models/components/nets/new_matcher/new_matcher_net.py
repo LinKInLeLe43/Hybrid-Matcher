@@ -58,24 +58,18 @@ class NewMatcherNet(Module):
     ) -> None:
         b_idxes = out["coarse_cls_idxes"][0]
 
-        coarse_points0 = self.scales[0] * out["points0"]
-        coarse_points1 = self.scales[0] * out["points1"]
-
-        biases0 = out.pop("fine_cls_biases0")
-        biases1 = out.pop("fine_cls_biases1")
-        biases1 += self.scales[1] * (self.reg_w // 2) * out["fine_reg_biases"]
-
-        fine_points0 = coarse_points0 + biases0
-        fine_points1 = coarse_points1 + biases1
-
+        points0 = out["points0"] * self.scales[0]
+        points1 = out["points1"] * self.scales[0]
+        points0 = points0 + out.pop("fine_cls_biases0")
+        points1 = (
+            points1
+            + out.pop("fine_cls_biases1")
+            + out["fine_reg_biases"] * self.scales[1] * (self.reg_w // 2)
+        )
         if scale0 is not None and scale1 is not None:
-            coarse_points0 *= scale0[b_idxes]
-            fine_points0 *= scale0[b_idxes]
-            coarse_points1 *= scale1[b_idxes]
-            fine_points1 *= scale1[b_idxes]
-        out["coarse_points0"] = coarse_points0
-        out["coarse_points1"] = coarse_points1
-        out["points0"], out["points1"] = fine_points0, fine_points1
+            points0 = points0 * scale0[b_idxes]
+            points1 = points1 * scale1[b_idxes]
+        out["points0"], out["points1"] = points0, points1
 
     def forward(
         self,

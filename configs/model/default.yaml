@@ -20,7 +20,7 @@ net:
         blocks_counts: [2, 2]
         layer_depths: [256, 256]
         hidden_depths: [256, 256]
-        heads_counts: [8, 8]
+        num_heads_list: [8, 8]
         center_sizes: [4, 2]
         fold_sizes: [1, 1]
     coarse_module:
@@ -28,12 +28,12 @@ net:
         stride: 2
         in_depth: ${model.net.local_coc.layer_depths.0}
         hidden_depth: ${model.net.coarse_module.in_depth}
-        heads_count: 8
+        num_heads: 8
         layer_count: 2
         attention_block:
             _target_: src.models.components.nets.new_matcher.TransformerBlock
             dim: ${model.net.coarse_module.in_depth}
-            num_heads: ${model.net.coarse_module.heads_count}
+            num_heads: ${model.net.coarse_module.num_heads}
             stride: ${model.net.coarse_module.stride}
     coarse_matching:
         _target_: src.models.components.nets.new_matcher.CoarseMatching

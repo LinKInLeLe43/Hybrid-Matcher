@@ -57,14 +57,14 @@ class LocalCluster(nn.Module):
         self,
         in_depth: int,
         hidden_depth: int,
-        heads_count: int,
+        num_heads: int,
         center_size: int,
         fold_size: int,
         bias: bool = True,
         type: str = "original",
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
+        self.num_heads = num_heads
         self.center_size = center_size
         self.fold_size = fold_size
         self.type = type
@@ -77,7 +77,7 @@ class LocalCluster(nn.Module):
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        fc, fh, fw = self.heads_count, self.fold_size, self.fold_size
+        fc, fh, fw = self.num_heads, self.fold_size, self.fold_size
         n, c, h, w = x.shape
         sh, sw = h // fh, w // fw
         m, s = n * fc * fh * fw, self.center_size**2
@@ -97,12 +97,10 @@ class LocalCluster(nn.Module):
         x_point, x_value = x.chunk(2, dim=2)
         center_point, center_value = center.chunk(2, dim=2)
 
-        norm_x_point = F.normalize(x_point, dim=2)
-        norm_center_point = F.normalize(center_point, dim=2)
-        similarities = torch.einsum(
-            "mlc,msc->mls", norm_x_point, norm_center_point
-        )
-        similarities = self.alpha * similarities + self.beta
+        x_point = F.normalize(x_point, dim=2)
+        center_point = F.normalize(center_point, dim=2)
+        similarity = x_point @ center_point.transpose(-2, -1)
+        similarity = self.alpha * similarity + self.beta
         if mask is not None:
             mask = einops.repeat(
                 mask,
@@ -112,18 +110,18 @@ class LocalCluster(nn.Module):
                 fw=fw,
                 s=s,
             )
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
-        max_sim_values, max_sim_idxes = similarities.max(dim=2)
+            similarity.masked_fill_(~mask, float("-inf"))
+        similarity.sigmoid_()
+        max_sim_values, max_sim_idxes = similarity.max(dim=2)
 
         if self.type == "flattened_index":
             max_sim_idxes = (
                 max_sim_idxes + s * torch.arange(m, device=device)[:, None]
             )
-            max_sim_values, max_sim_idxes, x_value, center_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, x_value, center_value),
-            )
+            max_sim_values, max_sim_idxes, x_value, center_value = [
+                x.flatten(end_dim=1)
+                for x in [max_sim_values, max_sim_idxes, x_value, center_value]
+            ]
 
             cat_ones = torch.ones_like(x_value[:, [0]])
             cat_x_value = torch.cat([x_value, cat_ones], dim=1)
@@ -146,15 +144,15 @@ class LocalCluster(nn.Module):
                 sw=sw,
             )
         elif self.type == "original":
-            mask = torch.zeros_like(similarities)
+            mask = torch.zeros_like(similarity)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
+            similarity = (mask * similarity)[..., None]
 
             aggregated = center_value + (
-                similarities * x_value[:, :, None, :]
+                similarity * x_value[:, :, None, :]
             ).sum(dim=1)
-            aggregated /= 1 + similarities.sum(dim=1)
-            dispatched = (similarities * aggregated[:, None, :, :]).sum(dim=2)
+            aggregated /= 1 + similarity.sum(dim=1)
+            dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
             dispatched = einops.rearrange(
                 dispatched,
                 "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
@@ -175,12 +173,12 @@ class GlobalCluster(nn.Module):
         self,
         in_depth: int,
         hidden_depth: int,
-        heads_count: int,
+        num_heads: int,
         bias: bool = True,
         type: str = "flattened_index",
     ) -> None:
         super().__init__()
-        self.heads_count = heads_count
+        self.num_heads = num_heads
         self.type = type
 
         self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
@@ -193,7 +191,7 @@ class GlobalCluster(nn.Module):
     def forward(
         self, x0: Tensor, center1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        fc = self.heads_count
+        fc = self.num_heads
         n, c, h0, w0 = x0.shape
         _, _, h1, w1 = center1.shape
         m, l, s = n * fc, h0 * w0, h1 * w1
@@ -209,26 +207,24 @@ class GlobalCluster(nn.Module):
         )
         center1_point, center1_value = center1.chunk(2, dim=2)
 
-        norm_x0_point = F.normalize(x0_point, dim=2)
-        norm_center1_point = F.normalize(center1_point, dim=2)
-        similarities = torch.einsum(
-            "mlc,msc->mls", norm_x0_point, norm_center1_point
-        )
-        similarities = self.alpha * similarities + self.beta
+        x0_point = F.normalize(x0_point, dim=2)
+        center1_point = F.normalize(center1_point, dim=2)
+        similarity = x0_point @ center1_point.transpose(-2, -1)
+        similarity = self.alpha * similarity + self.beta
         if mask is not None:
             mask = einops.repeat(mask, "n l s -> (n fc) l s", fc=fc)
-            similarities.masked_fill_(~mask, float("-inf"))
-        similarities.sigmoid_()
+            similarity.masked_fill_(~mask, float("-inf"))
+        similarity.sigmoid_()
 
         if self.type == "flattened_index":
-            max_sim_values, max_sim_idxes = similarities.max(dim=2)
+            max_sim_values, max_sim_idxes = similarity.max(dim=2)
             max_sim_idxes = (
                 max_sim_idxes + s * torch.arange(m, device=device)[:, None]
             )
-            max_sim_values, max_sim_idxes, center1_value = map(
-                lambda x: x.flatten(end_dim=1),
-                (max_sim_values, max_sim_idxes, center1_value),
-            )
+            max_sim_values, max_sim_idxes, center1_value = [
+                x.flatten(end_dim=1)
+                for x in [max_sim_values, max_sim_idxes, center1_value]
+            ]
 
             dispatched = max_sim_values[:, None] * center1_value.index_select(
                 0, max_sim_idxes
@@ -237,14 +233,12 @@ class GlobalCluster(nn.Module):
                 dispatched, "(n fc h w) sc -> n h w (fc sc)", fc=fc, h=h0, w=w0
             )
         elif self.type == "original":
-            max_sim_idxes = similarities.argmax(dim=2)
-            mask = torch.zeros_like(similarities)
+            max_sim_idxes = similarity.argmax(dim=2)
+            mask = torch.zeros_like(similarity)
             mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarities = (mask * similarities)[..., None]
+            similarity = (mask * similarity)[..., None]
 
-            dispatched = (similarities * center1_value[:, None, :, :]).sum(
-                dim=2
-            )
+            dispatched = (similarity * center1_value[:, None, :, :]).sum(dim=2)
             dispatched = einops.rearrange(
                 dispatched,
                 "(n fc) (h w) sc -> n h w (fc sc)",
@@ -263,7 +257,7 @@ class LocalClusterBlock(nn.Module):
         self,
         in_depth: int,
         hidden_depth: int,
-        heads_count: int,
+        num_heads: int,
         center_size: int,
         fold_size: int,
         bias: bool = True,
@@ -271,12 +265,7 @@ class LocalClusterBlock(nn.Module):
         super().__init__()
 
         self.cluster = LocalCluster(
-            in_depth,
-            hidden_depth,
-            heads_count,
-            center_size,
-            fold_size,
-            bias=bias,
+            in_depth, hidden_depth, num_heads, center_size, fold_size, bias=bias
         )
         self.norm0 = nn.LayerNorm(in_depth)
 
@@ -301,13 +290,13 @@ class GlobalClusterBlock(nn.Module):
         self,
         in_depth: int,
         hidden_depth: int,
-        heads_count: int,
+        num_heads: int,
         bias: bool = True,
     ) -> None:
         super().__init__()
 
         self.cluster = GlobalCluster(
-            in_depth, hidden_depth, heads_count, bias=bias
+            in_depth, hidden_depth, num_heads, bias=bias
         )
         self.norm0 = nn.LayerNorm(in_depth)
 
@@ -337,7 +326,7 @@ class LocalCoC(nn.Module):
         blocks_counts: List[int],
         layer_depths: List[int],
         hidden_depths: List[int],
-        heads_counts: List[int],
+        num_heads_list: List[int],
         center_sizes: List[int],
         fold_sizes: List[int],
         bias: bool = True,
@@ -364,7 +353,7 @@ class LocalCoC(nn.Module):
                 block = LocalClusterBlock(
                     layer_depths[i],
                     hidden_depths[i],
-                    heads_counts[i],
+                    num_heads_list[i],
                     center_sizes[i],
                     fold_sizes[i],
                     bias=bias,
@@ -477,7 +466,7 @@ class GlobalCoC(nn.Module):
         stride: int,
         in_depth: int,
         hidden_depth: int,
-        heads_count: int,
+        num_heads: int,
         layer_count: int,
         attention_block: nn.Module,
         bias: bool = True,
@@ -490,7 +479,7 @@ class GlobalCoC(nn.Module):
         )
 
         global_block = GlobalClusterBlock(
-            in_depth, hidden_depth, heads_count, bias=bias
+            in_depth, hidden_depth, num_heads, bias=bias
         )
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in range(layer_count)]
