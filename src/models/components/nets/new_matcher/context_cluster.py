@@ -45,26 +45,27 @@ class SelfClusterBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        center_size: int,
-        fold_size: int,
+        num_anchors: int,
+        num_folds: int,
         bias: bool = True,
     ) -> None:
         super().__init__()
+        assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.center_size = center_size
-        self.fold_size = fold_size
+        self.num_folds = num_folds
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
-        self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
+        self.center_proposal = nn.AdaptiveMaxPool2d(num_anchors)
         self.merge = nn.Linear(dim, dim, bias=bias)
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         n, _, h, w = x.shape
-        fh, fw = self.fold_size, self.fold_size
+        fh, fw = self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
+        m = n * self.num_heads * fh * fw
 
         x = x.permute(0, 2, 3, 1)
         x0 = (
@@ -76,14 +77,12 @@ class SelfClusterBlock(Module):
         )
         x1 = self.center_proposal(x0)
         x0_point, x0_value = (
-            x0.view(n, self.num_heads, fh * fw, self.head_dim * 2, sh * sw)
+            x0.view(m, self.head_dim * 2, sh * sw)
             .transpose(-2, -1)
             .chunk(2, dim=-1)
         )
         x1_point, x1_value = (
-            x1.view(n, self.num_heads, fh * fw, self.head_dim * 2, -1)
-            .transpose(-2, -1)
-            .chunk(2, dim=-1)
+            x1.view(m, self.head_dim * 2, -1).transpose(-2, -1).chunk(2, dim=-1)
         )
 
         x0_point = F.normalize(x0_point, dim=-1)
@@ -94,27 +93,19 @@ class SelfClusterBlock(Module):
             mask = (
                 mask.view(n, 1, fh, sh, fw, sw)
                 .transpose(-3, -2)
-                .contiguous()
-                .view(n, 1, fh * fw, sh * sh, 1)
+                .expand(-1, self.num_heads, -1, -1, -1, -1)
+                .view(m, -1, 1)
             )
             similarity.masked_fill_(~mask, float("-inf"))
-        max_sim, indices = similarity.sigmoid().max(dim=2)
-        n_range = torch.arange(n, device=x.device)[:, None, None]
-        head_range = torch.arange(self.num_heads, device=x.device)[
-            None, :, None
-        ]
-        x0_value = torch.cat(
-            [x0_value, torch.ones_like(x0_value[..., [0]])], dim=-1
-        )
-        x1_value = torch.cat(
-            [x1_value, torch.ones_like(x1_value[..., [0]])], dim=-1
-        )
-        x1_value = (
-            x1_value
-            + max_sim[..., None] * x0_value[n_range, head_range, indices]
-        )
-        x1_value = x1_value[..., :-1] / x1_value[..., -1:]
-        dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
+        similarity = similarity.sigmoid()
+
+        max_sim = similarity.amax(dim=-1, keepdim=True)
+        similarity = similarity.where(similarity == max_sim, 0.0)[..., None]
+        aggregated = x1_value[:, None, :, :] + (
+            x0_value[:, :, None, :] * similarity
+        ).sum(dim=1, keepdim=True)
+        aggregated = aggregated / (1 + similarity.sum(dim=1, keepdim=True))
+        dispatched = (similarity * aggregated).sum(dim=2)
         dispatched = (
             dispatched.view(n, self.num_heads, fh, fw, sh, sw, self.head_dim)
             .permute(0, 2, 4, 3, 5, 1, 6)
@@ -139,36 +130,47 @@ class CrossClusterBlock(Module):
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(
-        self, x0: Tensor, x1: Tensor, mask1: Optional[Tensor] = None
+        self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
         n, _, h, w = x0.shape
+        m = n * self.num_heads
 
         x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         x0_point = (
             self.proj0(x0)
             .view(n, -1, self.num_heads, self.head_dim)
             .transpose(-3, -2)
+            .flatten(end_dim=1)
         )
         x1_point, x1_value = (
             self.proj1(x1)
             .view(n, -1, self.num_heads, self.head_dim * 2)
             .transpose(-3, -2)
+            .flatten(end_dim=1)
             .chunk(2, dim=-1)
         )
         x0_point = F.normalize(x0_point, dim=-1)
         x1_point = F.normalize(x1_point, dim=-1)
         similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
-        if mask1 is not None:
-            similarity.masked_fill_(~mask1.view(n, 1, 1, -1), float("-inf"))
-        max_sim, indices = similarity.sigmoid().max(dim=-1)
+        if mask is not None:
+            mask = (
+                mask.view(n, 1, -1)
+                .expand(-1, self.num_heads, -1)
+                .view(m, 1, -1)
+            )
+            similarity.masked_fill_(~mask, float("-inf"))
+        similarity = similarity.sigmoid()
 
-        n_range = torch.arange(n, device=x0.device)[:, None, None]
-        head_range = torch.arange(self.num_heads, device=x0.device)[
-            None, :, None
-        ]
-        dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
-        dispatched = dispatched.transpose(-3, -2).contiguous().view(n, h, w, -1)
+        m_range = torch.arange(m, device=x0.device)[:, None]
+        max_sim, indices = similarity.max(dim=-1)
+        dispatched = max_sim[..., None] * x1_value[m_range, indices]
+        dispatched = (
+            dispatched.view(n, self.num_heads, -1, self.head_dim)
+            .transpose(-3, -2)
+            .contiguous()
+            .view(n, h, w, -1)
+        )
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -261,7 +263,7 @@ class LocalCoC(Module):
                 point_reducer = nn.Identity()
             self.point_reducers.append(point_reducer)
 
-            layer = nn.Sequential()
+            layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i],
@@ -296,7 +298,8 @@ class LocalCoC(Module):
                 scale = scale * self.scales[i]
                 mask_ = F.max_pool2d(mask.float(), scale).bool()
             x = self.point_reducers[i](x)
-            x = self.layers[i](x, mask_)
+            for block in self.layers[i]:
+                x = block(x, mask_)
             outs.append(x)
         return outs
 
