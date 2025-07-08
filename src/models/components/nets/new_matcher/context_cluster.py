@@ -6,20 +6,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+from torch.nn import Module
 
 
-class Mlp(nn.Module):
-    def __init__(
-        self,
-        in_depth: int,
-        hidden_depth: int,
-        out_depth: int,
-        bias: bool = True,
-    ) -> None:
+class Mlp(Module):
+    def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
 
-        self.linear0 = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.linear1 = nn.Linear(hidden_depth, out_depth, bias=bias)
+        self.linear0 = nn.Linear(in_dim, in_dim, bias=bias)
+        self.linear1 = nn.Linear(in_dim, out_dim, bias=bias)
         self.gelu = nn.GELU()
 
     def forward(self, x: Tensor) -> Tensor:
@@ -29,18 +24,12 @@ class Mlp(nn.Module):
         return x
 
 
-class Mlp3x3(nn.Module):
-    def __init__(
-        self,
-        in_depth: int,
-        hidden_depth: int,
-        out_depth: int,
-        bias: bool = True,
-    ) -> None:
+class Mlp3x3(Module):
+    def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
 
-        self.linear = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.conv = nn.Conv2d(hidden_depth, out_depth, 3, padding=1, bias=bias)
+        self.linear = nn.Linear(in_dim, in_dim, bias=bias)
+        self.conv = nn.Conv2d(in_dim, out_dim, 3, padding=1, bias=bias)
         self.gelu = nn.GELU()
 
     def forward(self, x: Tensor) -> Tensor:
@@ -52,11 +41,10 @@ class Mlp3x3(nn.Module):
         return x
 
 
-class LocalCluster(nn.Module):
+class LocalCluster(Module):
     def __init__(
         self,
-        in_depth: int,
-        hidden_depth: int,
+        dim: int,
         num_heads: int,
         center_size: int,
         fold_size: int,
@@ -65,13 +53,14 @@ class LocalCluster(nn.Module):
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
+        self.head_dim = dim // num_heads
         self.center_size = center_size
         self.fold_size = fold_size
         self.type = type
 
-        self.proj = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
+        self.proj = nn.Linear(dim, dim * 2, bias=bias)
         self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
-        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+        self.merge = nn.Linear(dim, dim, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -168,22 +157,22 @@ class LocalCluster(nn.Module):
         return dispatched
 
 
-class GlobalCluster(nn.Module):
+class GlobalCluster(Module):
     def __init__(
         self,
-        in_depth: int,
-        hidden_depth: int,
+        dim: int,
         num_heads: int,
         bias: bool = True,
         type: str = "flattened_index",
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
+        self.head_dim = dim // num_heads
         self.type = type
 
-        self.proj0 = nn.Linear(in_depth, hidden_depth, bias=bias)
-        self.proj1 = nn.Linear(in_depth, 2 * hidden_depth, bias=bias)
-        self.merge = nn.Linear(hidden_depth, in_depth, bias=bias)
+        self.proj0 = nn.Linear(dim, dim, bias=bias)
+        self.proj1 = nn.Linear(dim, dim * 2, bias=bias)
+        self.merge = nn.Linear(dim, dim, bias=bias)
 
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
@@ -199,11 +188,15 @@ class GlobalCluster(nn.Module):
 
         x0_point = self.proj0(x0.permute(0, 2, 3, 1))
         center1 = self.proj1(center1.permute(0, 2, 3, 1))
-        x0_point = einops.rearrange(
-            x0_point, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc
+        x0_point = (
+            x0_point.view(n, -1, self.num_heads, self.head_dim)
+            .transpose(-3, -2)
+            .flatten(end_dim=1)
         )
-        center1 = einops.rearrange(
-            center1, "n h w (fc sc) -> (n fc) (h w) sc", fc=fc
+        center1 = (
+            center1.view(n, -1, self.num_heads, self.head_dim)
+            .transpose(-3, -2)
+            .flatten(end_dim=1)
         )
         center1_point, center1_value = center1.chunk(2, dim=2)
 
@@ -252,11 +245,10 @@ class GlobalCluster(nn.Module):
         return dispatched
 
 
-class LocalClusterBlock(nn.Module):
+class LocalClusterBlock(Module):
     def __init__(
         self,
         in_depth: int,
-        hidden_depth: int,
         num_heads: int,
         center_size: int,
         fold_size: int,
@@ -265,11 +257,11 @@ class LocalClusterBlock(nn.Module):
         super().__init__()
 
         self.cluster = LocalCluster(
-            in_depth, hidden_depth, num_heads, center_size, fold_size, bias=bias
+            in_depth, num_heads, center_size, fold_size, bias=bias
         )
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp = Mlp(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
+        self.mlp = Mlp(2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
@@ -285,22 +277,16 @@ class LocalClusterBlock(nn.Module):
         return new_x
 
 
-class GlobalClusterBlock(nn.Module):
+class GlobalClusterBlock(Module):
     def __init__(
-        self,
-        in_depth: int,
-        hidden_depth: int,
-        num_heads: int,
-        bias: bool = True,
+        self, in_depth: int, num_heads: int, bias: bool = True
     ) -> None:
         super().__init__()
 
-        self.cluster = GlobalCluster(
-            in_depth, hidden_depth, num_heads, bias=bias
-        )
+        self.cluster = GlobalCluster(in_depth, num_heads, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
-        self.mlp3x3 = Mlp3x3(2 * in_depth, 2 * in_depth, in_depth, bias=bias)
+        self.mlp3x3 = Mlp3x3(2 * in_depth, in_depth, bias=bias)
         self.norm1 = nn.LayerNorm(in_depth)
 
     def forward(
@@ -318,14 +304,13 @@ class GlobalClusterBlock(nn.Module):
         return new_x0
 
 
-class LocalCoC(nn.Module):
+class LocalCoC(Module):
     def __init__(
         self,
         initial_depth: int,
         scales: List[int],
         blocks_counts: List[int],
         layer_depths: List[int],
-        hidden_depths: List[int],
         num_heads_list: List[int],
         center_sizes: List[int],
         fold_sizes: List[int],
@@ -352,7 +337,6 @@ class LocalCoC(nn.Module):
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i],
-                    hidden_depths[i],
                     num_heads_list[i],
                     center_sizes[i],
                     fold_sizes[i],
@@ -436,12 +420,12 @@ class LocalCoC(nn.Module):
         # return new_x2, new_x0
 
 
-class MergeBlock(nn.Module):
+class MergeBlock(Module):
     def __init__(self, scale: int, depth: int, bias: bool = True) -> None:
         super().__init__()
         self.scale = scale
 
-        self.mlp = Mlp(2 * depth, 2 * depth, depth, bias=bias)
+        self.mlp = Mlp(2 * depth, depth, bias=bias)
         self.norm = nn.LayerNorm(depth)
         self.pooling = nn.MaxPool2d(scale, stride=scale)
 
@@ -460,15 +444,14 @@ class MergeBlock(nn.Module):
         return new_x, new_center
 
 
-class GlobalCoC(nn.Module):
+class GlobalCoC(Module):
     def __init__(
         self,
         stride: int,
         in_depth: int,
-        hidden_depth: int,
         num_heads: int,
         layer_count: int,
-        attention_block: nn.Module,
+        attention_block: Module,
         bias: bool = True,
     ) -> None:
         super().__init__()
@@ -478,9 +461,7 @@ class GlobalCoC(nn.Module):
             [copy.deepcopy(merge_block) for _ in range(layer_count)]
         )
 
-        global_block = GlobalClusterBlock(
-            in_depth, hidden_depth, num_heads, bias=bias
-        )
+        global_block = GlobalClusterBlock(in_depth, num_heads, bias=bias)
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in range(layer_count)]
         )
