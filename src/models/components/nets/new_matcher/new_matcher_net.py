@@ -72,37 +72,27 @@ class NewMatcherNet(Module):
             delta = delta.reshape(-1, 2)
             self.register_buffer("fine_reg_delta", delta, persistent=False)
 
+    @torch.no_grad()
     def _refine_points(
         self,
-        result: Dict[str, Any],
-        scale0: Optional[Tensor] = None,
-        scale1: Optional[Tensor] = None,
+        out: Dict[str, Any],
+        scale0: Optional[Tensor],
+        scale1: Optional[Tensor],
     ) -> None:
-        m = len(result["points0"])
-        b_idxes = result["idxes"][0]
+        b_idxes = out["coarse_cls_idxes"][0]
 
-        coarse_points0 = self.scales[0] * result["points0"]
-        coarse_points1 = self.scales[0] * result["points1"]
-
-        biases0 = result.pop("fine_cls_biases0")[:m]
-        biases1 = result.pop("fine_cls_biases1")[:m]
-        biases1 += (
-            self.scales[1]
-            * (self.reg_w // 2)
-            * result["fine_reg_biases"][:m].detach()
+        points0 = out["points0"] * self.scales[0]
+        points1 = out["points1"] * self.scales[0]
+        points0 = points0 + out.pop("fine_cls_biases0")
+        points1 = (
+            points1
+            + out.pop("fine_cls_biases1")
+            + out["fine_reg_biases"] * self.scales[1] * (self.reg_w // 2)
         )
-
-        fine_points0 = coarse_points0 + biases0
-        fine_points1 = coarse_points1 + biases1
-
         if scale0 is not None and scale1 is not None:
-            coarse_points0 *= scale0[b_idxes]
-            fine_points0 *= scale0[b_idxes]
-            coarse_points1 *= scale1[b_idxes]
-            fine_points1 *= scale1[b_idxes]
-        result["coarse_points0"] = coarse_points0
-        result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = fine_points0, fine_points1
+            points0 = points0 * scale0[b_idxes]
+            points1 = points1 * scale1[b_idxes]
+        out["points0"], out["points1"] = points0, points1
 
     def forward(
         self,
@@ -169,25 +159,20 @@ class NewMatcherNet(Module):
             .transpose(-2, -1)
             .unflatten(-1, (self.reg_w, self.reg_w))
         )
+        grid = self.fine_reg_grid.expand(x_cls.shape[0], -1, -1, -1)
         x0_cls, x1_cls = (
-            F.grid_sample(
-                x_cls, self.fine_reg_grid, mode="bilinear", align_corners=True
-            )
+            F.grid_sample(x_cls, grid, mode="bilinear", align_corners=True)
             .flatten(start_dim=-2)
             .transpose(-2, -1)
             .chunk(2)
         )
         out.update(self.fine_cls_matching(x0_cls, x1_cls))
 
-        local_matches = torch.cat(
+        init = torch.cat(
             [out["fine_cls_biases0"], out["fine_cls_biases1"]], dim=1
         )
-        local_matches = local_matches / self.scales[0] + 0.5
-        out.update(
-            self.fine_reg_matching(
-                x0_reg, x1_reg, 1, local_matches=local_matches
-            )
-        )
+        init = init / self.scales[0] + 0.5
+        out.update(self.fine_reg_matching(x0_reg, x1_reg, 1, init=init))
 
         self._refine_points(out, scale0, scale1)
         return out

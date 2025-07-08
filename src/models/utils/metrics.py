@@ -330,11 +330,11 @@ def compute_error(
                    for paths in zip(batch["name0"], batch["name1"])]
     identifiers = np.array(identifiers, dtype=object)
     epipolar_errors_per_batch = _compute_epipolar_errors(
-        result["idxes"][0], result["points0"], result["points1"],
+        result["coarse_cls_idxes"][0], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
         batch["T0_to_1"][:, :3, 3])
     R_errors, t_errors, inliers_per_batch = _compute_pose_errors(
-        result["idxes"][0], result["points0"], result["points1"],
+        result["coarse_cls_idxes"][0], result["points0"], result["points1"],
         batch["K0"], batch["K1"], batch["T0_to_1"][:, :3, :3],
         batch["T0_to_1"][:, :3, 3], ransac_count,
         enable_loransac=enable_loransac)
@@ -357,10 +357,10 @@ def compute_error(
          error["coarse_3x3_precisions"],
          error["inlier_coarse_3x3_precisions"]
          ) = _compute_end_point_errors(
-            result["idxes"][0], result["points0"], result["points1"],
+            result["coarse_cls_idxes"][0], result["points0"], result["points1"],
             batch["depth0"], batch["depth1"], batch["K0"], batch["K1"],
             batch["T0_to_1"], coarse_scale, scale1, coarse_w1,
-            result["idxes"][2], inliers_per_batch,
+            result["coarse_cls_idxes"][2], inliers_per_batch,
             coarse_points0=result.get("coarse_points0"))
     return error
 
