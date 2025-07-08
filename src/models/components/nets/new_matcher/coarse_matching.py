@@ -197,11 +197,13 @@ class CoarseMatching(Module):
         self,
         x0_list: Sequence[Tensor],
         x1_list: Sequence[Tensor],
-        gt_indices_list: Sequence[Optional[Tuple[Tensor, Tensor, Tensor]]],
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
+        gt_indices_list: Optional[
+            Sequence[Tuple[Tensor, Tensor, Tensor]]
+        ] = None,
     ) -> Dict[str, Any]:
-        assert len(x0_list) == len(x1_list) == len(gt_indices_list) == 2
+        assert len(x0_list) == len(x1_list) == 2
         n, c, h0, w0 = x0_list[0].shape
         _, _, h1, w1 = x1_list[0].shape
         _, _, fh0, fw0 = x0_list[1].shape
@@ -213,12 +215,8 @@ class CoarseMatching(Module):
         x1_ = x1_list[1].flatten(start_dim=-2) * scale
         similarity = x0_.transpose(-2, -1) @ x1_
         if mask0 is not None and mask1 is not None:
-            mask0_ = F.max_pool2d(
-                mask0[:, None].float(), self.stride, stride=self.stride
-            )[:, 0].bool()
-            mask1_ = F.max_pool2d(
-                mask1[:, None].float(), self.stride, stride=self.stride
-            )[:, 0].bool()
+            mask0_ = F.max_pool2d(mask0.float(), self.stride).bool()
+            mask1_ = F.max_pool2d(mask1.float(), self.stride).bool()
             mask = mask0_.view(n, -1, 1) & mask1_.view(n, 1, -1)
             similarity.masked_fill_(~mask, -1e9)
 
@@ -227,7 +225,7 @@ class CoarseMatching(Module):
             similarity = similarity / self.temperature
             confidence = similarity.softmax(dim=-1) * similarity.softmax(dim=-2)
             out["extra_coarse_cls_heatmap"] = confidence
-            if gt_indices_list[1] is not None:
+            if gt_indices_list is not None:
                 similarity_[gt_indices_list[1]] = 100
 
         _, indices0_to_1 = similarity_.topk(self.topk, dim=-1)
@@ -240,7 +238,7 @@ class CoarseMatching(Module):
         indices1_to_0 = indices1_to_0.transpose(-2, -1)
         x0 = window_unpartition(x0_p, (fh0, fw0), self.stride)
         x1 = window_unpartition(x1_p, (fh1, fw1), self.stride)
-        out["feat"] = (x0, x1)
+        out["x_8x"] = (x0, x1)
 
         if self.training:
             x0_ = x0.flatten(start_dim=-2) * scale
@@ -303,7 +301,7 @@ class CoarseMatching(Module):
                 (h1, w1),
                 mask0=mask0,
                 mask1=mask1,
-                gt_idxes=gt_indices_list[0],
+                gt_idxes=gt_indices_list or gt_indices_list[0],
             )
         )
         return out

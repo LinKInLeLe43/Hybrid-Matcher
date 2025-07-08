@@ -1,26 +1,29 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import kornia as K
 import torch
-from torch import nn
-from torch.nn import functional as F
+import torch.nn.functional as F
+from torch import Tensor
+from torch.nn import Module
+
+from .utils import crop_by_mask, pad_by_mask
 
 
-class NewMatcherNet(nn.Module):
+class NewMatcherNet(Module):
     def __init__(
         self,
         type: str,
-        backbone: nn.Module,
-        rope: nn.Module,
-        local_coc: nn.Module,
-        coarse_module: nn.Module,
-        coarse_matching: nn.Module,
-        fine_preprocess: nn.Module,
-        # fine_module: nn.Module,
-        fine_cls_matching: nn.Module,
-        fine_reg_matching: nn.Module,
+        backbone: Module,
+        rope: Module,
+        local_coc: Module,
+        coarse_module: Module,
+        coarse_matching: Module,
+        fine_preprocess: Module,
+        # fine_module: Module,
+        fine_cls_matching: Module,
+        fine_reg_matching: Module,
         extra_scale: Optional[int] = None,
-        enable_crop: bool = False
+        enable_crop: bool = False,
     ) -> None:
         super().__init__()
         self.type = type
@@ -36,8 +39,10 @@ class NewMatcherNet(nn.Module):
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
 
-        self.scales = (backbone.scales[0],
-                       backbone.scales[1] // fine_preprocess.upscale_before_crop)
+        self.scales = (
+            backbone.scales[0],
+            backbone.scales[1] // fine_preprocess.upscale_before_crop,
+        )
         self.reg_w = fine_reg_matching.window_size
 
         if type == "two_stage":
@@ -53,16 +58,19 @@ class NewMatcherNet(nn.Module):
             self.register_buffer("fine_cls_mask", mask, persistent=False)
 
             delta = K.create_meshgrid(
-                self.reg_w, self.reg_w, normalized_coordinates=False,
-                dtype=torch.long)
+                self.reg_w,
+                self.reg_w,
+                normalized_coordinates=False,
+                dtype=torch.long,
+            )
             delta = delta.reshape(-1, 2)
             self.register_buffer("fine_reg_delta", delta, persistent=False)
 
     def _scale_points(
         self,
         result: Dict[str, Any],
-        scale0: Optional[torch.Tensor] = None,
-        scale1: Optional[torch.Tensor] = None
+        scale0: Optional[Tensor] = None,
+        scale1: Optional[Tensor] = None,
     ) -> None:
         m = len(result["points0"])
         b_idxes = result["idxes"][0]
@@ -72,8 +80,11 @@ class NewMatcherNet(nn.Module):
 
         biases0 = result.pop("fine_cls_biases0")[:m]
         biases1 = result.pop("fine_cls_biases1")[:m]
-        biases1 += (self.scales[1] * (self.reg_w // 2) *
-                    result["fine_reg_biases"][:m].detach())
+        biases1 += (
+            self.scales[1]
+            * (self.reg_w // 2)
+            * result["fine_reg_biases"][:m].detach()
+        )
 
         fine_points0 = coarse_points0 + biases0
         fine_points1 = coarse_points1 + biases1
@@ -90,102 +101,72 @@ class NewMatcherNet(nn.Module):
     def forward(
         self,
         batch: Dict[str, Any],
-        gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
-        extra_gt_idxes:
-            Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None
+        gt_indices_list: Optional[
+            Sequence[Tuple[Tensor, Tensor, Tensor]]
+        ] = None,
     ) -> Dict[str, Any]:
-        mask0_8x, mask1_8x = batch.get("mask0_8x"), batch.get("mask1_8x")
-        mask0_16x, mask1_16x = batch.get("mask0_16x"), batch.get("mask1_16x")
-        mask0_32x, mask1_32x = batch.get("mask0_32x"), batch.get("mask1_32x")
+        image0, image1 = batch["image0"], batch["image1"]
+        mask0, mask1 = batch.get("mask0"), batch.get("mask1")
+        scale0, scale1 = batch.get("scale0"), batch.get("scale1")
 
-        if batch["image0"].shape == batch["image1"].shape:
-            xs = self.backbone(torch.cat([batch["image0"], batch["image1"]]))
-
-            x0s, x1s = [], []
-            for x in xs:
-                x0, x1 = x.chunk(2)
-                x0s.append(x0)
-                x1s.append(x1)
+        if image0.shape == image1.shape:
+            x_list = self.backbone(torch.cat([image0, image1]))
+            x0_list, x1_list = zip(*(x.chunk(2) for x in x_list))
         else:
-            x0s = self.backbone(batch["image0"])
-            x1s = self.backbone(batch["image1"])
+            x0_list, x1_list = self.backbone(image0), self.backbone(image1)
+        x0_list, x1_list = list(x0_list), list(x1_list)
 
-        if self.local_coc.scales[0] == 1:
-            x0_8x, x1_8x = x0s.pop(-1), x1s.pop(-1)
-        else:
-            x0_8x, x1_8x = x0s[-1], x1s[-1]
-
-        x0_8x, x1_8x = self.rope.abs_pe(x0_8x), self.rope.abs_pe(x1_8x)
-
-        if mask0_8x is not None and mask1_8x is not None and self.enable_crop:
-            x0_8x = self.crop_by_mask(x0_8x, mask0_8x)
-            x1_8x = self.crop_by_mask(x1_8x, mask1_8x)
-
+        x0_8x = self.rope.abs_pe(x0_list[-1])
+        x1_8x = self.rope.abs_pe(x1_list[-1])
+        if self.enable_crop and mask0 is not None and mask1 is not None:
             x0_16x, x1_16x = [], []
-            for b, (b_x0_8x, b_x1_8x) in enumerate(zip(x0_8x, x1_8x)):
-                b_x0_16x, b_x0_32x = self.local_coc(b_x0_8x)
-                b_x1_16x, b_x1_32x = self.local_coc(b_x1_8x)
-
+            x0_8x_list = crop_by_mask(x0_8x, mask0)
+            x1_8x_list = crop_by_mask(x1_8x, mask1)
+            for b in range(len(x0_8x.shape[0])):
                 b_x0_16x, b_x1_16x = self.coarse_module(
-                    b_x0_16x, b_x1_16x, b_x0_32x, b_x1_32x, rope=self.rope)
-
-                x0_16x.append(self.pad_by_mask(b_x0_16x, mask0_16x[[b]]))
-                x1_16x.append(self.pad_by_mask(b_x1_16x, mask1_16x[[b]]))
+                    self.local_coc(x0_8x_list[[b]]),
+                    self.local_coc(x1_8x_list[[b]]),
+                    rope=self.rope,
+                )
+                b_x0_16x = pad_by_mask(
+                    b_x0_16x, F.max_pool2d(mask0[[b]].float(), 2).bool()
+                )
+                b_x1_16x = pad_by_mask(
+                    b_x1_16x, F.max_pool2d(mask1[[b]].float(), 2).bool()
+                )
+                x0_16x.append(b_x0_16x)
+                x1_16x.append(b_x1_16x)
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
         else:
-            if x0_8x.shape == x1_8x.shape:
-                x_8x = torch.cat([x0_8x, x1_8x])
-                x_16x, x_32x = self.local_coc(x_8x)
-                x0_16x, x1_16x = x_16x.chunk(2)
-                x0_32x, x1_32x = x_32x.chunk(2)
-            else:
-                x0_16x, x0_32x = self.local_coc(x0_8x)
-                x1_16x, x1_32x = self.local_coc(x1_8x)
-
             x0_16x, x1_16x = self.coarse_module(
-                x0_16x, x1_16x, x0_32x, x1_32x, rope=self.rope,
-                x0_mask=mask0_16x, x1_mask=mask1_16x, y0_mask=mask0_32x,
-                y1_mask=mask1_32x)
+                self.local_coc(x0_8x),
+                self.local_coc(x1_8x),
+                rope=self.rope,
+                mask0=mask0,
+                mask1=mask1,
+            )
 
         result = self.coarse_matching(
-            [x0s[-1], x0_16x], [x1s[-1], x1_16x], [gt_idxes, extra_gt_idxes],
-            mask0=mask0_8x, mask1=mask1_8x)
-        x0s[-1], x1s[-1] = result.pop("feat")
+            [x0_list[-1], x0_16x],
+            [x1_list[-1], x1_16x],
+            mask0=mask0,
+            mask1=mask1,
+            gt_indices_list=gt_indices_list,
+        )
+        x0_list[-1], x1_list[-1] = result.pop("x_8x")
 
         x0_reg, x1_reg = self.fine_preprocess(
-            x0s, x1s, result["coarse_cls_idxes"])
-
-        # if self.type == "one_stage":
-        #     if len(x0_1x) != 0:
-        #         x0_1x, x1_1x = self.fine_module(x0_1x, x1_1x)
-        # elif self.type == "two_stage":
-        #     if len(x0_1x) != 0:
-        #         w0, w1 = self.cls_w, self.fine_w
-        #         x0_1x, x1_1x = self.fine_module(
-        #             x0_1x, x1_1x, size0=(w0, w0), size1=(w1, w1))
-        #
-        #     x0_1x, x0_reg = x0_1x.split([self.cls_c, self.reg_c], dim=2)
-        #     x1_1x, x1_reg = x1_1x.split([self.cls_c, self.reg_c], dim=2)
-        #
-        #     result.update(self.fine_cls_matching(
-        #         x0_1x, x1_1x[:, self.fine_cls_mask]))
-        #
-        #     m_idxes, sub_i_idxes, sub_j_idxes = map(
-        #         lambda x: x[:, None], result["fine_cls_idxes"])
-        #     sub_j_idxes = (
-        #         self.fine_w *
-        #         (sub_j_idxes // self.cls_w + self.fine_reg_delta[:, 1]) +
-        #         sub_j_idxes % self.cls_w + self.fine_reg_delta[:, 0])
-        #     x0_1x = x0_reg[m_idxes[:, 0], sub_i_idxes[:, 0]]
-        #     x1_1x = x1_reg[m_idxes, sub_j_idxes]
-        # else:
-        #     assert False
+            x0_list, x1_list, result["coarse_cls_idxes"]
+        )
 
         (s1, s2), w = self.scales, self.reg_w
         grid = K.create_meshgrid(
-            s1, s1, normalized_coordinates=False, device=x0_reg.device,
-            dtype=x0_reg.dtype)
+            s1,
+            s1,
+            normalized_coordinates=False,
+            device=x0_reg.device,
+            dtype=x0_reg.dtype,
+        )
         grid = (2 * (grid + 0.5) / s1 - 1).expand(2 * len(x0_reg), -1, -1, -1)
         x = torch.cat([x0_reg, x1_reg]).transpose(1, 2).unflatten(2, (w, w))
         x = F.grid_sample(x, grid, mode="bilinear", align_corners=True)
@@ -193,31 +174,15 @@ class NewMatcherNet(nn.Module):
 
         result.update(self.fine_cls_matching(x0_cls, x1_cls))
 
-        local_matches = torch.cat([result["fine_cls_biases0"],
-                                   result["fine_cls_biases1"]], dim=1)
+        local_matches = torch.cat(
+            [result["fine_cls_biases0"], result["fine_cls_biases1"]], dim=1
+        )
         local_matches = local_matches / s2 + w // 2
-        result.update(self.fine_reg_matching(
-            x0_reg, x1_reg, 1, local_matches=local_matches))
+        result.update(
+            self.fine_reg_matching(
+                x0_reg, x1_reg, 1, local_matches=local_matches
+            )
+        )
 
         self._scale_points(result, batch.get("scale0"), batch.get("scale1"))
         return result
-
-    def crop_by_mask(
-        self,
-        x: torch.Tensor,
-        mask: torch.Tensor
-    ) -> List[torch.Tensor]:
-        outs = []
-        for b_x, b_mask in zip(x, mask):
-            b_h = b_mask.sum(dim=0).amax().item()
-            b_w = b_mask.sum(dim=1).amax().item()
-            outs.append(b_x[None, :, :b_h, :b_w])
-        return outs
-
-    def pad_by_mask(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        _, c, _h, _w = x.shape
-        _, h, w = mask.shape
-
-        out = x.new_zeros((1, c, h, w))
-        out[0, :, :_h, :_w] = x
-        return out

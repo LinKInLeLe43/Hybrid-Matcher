@@ -86,8 +86,12 @@ class MatchingModule(pl.LightningModule):
                 batch, s1, extra_scale=s0, return_coor=True)
             coarse_gt_points1 = supervision.pop("gt_points1")
             result = self.net(
-                batch, gt_idxes=supervision["coarse_gt_idxes"],
-                extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"))
+                batch,
+                [
+                    supervision["coarse_gt_idxes"],
+                    supervision["extra_coarse_gt_idxes"],
+                ],
+            )
             supervision.update(utils.create_fine_supervision(
                 batch, (s1, 1), result["coarse_cls_idxes"],
                 offset=self.net.fine_cls_matching.cls_offset, return_coor=True))

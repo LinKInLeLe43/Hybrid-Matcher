@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import List, Sequence
 
 from torch import Tensor
 
@@ -25,3 +25,21 @@ def window_unpartition(x: Tensor, size: Sequence[int], stride: int) -> Tensor:
         .view(n, c, fh * stride, fw * stride)
     )
     return x
+
+
+def crop_by_mask(x: Tensor, mask: Tensor) -> List[Tensor]:
+    x_list = []
+    for b in range(len(x.shape[0])):
+        b_h, b_w = mask[b].sum(dim=0).amax(), mask[b].sum(dim=1).amax()
+        x_list.append(x[[b], :, :b_h, :b_w])
+    return x_list
+
+
+def pad_by_mask(x: Tensor, mask: Tensor) -> Tensor:
+    n, c, b_h, b_w = x.shape
+    _, h, w = mask.shape
+    assert n == 1
+
+    out = x.new_zeros(n, c, h, w)
+    out[0, :, :b_h, :b_w] = x
+    return out

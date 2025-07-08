@@ -1,5 +1,5 @@
 import copy
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Sequence
 
 import einops
 import torch
@@ -516,37 +516,33 @@ class GlobalCoC(nn.Module):
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        y0: torch.Tensor,
-        y1: torch.Tensor,
+        x0_list: Sequence[torch.Tensor],
+        x1_list: Sequence[torch.Tensor],
         rope: Optional[torch.Tensor] = None,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None
+        mask0: Optional[torch.Tensor] = None,
+        mask1: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         xy_mask01 = xy_mask10 = yy_mask00 = yy_mask11 = yy_mask01 = yy_mask10 = None
-        if x0_mask is not None:
-            x0_mask = x0_mask.flatten(start_dim=1)
-            x1_mask = x1_mask.flatten(start_dim=1)
-            y0_mask = y0_mask.flatten(start_dim=1)
-            y1_mask = y1_mask.flatten(start_dim=1)
-            # mask00 = x0_mask[:, :, None] & y0_mask[:, None, :]
-            # mask11 = x1_mask[:, :, None] & y1_mask[:, None, :]
-            xy_mask01 = x0_mask[:, :, None] & y1_mask[:, None, :]
-            xy_mask10 = xy_mask01.transpose(-1, -2)
-            yy_mask00 = y0_mask[:, None, :, None] & y0_mask[:, None, None, :]
-            yy_mask11 = y1_mask[:, None, :, None] & y1_mask[:, None, None, :]
-            yy_mask01 = y0_mask[:, None, :, None] & y1_mask[:, None, None, :]
+        if mask0 is not None and mask1 is not None:
+            x0_mask = F.max_pool2d(mask0.float(), 2).bool()
+            x1_mask = F.max_pool2d(mask1.float(), 2).bool()
+            y0_mask = F.max_pool2d(mask0.float(), 4).bool()
+            y1_mask = F.max_pool2d(mask1.float(), 4).bool()
+
+            n = mask0.shape[0]
+            xy_mask01 = x0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
+            xy_mask10 = x1_mask.view(n, -1, 1) & y0_mask.view(n, 1, -1)
+            yy_mask00 = y0_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
+            yy_mask11 = y1_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
+            yy_mask01 = y0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
             yy_mask10 = yy_mask01.transpose(-1, -2)
 
+        x0, y0 = x0_list
+        x1, y1 = x1_list
         for merge_block, global_block, self_block, cross_block in zip(
             self.merge_blocks, self.global_blocks, self.self_blocks, self.cross_blocks):
             x0, y0 = merge_block(x0, y0)
             x1, y1 = merge_block(x1, y1)
-            # x0 = global_block(x0, center0, mask=mask00)
-            # x1 = global_block(x1, center1, mask=mask11)
             x0 = global_block(x0, y1, mask=xy_mask01)
             x1 = global_block(x1, y0, mask=xy_mask10)
             x0 = self_block(
