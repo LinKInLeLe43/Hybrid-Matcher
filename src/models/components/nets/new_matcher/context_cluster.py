@@ -1,7 +1,6 @@
 import copy
 from typing import List, Optional, Sequence, Tuple
 
-import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -49,110 +48,79 @@ class SelfClusterBlock(Module):
         center_size: int,
         fold_size: int,
         bias: bool = True,
-        type: str = "original",
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.center_size = center_size
         self.fold_size = fold_size
-        self.type = type
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
         self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
         self.merge = nn.Linear(dim, dim, bias=bias)
-
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        fc, fh, fw = self.num_heads, self.fold_size, self.fold_size
-        n, c, h, w = x.shape
+        n, _, h, w = x.shape
+        fh, fw = self.fold_size, self.fold_size
         sh, sw = h // fh, w // fw
-        m, s = n * fc * fh * fw, self.center_size**2
-        device = x.device
 
-        x = self.proj(x.permute(0, 2, 3, 1))
-        x = einops.rearrange(
-            x,
-            "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw",
-            fc=fc,
-            fh=fh,
-            fw=fw,
+        x = x.permute(0, 2, 3, 1)
+        x0 = (
+            self.proj(x)
+            .view(n, fh, sh, fw, sw, self.num_heads, self.head_dim * 2)
+            .permute(0, 5, 1, 3, 6, 2, 4)
+            .contiguous()
+            .flatten(end_dim=3)
         )
-        center = self.center_proposal(x)
-        x = x.flatten(start_dim=2).transpose(1, 2)
-        center = center.flatten(start_dim=2).transpose(1, 2)
-        x_point, x_value = x.chunk(2, dim=2)
-        center_point, center_value = center.chunk(2, dim=2)
+        x1 = self.center_proposal(x0)
+        x0_point, x0_value = (
+            x0.view(n, self.num_heads, fh * fw, self.head_dim * 2, sh * sw)
+            .transpose(-2, -1)
+            .chunk(2, dim=-1)
+        )
+        x1_point, x1_value = (
+            x1.view(n, self.num_heads, fh * fw, self.head_dim * 2, -1)
+            .transpose(-2, -1)
+            .chunk(2, dim=-1)
+        )
 
-        x_point = F.normalize(x_point, dim=2)
-        center_point = F.normalize(center_point, dim=2)
-        similarity = x_point @ center_point.transpose(-2, -1)
+        x0_point = F.normalize(x0_point, dim=-1)
+        x1_point = F.normalize(x1_point, dim=-1)
+        similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
-            mask = einops.repeat(
-                mask,
-                "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                s=s,
+            mask = (
+                mask.view(n, 1, fh, sh, fw, sw)
+                .transpose(-3, -2)
+                .contiguous()
+                .view(n, 1, fh * fw, sh * sh, 1)
             )
             similarity.masked_fill_(~mask, float("-inf"))
-        similarity.sigmoid_()
-        max_sim_values, max_sim_idxes = similarity.max(dim=2)
-
-        if self.type == "flattened_index":
-            max_sim_idxes = (
-                max_sim_idxes + s * torch.arange(m, device=device)[:, None]
-            )
-            max_sim_values, max_sim_idxes, x_value, center_value = [
-                x.flatten(end_dim=1)
-                for x in [max_sim_values, max_sim_idxes, x_value, center_value]
-            ]
-
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            aggregated = cat_center_value.index_add_(
-                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value
-            )
-            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = max_sim_values[:, None] * aggregated.index_select(
-                0, max_sim_idxes
-            )
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                sh=sh,
-                sw=sw,
-            )
-        elif self.type == "original":
-            mask = torch.zeros_like(similarity)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarity = (mask * similarity)[..., None]
-
-            aggregated = center_value + (
-                similarity * x_value[:, :, None, :]
-            ).sum(dim=1)
-            aggregated /= 1 + similarity.sum(dim=1)
-            dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                sh=sh,
-                sw=sw,
-            )
-        else:
-            raise NotImplementedError("")
+        max_sim, indices = similarity.sigmoid().max(dim=2)
+        n_range = torch.arange(n, device=x.device)[:, None, None]
+        head_range = torch.arange(self.num_heads, device=x.device)[
+            None, :, None
+        ]
+        x0_value = torch.cat(
+            [x0_value, torch.ones_like(x0_value[..., [0]])], dim=-1
+        )
+        x1_value = torch.cat(
+            [x1_value, torch.ones_like(x1_value[..., [0]])], dim=-1
+        )
+        x1_value = (
+            x1_value
+            + max_sim[..., None] * x0_value[n_range, head_range, indices]
+        )
+        x1_value = x1_value[..., :-1] / x1_value[..., -1:]
+        dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
+        dispatched = (
+            dispatched.view(n, self.num_heads, fh, fw, sh, sw, self.head_dim)
+            .permute(0, 2, 4, 3, 5, 1, 6)
+            .contiguous()
+            .view(n, h, w, -1)
+        )
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -171,7 +139,7 @@ class CrossClusterBlock(Module):
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(
-        self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
+        self, x0: Tensor, x1: Tensor, mask1: Optional[Tensor] = None
     ) -> Tensor:
         n, _, h, w = x0.shape
 
@@ -191,13 +159,14 @@ class CrossClusterBlock(Module):
         x1_point = F.normalize(x1_point, dim=-1)
         similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
-        if mask is not None:
-            similarity.masked_fill_(~mask, float("-inf"))
-        similarity = similarity.sigmoid()
+        if mask1 is not None:
+            similarity.masked_fill_(~mask1.view(n, 1, 1, -1), float("-inf"))
+        max_sim, indices = similarity.sigmoid().max(dim=-1)
 
-        n_range = torch.arange(n, device=x0.device)[:, :, None]
-        head_range = torch.arange(self.num_heads, device=x0.device)[:, None, :]
-        max_sim, indices = similarity.max(dim=-1)
+        n_range = torch.arange(n, device=x0.device)[:, None, None]
+        head_range = torch.arange(self.num_heads, device=x0.device)[
+            None, :, None
+        ]
         dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
         dispatched = dispatched.transpose(-3, -2).contiguous().view(n, h, w, -1)
         dispatched = self.merge(dispatched)
@@ -306,42 +275,6 @@ class LocalCoC(Module):
 
             initial_depth = layer_depths[i]
 
-        # TODO: check FPN design
-        # self.layer1_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[0]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False))
-        # self.layer0_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[0]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False))
-        # self.layer2_up = nn.Conv2d(
-        #     layer_depths[2], layer_depths[2], 1, bias=False)
-        # self.layer1_up = nn.Conv2d(
-        #     layer_depths[1], layer_depths[2], 1, bias=False)
-        # self.layer1_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[2], layer_depths[2], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[2]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[2], layer_depths[1], 3, padding=1, bias=False))
-        # self.layer0_up = nn.Conv2d(
-        #     layer_depths[0], layer_depths[1], 1, bias=False)
-        # self.layer0_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[1], layer_depths[1], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[1]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[1], layer_depths[0], 3, padding=1, bias=False))
-
         # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -352,31 +285,20 @@ class LocalCoC(Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, x: Tensor, mask: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor]:
+        scale = 1
         outs = []
-        for point_reducer, layer in zip(self.point_reducers, self.layers):
-            x = point_reducer(x)
-            x = layer(x)
+        for i in range(len(self.scales)):
+            mask_ = None
+            if mask is not None:
+                scale = scale * self.scales[i]
+                mask_ = F.max_pool2d(mask.float(), scale).bool()
+            x = self.point_reducers[i](x)
+            x = self.layers[i](x, mask_)
             outs.append(x)
-        return outs[0], outs[-1]
-
-        # x1 = x1 + F.interpolate(
-        #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x1 = self.layer1_out(x1)
-        # x0 = x0 + F.interpolate(
-        #     x1, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x0 = self.layer0_out(x0)
-        # return x2, x0
-        # new_x2 = self.layer2_up(x2)
-        # new_x1 = self.layer1_up(x1)
-        # new_x1 += F.interpolate(
-        #     new_x2, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # new_x1 = self.layer1_out(new_x1)
-        # new_x0 = self.layer0_up(x0)
-        # new_x0 += F.interpolate(
-        #     new_x1, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # new_x0 = self.layer0_out(new_x0)
-        # return new_x2, new_x0
+        return outs
 
 
 class MergeBlock(Module):
@@ -448,22 +370,16 @@ class GlobalCoC(Module):
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        xy_mask01 = xy_mask10 = yy_mask00 = yy_mask11 = yy_mask01 = (
-            yy_mask10
-        ) = None
+        mask00 = mask11 = mask01 = mask10 = None
         if mask0 is not None and mask1 is not None:
-            x0_mask = F.max_pool2d(mask0.float(), 2).bool()
-            x1_mask = F.max_pool2d(mask1.float(), 2).bool()
-            y0_mask = F.max_pool2d(mask0.float(), 4).bool()
-            y1_mask = F.max_pool2d(mask1.float(), 4).bool()
-
             n = mask0.shape[0]
-            xy_mask01 = x0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            xy_mask10 = x1_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
-            yy_mask00 = y0_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
-            yy_mask11 = y1_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            yy_mask01 = y0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            yy_mask10 = yy_mask01.transpose(-1, -2)
+            mask0 = F.max_pool2d(mask0.float(), 4).bool()
+            mask1 = F.max_pool2d(mask1.float(), 4).bool()
+
+            mask00 = mask0.view(n, 1, -1, 1) & mask0.view(n, 1, 1, -1)
+            mask11 = mask1.view(n, 1, -1, 1) & mask1.view(n, 1, 1, -1)
+            mask01 = mask0.view(n, 1, -1, 1) & mask1.view(n, 1, 1, -1)
+            mask10 = mask01.transpose(-1, -2)
 
         x0_16x, x0_32x = x0_list
         x1_16x, x1_32x = x1_list
@@ -475,10 +391,10 @@ class GlobalCoC(Module):
         ):
             x0_16x, x0_32x = merge_block(x0_16x, x0_32x)
             x1_16x, x1_32x = merge_block(x1_16x, x1_32x)
-            x0_16x = global_block(x0_16x, x1_32x, mask=xy_mask01)
-            x1_16x = global_block(x1_16x, x0_32x, mask=xy_mask10)
-            x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=yy_mask00)
-            x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=yy_mask11)
-            x0_16x = cross_block(x0_16x, x1_16x, mask=yy_mask01)
-            x1_16x = cross_block(x1_16x, x0_16x, mask=yy_mask10)
+            x0_16x = global_block(x0_16x, x1_32x, mask=mask1)
+            x1_16x = global_block(x1_16x, x0_32x, mask=mask0)
+            x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=mask00)
+            x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=mask11)
+            x0_16x = cross_block(x0_16x, x1_16x, mask=mask01)
+            x1_16x = cross_block(x1_16x, x0_16x, mask=mask10)
         return x0_16x, x1_16x

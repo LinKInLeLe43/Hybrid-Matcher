@@ -111,8 +111,8 @@ class NewMatcherNet(Module):
             x0_16x, x1_16x = torch.cat(x0_16x), torch.cat(x1_16x)
         else:
             x0_16x, x1_16x = self.coarse_module(
-                self.local_coc(x0_8x),
-                self.local_coc(x1_8x),
+                self.local_coc(x0_8x, mask0),
+                self.local_coc(x1_8x, mask1),
                 rope=self.rope,
                 mask0=mask0,
                 mask1=mask1,
