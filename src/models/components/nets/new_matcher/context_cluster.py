@@ -41,7 +41,7 @@ class Mlp3x3(Module):
         return x
 
 
-class LocalCluster(Module):
+class SelfClusterBlock(Module):
     def __init__(
         self,
         dim: int,
@@ -157,79 +157,49 @@ class LocalCluster(Module):
         return dispatched
 
 
-class GlobalCluster(Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        bias: bool = True,
-        type: str = "flattened_index",
-    ) -> None:
+class CrossClusterBlock(Module):
+    def __init__(self, dim: int, num_heads: int, bias: bool = True) -> None:
         super().__init__()
+        assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.type = type
 
         self.proj0 = nn.Linear(dim, dim, bias=bias)
         self.proj1 = nn.Linear(dim, dim * 2, bias=bias)
         self.merge = nn.Linear(dim, dim, bias=bias)
-
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(
-        self, x0: Tensor, center1: Tensor, mask: Optional[Tensor] = None
+        self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        fc = self.num_heads
-        n, c, h0, w0 = x0.shape
-        _, _, h1, w1 = center1.shape
-        m, l, s = n * fc, h0 * w0, h1 * w1
-        device = x0.device
+        n, _, h, w = x0.shape
 
-        x0, center1 = x0.permute(0, 2, 3, 1), center1.permute(0, 2, 3, 1)
+        x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         x0_point = (
             self.proj0(x0)
             .view(n, -1, self.num_heads, self.head_dim)
             .transpose(-3, -2)
         )
-        center1_point, center1_value = (
-            self.proj1(center1)
-            .view(n, -1, self.num_heads, 2 * self.head_dim)
+        x1_point, x1_value = (
+            self.proj1(x1)
+            .view(n, -1, self.num_heads, self.head_dim * 2)
             .transpose(-3, -2)
             .chunk(2, dim=-1)
         )
-
         x0_point = F.normalize(x0_point, dim=-1)
-        center1_point = F.normalize(center1_point, dim=-1)
-        similarity = x0_point @ center1_point.transpose(-2, -1)
+        x1_point = F.normalize(x1_point, dim=-1)
+        similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
-            similarity.masked_fill_(~mask[:, None], float("-inf"))
-        similarity.sigmoid_()
+            similarity.masked_fill_(~mask, float("-inf"))
+        similarity = similarity.sigmoid()
 
-        if self.type == "flattened_index":
-            max_sim_values, max_sim_idxes = similarity.max(dim=-1)
-
-            dispatched = max_sim_values[..., None] * center1_value.gather(
-                -2, max_sim_idxes[..., None].expand(-1, -1, -1, self.head_dim)
-            )
-            dispatched = dispatched.transpose(-3, -2).view(n, h0, w0, -1)
-        # elif self.type == "original":
-        #     max_sim_idxes = similarity.argmax(dim=2)
-        #     mask = torch.zeros_like(similarity)
-        #     mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-        #     similarity = (mask * similarity)[..., None]
-
-        #     dispatched = (similarity * center1_value[:, None, :, :]).sum(dim=2)
-        #     dispatched = einops.rearrange(
-        #         dispatched,
-        #         "(n fc) (h w) sc -> n h w (fc sc)",
-        #         fc=fc,
-        #         h=h0,
-        #         w=w0,
-        #     )
-        else:
-            raise NotImplementedError("")
+        n_range = torch.arange(n, device=x0.device)[:, :, None]
+        head_range = torch.arange(self.num_heads, device=x0.device)[:, None, :]
+        max_sim, indices = similarity.max(dim=-1)
+        dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
+        dispatched = dispatched.transpose(-3, -2).contiguous().view(n, h, w, -1)
         dispatched = self.merge(dispatched)
         return dispatched
 
@@ -245,7 +215,7 @@ class LocalClusterBlock(Module):
     ) -> None:
         super().__init__()
 
-        self.cluster = LocalCluster(
+        self.cluster = SelfClusterBlock(
             in_depth, num_heads, center_size, fold_size, bias=bias
         )
         self.norm0 = nn.LayerNorm(in_depth)
@@ -272,7 +242,7 @@ class GlobalClusterBlock(Module):
     ) -> None:
         super().__init__()
 
-        self.cluster = GlobalCluster(in_depth, num_heads, bias=bias)
+        self.cluster = CrossClusterBlock(in_depth, num_heads, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
         self.mlp3x3 = Mlp3x3(2 * in_depth, in_depth, bias=bias)
@@ -488,8 +458,8 @@ class GlobalCoC(Module):
             y1_mask = F.max_pool2d(mask1.float(), 4).bool()
 
             n = mask0.shape[0]
-            xy_mask01 = x0_mask.view(n, -1, 1) & y1_mask.view(n, 1, -1)
-            xy_mask10 = x1_mask.view(n, -1, 1) & y0_mask.view(n, 1, -1)
+            xy_mask01 = x0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
+            xy_mask10 = x1_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
             yy_mask00 = y0_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
             yy_mask11 = y1_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
             yy_mask01 = y0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
