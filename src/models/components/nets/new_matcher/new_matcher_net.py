@@ -19,7 +19,6 @@ class NewMatcherNet(Module):
         coarse_module: Module,
         coarse_matching: Module,
         fine_preprocess: Module,
-        # fine_module: Module,
         fine_cls_matching: Module,
         fine_reg_matching: Module,
         extra_scale: Optional[int] = None,
@@ -33,7 +32,6 @@ class NewMatcherNet(Module):
         self.coarse_module = coarse_module
         self.coarse_matching = coarse_matching
         self.fine_preprocess = fine_preprocess
-        # self.fine_module = fine_module
         self.fine_cls_matching = fine_cls_matching
         self.fine_reg_matching = fine_reg_matching
         self.extra_scale = extra_scale
@@ -51,27 +49,6 @@ class NewMatcherNet(Module):
         grid = 2 * (grid + 0.5) / self.scales[0] - 1
         self.register_buffer("fine_reg_grid", grid, persistent=False)
 
-        if type == "two_stage":
-            self.cls_w = fine_cls_matching.window_size
-            self.cls_c = fine_cls_matching.depth
-            self.reg_c = fine_reg_matching.depth
-
-            e = fine_preprocess.right_extra
-            self.fine_w = fine_preprocess.window_size + 2 * e
-            mask = torch.zeros((self.fine_w, self.fine_w), dtype=torch.bool)
-            mask[e:-e, e:-e] = True
-            mask = mask.flatten()
-            self.register_buffer("fine_cls_mask", mask, persistent=False)
-
-            delta = K.create_meshgrid(
-                self.reg_w,
-                self.reg_w,
-                normalized_coordinates=False,
-                dtype=torch.long,
-            )
-            delta = delta.reshape(-1, 2)
-            self.register_buffer("fine_reg_delta", delta, persistent=False)
-
     @torch.no_grad()
     def _refine_points(
         self,
@@ -81,18 +58,24 @@ class NewMatcherNet(Module):
     ) -> None:
         b_idxes = out["coarse_cls_idxes"][0]
 
-        points0 = out["points0"] * self.scales[0]
-        points1 = out["points1"] * self.scales[0]
-        points0 = points0 + out.pop("fine_cls_biases0")
-        points1 = (
-            points1
-            + out.pop("fine_cls_biases1")
-            + out["fine_reg_biases"] * self.scales[1] * (self.reg_w // 2)
-        )
+        coarse_points0 = self.scales[0] * out["points0"]
+        coarse_points1 = self.scales[0] * out["points1"]
+
+        biases0 = out.pop("fine_cls_biases0")
+        biases1 = out.pop("fine_cls_biases1")
+        biases1 += self.scales[1] * (self.reg_w // 2) * out["fine_reg_biases"]
+
+        fine_points0 = coarse_points0 + biases0
+        fine_points1 = coarse_points1 + biases1
+
         if scale0 is not None and scale1 is not None:
-            points0 = points0 * scale0[b_idxes]
-            points1 = points1 * scale1[b_idxes]
-        out["points0"], out["points1"] = points0, points1
+            coarse_points0 *= scale0[b_idxes]
+            fine_points0 *= scale0[b_idxes]
+            coarse_points1 *= scale1[b_idxes]
+            fine_points1 *= scale1[b_idxes]
+        out["coarse_points0"] = coarse_points0
+        out["coarse_points1"] = coarse_points1
+        out["points0"], out["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
