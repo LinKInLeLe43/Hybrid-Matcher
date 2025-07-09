@@ -11,32 +11,25 @@ from torch.nn import Module
 class Mlp(Module):
     def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
-
         self.linear0 = nn.Linear(in_dim, in_dim, bias=bias)
+        self.act = nn.GELU()
         self.linear1 = nn.Linear(in_dim, out_dim, bias=bias)
-        self.gelu = nn.GELU()
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.linear0(x)
-        x = self.gelu(x)
-        x = self.linear1(x)
+        x = self.linear1(self.act(self.linear0(x)))
         return x
 
 
 class Mlp3x3(Module):
     def __init__(self, in_dim: int, out_dim: int, bias: bool = True) -> None:
         super().__init__()
-
         self.linear = nn.Linear(in_dim, in_dim, bias=bias)
+        self.act = nn.GELU()
         self.conv = nn.Conv2d(in_dim, out_dim, 3, padding=1, bias=bias)
-        self.gelu = nn.GELU()
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.linear(x)
-        x = self.gelu(x)
-        x = x.permute(0, 3, 1, 2)
-        x = self.conv(x)
-        x = x.permute(0, 2, 3, 1)
+        x = self.act(self.linear(x)).permute(0, 3, 1, 2)
+        x = self.conv(x).permute(0, 2, 3, 1)
         return x
 
 
@@ -56,14 +49,14 @@ class SelfContextCluster(Module):
         self.num_folds = num_folds
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
-        self.center_proposal = nn.AdaptiveMaxPool2d(num_anchors)
+        self.anchor_proposal = nn.AdaptiveMaxPool2d(num_anchors)
         self.merge = nn.Linear(dim, dim, bias=bias)
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         n, h, w, c = x.shape
-        fh, fw = self.num_folds, self.num_folds
+        fh = fw = self.num_folds
         sh, sw = h // fh, w // fw
         m = n * self.num_heads * fh * fw
 
@@ -73,14 +66,13 @@ class SelfContextCluster(Module):
             .permute(0, 5, 1, 3, 6, 2, 4)
             .flatten(end_dim=3)
         )
-        x1 = self.center_proposal(x0)
+        x1 = self.anchor_proposal(x0)
         x0_point, x0_value = (
             x0.flatten(start_dim=-2).transpose(-2, -1).chunk(2, dim=-1)
         )
         x1_point, x1_value = (
             x1.flatten(start_dim=-2).transpose(-2, -1).chunk(2, dim=-1)
         )
-
         x0_point = F.normalize(x0_point, dim=-1)
         x1_point = F.normalize(x1_point, dim=-1)
         similarity = x0_point @ x1_point.transpose(-2, -1)
@@ -145,7 +137,6 @@ class CrossContextCluster(Module):
             .flatten(end_dim=1)
             .chunk(2, dim=-1)
         )
-
         x0_point = F.normalize(x0_point, dim=-1)
         x1_point = F.normalize(x1_point, dim=-1)
         similarity = x0_point @ x1_point.transpose(-2, -1)
@@ -172,7 +163,7 @@ class CrossContextCluster(Module):
         return dispatched
 
 
-class LocalClusterBlock(Module):
+class SelfCoCBlock(Module):
     def __init__(
         self,
         dim: int,
@@ -182,12 +173,11 @@ class LocalClusterBlock(Module):
         bias: bool = True,
     ) -> None:
         super().__init__()
-
         self.cluster = SelfContextCluster(
             dim, num_heads, num_anchors, num_folds, bias=bias
         )
         self.norm0 = nn.LayerNorm(dim)
-        self.mlp = Mlp(2 * dim, dim, bias=bias)
+        self.mlp = Mlp(dim * 2, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
@@ -197,13 +187,12 @@ class LocalClusterBlock(Module):
         return x
 
 
-class GlobalClusterBlock(Module):
+class CrossCoCBlock(Module):
     def __init__(self, dim: int, num_heads: int, bias: bool = True) -> None:
         super().__init__()
-
         self.cluster = CrossContextCluster(dim, num_heads, bias=bias)
         self.norm0 = nn.LayerNorm(dim)
-        self.mlp3x3 = Mlp3x3(2 * dim, dim, bias=bias)
+        self.mlp3x3 = Mlp3x3(dim * 2, dim, bias=bias)
         self.norm1 = nn.LayerNorm(dim)
 
     def forward(
@@ -213,6 +202,30 @@ class GlobalClusterBlock(Module):
         message = torch.cat([x0, message], dim=-1)
         x0 = x0 + self.norm1(self.mlp3x3(message))
         return x0
+
+
+class MergeBlock(Module):
+    def __init__(self, stride: int, dim: int, bias: bool = True) -> None:
+        super().__init__()
+        self.stride = stride
+
+        self.mlp = Mlp(dim * 2, dim, bias=bias)
+        self.norm = nn.LayerNorm(dim)
+
+    def forward(self, x0: Tensor, x1: Tensor) -> Tuple[Tensor, Tensor]:
+        message = x1.permute(0, 3, 1, 2).contiguous()
+        message = F.interpolate(
+            message,
+            scale_factor=self.stride,
+            mode="bilinear",
+            align_corners=False,
+        ).permute(0, 2, 3, 1)
+        message = torch.cat([x0, message], dim=-1)
+        message = self.norm(self.mlp(message))
+        x0 = x0 + message
+        message = message.permute(0, 3, 1, 2)
+        x1 = x1 + F.max_pool2d(message, self.stride).permute(0, 2, 3, 1)
+        return x0, x1
 
 
 class LocalCoC(Module):
@@ -246,7 +259,7 @@ class LocalCoC(Module):
 
             layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
-                block = LocalClusterBlock(
+                block = SelfCoCBlock(
                     layer_depths[i],
                     num_heads_list[i],
                     center_sizes[i],
@@ -286,32 +299,6 @@ class LocalCoC(Module):
         return outs
 
 
-class MergeBlock(Module):
-    def __init__(self, scale: int, depth: int, bias: bool = True) -> None:
-        super().__init__()
-        self.scale = scale
-
-        self.mlp = Mlp(2 * depth, depth, bias=bias)
-        self.norm = nn.LayerNorm(depth)
-        self.pooling = nn.MaxPool2d(scale, stride=scale)
-
-    def forward(self, x0: Tensor, x1: Tensor) -> Tuple[Tensor, Tensor]:
-        message = x1.permute(0, 3, 1, 2).contiguous()
-        message = F.interpolate(
-            message,
-            scale_factor=self.scale,
-            mode="bilinear",
-            align_corners=False,
-        ).permute(0, 2, 3, 1)
-        message = torch.cat([x0, message], dim=-1)
-        message = self.norm(self.mlp(message))
-        x0 = x0 + message
-
-        message = message.permute(0, 3, 1, 2)
-        x1 = x1 + self.pooling(message).permute(0, 2, 3, 1)
-        return x0, x1
-
-
 class GlobalCoC(Module):
     def __init__(
         self,
@@ -328,12 +315,10 @@ class GlobalCoC(Module):
         self.merge_blocks = nn.ModuleList(
             [copy.deepcopy(merge_block) for _ in range(layer_count)]
         )
-
-        global_block = GlobalClusterBlock(in_depth, num_heads, bias=bias)
+        global_block = CrossCoCBlock(in_depth, num_heads, bias=bias)
         self.global_blocks = nn.ModuleList(
             [copy.deepcopy(global_block) for _ in range(layer_count)]
         )
-
         self.self_blocks = nn.ModuleList(
             [copy.deepcopy(attention_block) for _ in range(layer_count)]
         )
@@ -341,7 +326,6 @@ class GlobalCoC(Module):
             [copy.deepcopy(attention_block) for _ in range(layer_count)]
         )
 
-        # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
                 nn.init.xavier_uniform_(m.weight)
@@ -371,7 +355,7 @@ class GlobalCoC(Module):
         x0_16x, x0_32x = x0_list
         x1_16x, x1_32x = x1_list
         x0_16x, x1_16x, x0_32x, x1_32x = [
-            t.permute(0, 2, 3, 1) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
+            t.permute(0, 2, 3, 1) for t in [*x0_list, *x1_list]
         ]
         for merge_block, global_block, self_block, cross_block in zip(
             self.merge_blocks,
