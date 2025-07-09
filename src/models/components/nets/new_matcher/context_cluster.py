@@ -40,7 +40,7 @@ class Mlp3x3(Module):
         return x
 
 
-class SelfClusterBlock(Module):
+class SelfContextCluster(Module):
     def __init__(
         self,
         dim: int,
@@ -62,7 +62,7 @@ class SelfClusterBlock(Module):
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        n, c, h, w = x.shape
+        n, h, w, c = x.shape
         fh, fw = self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
         m = n * self.num_heads * fh * fw
@@ -113,7 +113,7 @@ class SelfClusterBlock(Module):
         return dispatched
 
 
-class CrossClusterBlock(Module):
+class CrossContextCluster(Module):
     def __init__(self, dim: int, num_heads: int, bias: bool = True) -> None:
         super().__init__()
         assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
@@ -176,31 +176,26 @@ class CrossClusterBlock(Module):
 class LocalClusterBlock(Module):
     def __init__(
         self,
-        in_depth: int,
+        dim: int,
         num_heads: int,
-        center_size: int,
-        fold_size: int,
+        num_anchors: int,
+        num_folds: int,
         bias: bool = True,
     ) -> None:
         super().__init__()
 
-        self.cluster = SelfClusterBlock(
-            in_depth, num_heads, center_size, fold_size, bias=bias
+        self.cluster = SelfContextCluster(
+            dim, num_heads, num_anchors, num_folds, bias=bias
         )
-        self.norm0 = nn.LayerNorm(in_depth)
-
-        self.mlp = Mlp(2 * in_depth, in_depth, bias=bias)
-        self.norm1 = nn.LayerNorm(in_depth)
+        self.norm0 = nn.LayerNorm(dim)
+        self.mlp = Mlp(2 * dim, dim, bias=bias)
+        self.norm1 = nn.LayerNorm(dim)
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        new_x = self.cluster(x, mask=mask)
-        new_x = self.norm0(new_x)
-
-        new_x = torch.cat([x, new_x], dim=-1)
-        new_x = self.mlp(new_x)
-        new_x = self.norm1(new_x)
-        new_x += x
-        return new_x
+        message = self.norm0(self.cluster(x, mask=mask))
+        message = torch.cat([x, message], dim=-1)
+        x = x + self.norm1(self.mlp(message))
+        return x
 
 
 class GlobalClusterBlock(Module):
@@ -209,7 +204,7 @@ class GlobalClusterBlock(Module):
     ) -> None:
         super().__init__()
 
-        self.cluster = CrossClusterBlock(in_depth, num_heads, bias=bias)
+        self.cluster = CrossContextCluster(in_depth, num_heads, bias=bias)
         self.norm0 = nn.LayerNorm(in_depth)
 
         self.mlp3x3 = Mlp3x3(2 * in_depth, in_depth, bias=bias)
