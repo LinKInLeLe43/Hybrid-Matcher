@@ -62,7 +62,7 @@ class SelfClusterBlock(Module):
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        n, _, h, w = x.shape
+        n, c, h, w = x.shape
         fh, fw = self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
         m = n * self.num_heads * fh * fw
@@ -72,17 +72,14 @@ class SelfClusterBlock(Module):
             self.proj(x)
             .view(n, fh, sh, fw, sw, self.num_heads, self.head_dim * 2)
             .permute(0, 5, 1, 3, 6, 2, 4)
-            .contiguous()
             .flatten(end_dim=3)
         )
         x1 = self.center_proposal(x0)
         x0_point, x0_value = (
-            x0.view(m, self.head_dim * 2, sh * sw)
-            .transpose(-2, -1)
-            .chunk(2, dim=-1)
+            x0.flatten(start_dim=-2).transpose(-2, -1).chunk(2, dim=-1)
         )
         x1_point, x1_value = (
-            x1.view(m, self.head_dim * 2, -1).transpose(-2, -1).chunk(2, dim=-1)
+            x1.flatten(start_dim=-2).transpose(-2, -1).chunk(2, dim=-1)
         )
 
         x0_point = F.normalize(x0_point, dim=-1)
@@ -92,9 +89,10 @@ class SelfClusterBlock(Module):
         if mask is not None:
             mask = (
                 mask.view(n, 1, fh, sh, fw, sw)
-                .transpose(-3, -2)
                 .expand(-1, self.num_heads, -1, -1, -1, -1)
-                .view(m, -1, 1)
+                .transpose(-3, -2)
+                .contiguous()
+                .view(m, h * w, 1)
             )
             similarity.masked_fill_(~mask, float("-inf"))
         similarity = similarity.sigmoid()
@@ -110,7 +108,7 @@ class SelfClusterBlock(Module):
             dispatched.view(n, self.num_heads, fh, fw, sh, sw, self.head_dim)
             .permute(0, 2, 4, 3, 5, 1, 6)
             .contiguous()
-            .view(n, h, w, -1)
+            .view(n, h, w, c)
         )
         dispatched = self.merge(dispatched)
         return dispatched
@@ -132,13 +130,13 @@ class CrossClusterBlock(Module):
     def forward(
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
-        n, _, h, w = x0.shape
+        n, c, h, w = x0.shape
         m = n * self.num_heads
 
         x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         x0_point = (
             self.proj0(x0)
-            .view(n, -1, self.num_heads, self.head_dim)
+            .view(n, h * w, self.num_heads, self.head_dim)
             .transpose(-3, -2)
             .flatten(end_dim=1)
         )
@@ -149,6 +147,7 @@ class CrossClusterBlock(Module):
             .flatten(end_dim=1)
             .chunk(2, dim=-1)
         )
+
         x0_point = F.normalize(x0_point, dim=-1)
         x1_point = F.normalize(x1_point, dim=-1)
         similarity = x0_point @ x1_point.transpose(-2, -1)
@@ -163,13 +162,13 @@ class CrossClusterBlock(Module):
         similarity = similarity.sigmoid()
 
         m_range = torch.arange(m, device=x0.device)[:, None]
-        max_sim, indices = similarity.max(dim=-1)
-        dispatched = max_sim[..., None] * x1_value[m_range, indices]
+        max_sim, indices = similarity.max(dim=-1, keepdim=True)
+        dispatched = max_sim * x1_value[m_range, indices[..., 0]]
         dispatched = (
             dispatched.view(n, self.num_heads, -1, self.head_dim)
             .transpose(-3, -2)
             .contiguous()
-            .view(n, h, w, -1)
+            .view(n, h, w, c)
         )
         dispatched = self.merge(dispatched)
         return dispatched
