@@ -67,7 +67,6 @@ class SelfClusterBlock(Module):
         sh, sw = h // fh, w // fw
         m = n * self.num_heads * fh * fw
 
-        x = x.permute(0, 2, 3, 1)
         x0 = (
             self.proj(x)
             .view(n, fh, sh, fw, sw, self.num_heads, self.head_dim * 2)
@@ -197,11 +196,9 @@ class LocalClusterBlock(Module):
         new_x = self.cluster(x, mask=mask)
         new_x = self.norm0(new_x)
 
-        new_x = torch.cat([x.permute(0, 2, 3, 1), new_x], dim=3)
+        new_x = torch.cat([x, new_x], dim=-1)
         new_x = self.mlp(new_x)
         new_x = self.norm1(new_x)
-        new_x = new_x.permute(0, 3, 1, 2).contiguous()
-
         new_x += x
         return new_x
 
@@ -296,9 +293,10 @@ class LocalCoC(Module):
             if mask is not None:
                 scale = scale * self.scales[i]
                 mask_ = F.max_pool2d(mask.float(), scale).bool()
-            x = self.point_reducers[i](x)
+            x = self.point_reducers[i](x).permute(0, 2, 3, 1)
             for block in self.layers[i]:
                 x = block(x, mask_)
+            x = x.permute(0, 3, 1, 2)
             outs.append(x)
         return outs
 
@@ -393,10 +391,16 @@ class GlobalCoC(Module):
         ):
             x0_16x, x0_32x = merge_block(x0_16x, x0_32x)
             x1_16x, x1_32x = merge_block(x1_16x, x1_32x)
+            # x0_16x, x1_16x, x0_32x, x1_32x = [
+            #     t.permute(0, 2, 3, 1) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
+            # ]
             x0_16x = global_block(x0_16x, x1_32x, mask=mask1)
             x1_16x = global_block(x1_16x, x0_32x, mask=mask0)
             x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=mask00)
             x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=mask11)
             x0_16x = cross_block(x0_16x, x1_16x, mask=mask01)
             x1_16x = cross_block(x1_16x, x0_16x, mask=mask10)
+            # x0_16x, x1_16x, x0_32x, x1_32x = [
+            #     t.permute(0, 3, 1, 2) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
+            # ]
         return x0_16x, x1_16x
