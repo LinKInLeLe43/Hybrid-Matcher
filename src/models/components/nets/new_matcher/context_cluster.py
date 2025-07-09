@@ -295,19 +295,21 @@ class MergeBlock(Module):
         self.norm = nn.LayerNorm(depth)
         self.pooling = nn.MaxPool2d(scale, stride=scale)
 
-    def forward(self, x: Tensor, center: Tensor) -> Tuple[Tensor, Tensor]:
-        up_center = F.interpolate(
-            center, scale_factor=self.scale, mode="bilinear"
-        )
-        new_x = torch.cat([x, up_center], dim=1)
-        new_x = new_x.permute(0, 2, 3, 1)
-        new_x = self.mlp(new_x)
-        new_x = self.norm(new_x)
-        new_x = new_x.permute(0, 3, 1, 2).contiguous()
-        new_center = self.pooling(new_x)
-        new_x = x + new_x
-        new_center = center + new_center
-        return new_x, new_center
+    def forward(self, x0: Tensor, x1: Tensor) -> Tuple[Tensor, Tensor]:
+        message = x1.permute(0, 3, 1, 2).contiguous()
+        message = F.interpolate(
+            message,
+            scale_factor=self.scale,
+            mode="bilinear",
+            align_corners=False,
+        ).permute(0, 2, 3, 1)
+        message = torch.cat([x0, message], dim=-1)
+        message = self.norm(self.mlp(message))
+        x0 = x0 + message
+
+        message = message.permute(0, 3, 1, 2)
+        x1 = x1 + self.pooling(message).permute(0, 2, 3, 1)
+        return x0, x1
 
 
 class GlobalCoC(Module):
@@ -368,6 +370,9 @@ class GlobalCoC(Module):
 
         x0_16x, x0_32x = x0_list
         x1_16x, x1_32x = x1_list
+        x0_16x, x1_16x, x0_32x, x1_32x = [
+            t.permute(0, 2, 3, 1) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
+        ]
         for merge_block, global_block, self_block, cross_block in zip(
             self.merge_blocks,
             self.global_blocks,
@@ -376,16 +381,11 @@ class GlobalCoC(Module):
         ):
             x0_16x, x0_32x = merge_block(x0_16x, x0_32x)
             x1_16x, x1_32x = merge_block(x1_16x, x1_32x)
-            x0_16x, x1_16x, x0_32x, x1_32x = [
-                t.permute(0, 2, 3, 1) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
-            ]
             x0_16x = global_block(x0_16x, x1_32x, mask=mask1)
             x1_16x = global_block(x1_16x, x0_32x, mask=mask0)
             x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=mask00)
             x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=mask11)
             x0_16x = cross_block(x0_16x, x1_16x, mask=mask01)
             x1_16x = cross_block(x1_16x, x0_16x, mask=mask10)
-            x0_16x, x1_16x, x0_32x, x1_32x = [
-                t.permute(0, 3, 1, 2) for t in [x0_16x, x1_16x, x0_32x, x1_32x]
-            ]
+        x0_16x, x1_16x = x0_16x.permute(0, 3, 1, 2), x1_16x.permute(0, 3, 1, 2)
         return x0_16x, x1_16x
