@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn.functional as F
@@ -178,21 +178,16 @@ class CoarseMatching(Module):
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
 
-        result = {
-            "scores": scores,
-            "coarse_cls_indices": train_idxes,
-        }
+        result = {"scores": scores, "coarse_cls_indices": train_idxes}
         return result
 
     def forward(
         self,
-        x0_list: Sequence[Tensor],
-        x1_list: Sequence[Tensor],
+        x0_list: List[Tensor],
+        x1_list: List[Tensor],
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
-        gt_indices_list: Optional[
-            Sequence[Tuple[Tensor, Tensor, Tensor]]
-        ] = None,
+        gt_indices_list: Optional[List[Tuple[Tensor, Tensor, Tensor]]] = None,
     ) -> Dict[str, Any]:
         assert len(x0_list) == len(x1_list) == 2
         n, c, h0, w0 = x0_list[0].shape

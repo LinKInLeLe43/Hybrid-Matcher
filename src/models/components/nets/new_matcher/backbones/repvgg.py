@@ -1,6 +1,5 @@
 from typing import List, Tuple
 
-import kornia as K
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -159,7 +158,9 @@ class RepVgg82(nn.Module):
             self.in_depth = out_depth
         return layer
 
-    def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         x = self.conv(x)
         x = self.norm(x)
         x = self.relu(x)
@@ -167,4 +168,4 @@ class RepVgg82(nn.Module):
         x0 = self.layer0(x)
         x1 = self.layer1(x0)
         x2 = self.layer2(x1)
-        return [x0, x1, x2]
+        return x0, x1, x2

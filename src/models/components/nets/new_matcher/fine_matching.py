@@ -26,13 +26,13 @@ class FineMatching(nn.Module):
         self.cls_offset = cls_offset  # NOTE: used by matching_module.py
         self.scale = dim**-0.5
 
-        if name == "classification":
+        if name == "cls":
             grid = create_meshgrid(
                 window_size, window_size, normalized_coordinates=False
             ).flatten(end_dim=-2)
             cls_biases = grid - window_size / 2 + cls_offset
             self.register_buffer("cls_biases", cls_biases, persistent=False)
-        elif name == "regression":
+        elif name == "reg":
             pass
         else:
             raise ValueError("")
@@ -87,9 +87,9 @@ class FineMatching(nn.Module):
         return out
 
     def forward(self, x0: torch.Tensor, x1: torch.Tensor) -> Dict[str, Any]:
-        if self.name == "classification":
+        if self.name == "cls":
             out = self.compute_cls_biases(x0, x1)
-        elif self.name == "regression":
+        elif self.name == "reg":
             out = self.compute_reg_biases(x0, x1)
         else:
             raise AssertionError("")

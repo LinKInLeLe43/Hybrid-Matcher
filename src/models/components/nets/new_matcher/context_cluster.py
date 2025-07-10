@@ -352,9 +352,7 @@ class GlobalCoC(Module):
             mask01 = mask0.view(n, 1, -1, 1) & mask1.view(n, 1, 1, -1)
             mask10 = mask01.transpose(-1, -2)
 
-        x0_16x, x0_32x = x0_list
-        x1_16x, x1_32x = x1_list
-        x0_16x, x1_16x, x0_32x, x1_32x = [
+        x0_16x, x0_32x, x1_16x, x1_32x = [
             t.permute(0, 2, 3, 1) for t in [*x0_list, *x1_list]
         ]
         for merge_block, global_block, self_block, cross_block in zip(

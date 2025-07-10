@@ -2,7 +2,6 @@ _target_: src.models.MatchingModule
 
 net:
     _target_: src.models.components.nets.new_matcher.NewMatcherNet
-    type: ???
     backbone:
         _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
         block_counts: [2, 4, 4]
@@ -44,9 +43,6 @@ net:
             stride: 2
             num_layers: 2
         temperature: 0.1
-    fine_preprocess: ???
-    #  fine_module: ???
-    fine_reg_matching: ???
     extra_scale: 16
     enable_crop: true
 
