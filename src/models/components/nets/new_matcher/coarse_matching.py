@@ -178,18 +178,9 @@ class CoarseMatching(Module):
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
 
-        points0 = torch.stack(
-            [i_idxes % size0[1], i_idxes // size0[1]], dim=1
-        ).float()
-        points1 = torch.stack(
-            [j_idxes % size1[1], j_idxes // size1[1]], dim=1
-        ).float()
         result = {
-            "idxes": train_idxes,
-            "points0": points0,
-            "points1": points1,
             "scores": scores,
-            "coarse_cls_idxes": train_idxes,
+            "coarse_cls_indices": train_idxes,
         }
         return result
 

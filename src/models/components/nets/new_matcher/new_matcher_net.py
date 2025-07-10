@@ -1,8 +1,8 @@
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-import kornia as K
 import torch
 import torch.nn.functional as F
+from kornia.utils.grid import create_meshgrid
 from torch import Tensor
 from torch.nn import Module
 
@@ -43,33 +43,40 @@ class NewMatcherNet(Module):
         )
         self.reg_w = fine_reg_matching.window_size
 
-        grid = K.create_meshgrid(
+        grid = create_meshgrid(
             self.scales[0], self.scales[0], normalized_coordinates=False
         )
         grid = 2 * (grid + 0.5) / self.scales[0] - 1
-        self.register_buffer("fine_reg_grid", grid, persistent=False)
+        self.register_buffer("fine_cls_grid", grid, persistent=False)
 
     @torch.no_grad()
-    def _refine_points(
-        self,
-        out: Dict[str, Any],
-        scale0: Optional[Tensor],
-        scale1: Optional[Tensor],
-    ) -> None:
-        b_idxes = out["coarse_cls_idxes"][0]
+    def _get_points(
+        self, data: Dict[str, Any], out: Dict[str, Any]
+    ) -> Tuple[Tensor, Tensor]:
+        b_indices, i_indices, j_indices = out["coarse_cls_indices"]
 
-        points0 = out["points0"] * self.scales[0]
-        points1 = out["points1"] * self.scales[0]
-        points0 = points0 + out.pop("fine_cls_biases0")
+        w0 = data["image0"].shape[-1] // self.scales[0]
+        w1 = data["image1"].shape[-1] // self.scales[0]
+        points0 = (
+            torch.stack([i_indices % w0, i_indices // w0], dim=-1).float()
+            * self.scales[0]
+        )
+        points1 = (
+            torch.stack([j_indices % w1, j_indices // w1], dim=-1).float()
+            * self.scales[0]
+        )
+
+        points0 = points0 + out["fine_cls_biases0"]
         points1 = (
             points1
-            + out.pop("fine_cls_biases1")
+            + out["fine_cls_biases1"]
             + out["fine_reg_biases"] * self.scales[1] * (self.reg_w // 2)
         )
-        if scale0 is not None and scale1 is not None:
-            points0 = points0 * scale0[b_idxes]
-            points1 = points1 * scale1[b_idxes]
-        out["points0"], out["points1"] = points0, points1
+
+        if "scale0" in data and "scale1" in data:
+            points0 = points0 * data["scale0"][b_indices]
+            points1 = points1 * data["scale1"][b_indices]
+        return points0, points1
 
     def forward(
         self,
@@ -80,7 +87,6 @@ class NewMatcherNet(Module):
     ) -> Dict[str, Any]:
         image0, image1 = data["image0"], data["image1"]
         mask0, mask1 = data.get("mask0"), data.get("mask1")
-        scale0, scale1 = data.get("scale0"), data.get("scale1")
 
         if image0.shape == image1.shape:
             x_list = self.backbone(torch.cat([image0, image1]))
@@ -128,7 +134,7 @@ class NewMatcherNet(Module):
         x0_list[-1], x1_list[-1] = out.pop("x_8x")
 
         x0_reg, x1_reg = self.fine_preprocess(
-            x0_list, x1_list, out["coarse_cls_idxes"]
+            x0_list, x1_list, out["coarse_cls_indices"]
         )
 
         x_cls = (
@@ -136,7 +142,7 @@ class NewMatcherNet(Module):
             .transpose(-2, -1)
             .unflatten(-1, (self.reg_w, self.reg_w))
         )
-        grid = self.fine_reg_grid.expand(x_cls.shape[0], -1, -1, -1)
+        grid = self.fine_cls_grid.expand(x_cls.shape[0], -1, -1, -1)
         x0_cls, x1_cls = (
             F.grid_sample(x_cls, grid, mode="bilinear", align_corners=True)
             .flatten(start_dim=-2)
@@ -151,5 +157,5 @@ class NewMatcherNet(Module):
         init = init / self.scales[0] + 0.5
         out.update(self.fine_reg_matching(x0_reg, x1_reg, 1, init=init))
 
-        self._refine_points(out, scale0, scale1)
+        out["points0"], out["points1"] = self._get_points(data, out)
         return out
