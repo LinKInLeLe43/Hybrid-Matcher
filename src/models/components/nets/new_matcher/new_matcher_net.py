@@ -6,6 +6,7 @@ from kornia.utils.grid import create_meshgrid
 from torch import Tensor
 from torch.nn import Module
 
+from .repvgg import RepVgg82
 from .fine_matching import FineMatching
 from .fine_preprocess import FinePreprocess
 from .homo.fine_homo import FineHomo
@@ -15,7 +16,6 @@ from .utils import crop_by_mask, pad_by_mask
 class NewMatcherNet(Module):
     def __init__(
         self,
-        backbone: Module,
         rope: Module,
         local_coc: Module,
         coarse_module: Module,
@@ -25,6 +25,7 @@ class NewMatcherNet(Module):
     ) -> None:
         super().__init__()
         self.scales = (8, 2)
+        self.num_blocks_list = [2, 4, 4]
         self.dim_list = [64, 128, 192]
         self.fine_w = 5
         grid = create_meshgrid(
@@ -33,6 +34,7 @@ class NewMatcherNet(Module):
         grid = (grid + 0.5) * 2.0 / self.scales[0] - 1.0
         self.register_buffer("fine_cls_grid", grid, persistent=False)
 
+        self.backbone = RepVgg82(self.num_blocks_list, self.dim_list)
         self.fine_preprocess = FinePreprocess(
             self.dim_list,
             self.fine_w,
@@ -43,7 +45,6 @@ class NewMatcherNet(Module):
             "cls", self.dim_list[0], self.scales[0]
         )
         self.fine_reg_matching = FineHomo(self.fine_w)
-        self.backbone = backbone
         self.rope = rope
         self.local_coc = local_coc
         self.coarse_module = coarse_module
@@ -51,7 +52,7 @@ class NewMatcherNet(Module):
         self.extra_scale = extra_scale
         self.enable_crop = enable_crop
 
-    def _transform_feature(
+    def _transform_high_level(
         self,
         x0: Tensor,
         x1: Tensor,
@@ -145,7 +146,7 @@ class NewMatcherNet(Module):
         x0_list, x1_list = list(x0_list), list(x1_list)
         x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
 
-        x0_16x, x1_16x = self._transform_feature(x0_8x, x1_8x, mask0, mask1)
+        x0_16x, x1_16x = self._transform_high_level(x0_8x, x1_8x, mask0, mask1)
         out.update(
             self.coarse_matching(
                 [x0_8x, x0_16x],

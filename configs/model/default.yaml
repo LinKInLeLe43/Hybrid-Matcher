@@ -2,19 +2,15 @@ _target_: src.models.MatchingModule
 
 net:
     _target_: src.models.components.nets.new_matcher.NewMatcherNet
-    backbone:
-        _target_: src.models.components.nets.new_matcher.backbones.RepVgg82
-        block_counts: [2, 4, 4]
-        layer_depths: [64, 128, 192]
     rope:
         _target_: src.models.components.nets.new_matcher.RoPESinePositionalEncoding
-        depth: ${model.net.local_coc.layer_depths.0}
+        dim: ${model.net.local_coc.layer_depths.0}
         train_size: ???
         test_size: ???
         fp16: ${fp16}
     local_coc:
         _target_: src.models.components.nets.new_matcher.LocalCoC
-        initial_depth: ${model.net.backbone.layer_depths.2}
+        initial_depth: 192
         scales: [2, 2]
         blocks_counts: [2, 2]
         layer_depths: [256, 256]
@@ -37,8 +33,8 @@ net:
         fused_selective_module:
             _target_: src.models.components.nets.new_matcher.RegionSelectiveTransformer
             dim_list:
-                - ${model.net.backbone.layer_depths.2}
-                - ${model.net.local_coc.layer_depths.0}
+                - 192
+                - 256
             num_heads: 8
             stride: 2
             num_layers: 2
