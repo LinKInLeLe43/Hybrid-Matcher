@@ -15,7 +15,7 @@ class RoPESinePositionalEncoding(Module):
     ) -> None:
         super().__init__()
         dim = dim // 4
-        max_shape = 128, 128
+        max_shape = 256, 256
         factor = (torch.arange(dim) * -log(10000.0) / dim).exp()
         y = torch.ones(*max_shape, 1).cumsum(0) * factor
         x = torch.ones(*max_shape, 1).cumsum(1) * factor
