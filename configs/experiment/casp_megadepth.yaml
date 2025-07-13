@@ -31,4 +31,3 @@ model:
     epipolar_thresholds: [1e-4, 5e-4]
     pose_ransac_count: 5
     pose_thresholds: [5, 10, 20]
-seed: 66

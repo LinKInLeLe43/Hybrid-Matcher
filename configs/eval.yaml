@@ -8,5 +8,5 @@ defaults:
 
 task_name: "eval"
 ckpt_path: ???
-seed: ???
+seed: 66
 fp16: false

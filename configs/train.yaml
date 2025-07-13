@@ -10,5 +10,5 @@ defaults:
 
 task_name: "train"
 ckpt_path: null
-seed: ???
+seed: 66
 fp16: false
