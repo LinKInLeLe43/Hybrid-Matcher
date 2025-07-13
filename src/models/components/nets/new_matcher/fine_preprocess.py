@@ -9,7 +9,6 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
 
 class FinePreprocess(nn.Module):
@@ -72,8 +71,8 @@ class FinePreprocess(nn.Module):
         cropped1 = F.unfold(x1, w1, stride=self.stride, padding=self.padding1)[
             b_indices, :, j_indices
         ]
-        cropped0 = rearrange(cropped0, "m (c ww) -> m ww c", ww=w0**2)
-        cropped1 = rearrange(cropped1, "m (c ww) -> m ww c", ww=w1**2)
+        cropped0 = cropped0.unflatten(-1, (-1, w0**2)).transpose(-2, -1)
+        cropped1 = cropped1.unflatten(-1, (-1, w1**2)).transpose(-2, -1)
         return cropped0, cropped1
 
     def fpn_fuse(self, x_list: List[torch.Tensor]) -> torch.Tensor:
