@@ -9,7 +9,9 @@ from torch import distributed as dist
 from torch import nn
 
 from src.models import utils
-from src.models.components.nets.new_matcher.homo.utils.dense_match import DenseMatch
+from src.models.components.nets.new_matcher.homo.utils.dense_match import (
+    DenseMatch,
+)
 
 
 def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
@@ -53,7 +55,7 @@ class MatchingModule(pl.LightningModule):
         test_preparation_enabled: bool = False,
         test_enable_loransac: bool = False,
         advanced_metrics: bool = True,
-        dump_dir: Optional[str] = None
+        dump_dir: Optional[str] = None,
     ) -> None:
         super().__init__()
         self.net = net
@@ -68,22 +70,26 @@ class MatchingModule(pl.LightningModule):
         return result
 
     def on_train_start(self) -> None:
-        scale = (self.trainer.world_size *
-                 self.hparams.train_batch_size_per_gpu /
-                 self.hparams.canonical_batch_size)
+        scale = (
+            self.trainer.world_size
+            * self.hparams.train_batch_size_per_gpu
+            / self.hparams.canonical_batch_size
+        )
         self.hparams.optimizer.keywords["lr"] = (
-            scale * self.hparams.canonical_learning_rate)
+            scale * self.hparams.canonical_learning_rate
+        )
         self.hparams["warmup_step_count"] = (
-            self.hparams.canonical_warmup_step_count / scale)
+            self.hparams.canonical_warmup_step_count / scale
+        )
 
     def model_step(
-        self,
-        batch: Dict[str, Any]
+        self, batch: Dict[str, Any]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         s0, (s1, s2) = self.net.extra_scale, self.net.scales
 
         supervision = utils.create_coarse_supervision(
-            batch, s1, extra_scale=s0, return_coor=True)
+            batch, s1, extra_scale=s0, return_coor=True
+        )
         coarse_gt_points1 = supervision.pop("gt_points1")
         result = self.net(
             batch,
@@ -92,72 +98,101 @@ class MatchingModule(pl.LightningModule):
                 supervision["extra_coarse_gt_idxes"],
             ],
         )
-        supervision.update(utils.create_fine_supervision(
-            batch, (s1, 1), result["coarse_cls_indices"],
-            offset=self.net.fine_cls_matching.cls_offset, return_coor=True))
+        supervision.update(
+            utils.create_fine_supervision(
+                batch,
+                (s1, 1),
+                result["coarse_cls_indices"],
+                offset=self.net.fine_cls_matching.cls_offset,
+                return_coor=True,
+            )
+        )
         supervision["fine_gt_biases"] = utils.compute_reg_gt_biases(
-            supervision.pop("gt_points0_to_1"), supervision.pop("gt_points1"),
-            result["fine_cls_idxes"], s2, self.net.reg_w)
-        supervision.update(utils.compute_dense_gt_biases(
-            batch, result, self.dense_matcher, coarse_gt_points1,
-            result["coarse_cls_indices"], s2, self.net.reg_w))
+            supervision.pop("gt_points0_to_1"),
+            supervision.pop("gt_points1"),
+            result["fine_cls_idxes"],
+            s2,
+            self.net.reg_w,
+        )
+        supervision.update(
+            utils.compute_dense_gt_biases(
+                batch,
+                result,
+                self.dense_matcher,
+                coarse_gt_points1,
+                result["coarse_cls_indices"],
+                s2,
+                self.net.reg_w,
+            )
+        )
 
         loss = self.loss(
-            **result, **supervision, mask0=batch.get(f"mask0_{s1}x"),
+            **result,
+            **supervision,
+            mask0=batch.get(f"mask0_{s1}x"),
             mask1=batch.get(f"mask1_{s1}x"),
             extra_mask0=batch.get(f"mask0_{s0}x"),
-            extra_mask1=batch.get(f"mask1_{s0}x"))
+            extra_mask1=batch.get(f"mask1_{s0}x"),
+        )
         return result, loss
 
     def training_step(
-        self,
-        batch: Dict[str, Any],
-        batch_idx: int
+        self, batch: Dict[str, Any], batch_idx: int
     ) -> Dict[str, Any]:
         result, loss = self.model_step(batch)
 
         for k, v in loss.pop("scalar").items():
             self.log("train_scalar/" + k, v)
 
-        if (self.hparams.train_plot_enabled and
-            self.trainer.global_rank == 0 and
-            self.trainer._logger_connector.should_update_logs):
+        if (
+            self.hparams.train_plot_enabled
+            and self.trainer.global_rank == 0
+            and self.trainer._logger_connector.should_update_logs
+        ):
             error = utils.compute_error(
-                batch, result, self.hparams.pose_ransac_count)
+                batch, result, self.hparams.pose_ransac_count
+            )
             figures = utils.plot_evaluation_figures(
-                batch, result, error, self.hparams.epipolar_thresholds[0])
+                batch, result, error, self.hparams.epipolar_thresholds[0]
+            )
             self.logger.experiment.add_figure(
-                "train_plot", figures, global_step=self.global_step)
+                "train_plot", figures, global_step=self.global_step
+            )
         return loss
 
     def training_epoch_end(self, outputs: List[Dict[str, Any]]) -> None:
         avg_loss_on_epoch = torch.stack([o["loss"] for o in outputs]).mean()
         self.log(
-            "train_scalar/avg_loss_on_epoch", avg_loss_on_epoch, sync_dist=True)
+            "train_scalar/avg_loss_on_epoch", avg_loss_on_epoch, sync_dist=True
+        )
 
     def on_validation_start(self) -> None:
-        plot_count_per_rank = (self.hparams.val_plot_count //
-                               self.trainer.world_size)
-        intervals = [max(batch_count_per_rank // plot_count_per_rank, 1)
-                     for batch_count_per_rank in self.trainer.num_val_batches]
+        plot_count_per_rank = (
+            self.hparams.val_plot_count // self.trainer.world_size
+        )
+        intervals = [
+            max(batch_count_per_rank // plot_count_per_rank, 1)
+            for batch_count_per_rank in self.trainer.num_val_batches
+        ]
         self.hparams["val_plot_intervals"] = intervals
 
     def validation_step(
-        self,
-        batch: Dict[str, Any],
-        batch_idx: int,
-        dataloader_idx: int = 0
+        self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0
     ) -> Dict[str, Any]:
         result, loss = self.model_step(batch)
         loss = loss.pop("scalar")
         error = utils.compute_error(
-            batch, result, self.hparams.pose_ransac_count,
+            batch,
+            result,
+            self.hparams.pose_ransac_count,
             advanced=self.hparams.advanced_metrics,
-            coarse_scale=self.net.scales[0])
+            coarse_scale=self.net.scales[0],
+        )
         figures = []
         if batch_idx % self.hparams.val_plot_intervals[0] == 0:
             figures = utils.plot_evaluation_figures(
-                batch, result, error, self.hparams.epipolar_thresholds[0])
+                batch, result, error, self.hparams.epipolar_thresholds[0]
+            )
         output = {"loss": loss, "error": error, "figures": figures}
         return output
 
@@ -169,37 +204,51 @@ class MatchingModule(pl.LightningModule):
 
         for k, v in gathered_output.pop("loss").items():
             self.log("val_scalar/" + k, torch.stack(v).mean())
-        error = {k: np.concatenate(v)
-                 for k, v in gathered_output.pop("error").items()}
+        error = {
+            k: np.concatenate(v)
+            for k, v in gathered_output.pop("error").items()
+        }
         metric = utils.compute_metric(
-            error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
-            advanced=self.hparams.advanced_metrics)
-        for t, m in zip(self.hparams.epipolar_thresholds,
-                        metric.pop("epipolar_precisions")):
+            error,
+            self.hparams.end_point_thresholds,
+            self.hparams.epipolar_thresholds,
+            self.hparams.pose_thresholds,
+            advanced=self.hparams.advanced_metrics,
+        )
+        for t, m in zip(
+            self.hparams.epipolar_thresholds, metric.pop("epipolar_precisions")
+        ):
             self.log(f"val_metric/epipolar_precision@{t}", m)
         for t, m in zip(self.hparams.pose_thresholds, metric.pop("pose_aucs")):
             self.log(f"val_metric/pose_auc@{t}", m)
         if self.hparams.advanced_metrics:
             self.log(
-                "val_metric/coarse_precision", metric.pop("coarse_precision"))
+                "val_metric/coarse_precision", metric.pop("coarse_precision")
+            )
             self.log(
                 "val_metric/inlier_coarse_precision",
-                metric.pop("inlier_coarse_precision"))
+                metric.pop("inlier_coarse_precision"),
+            )
             self.log(
-                "val_metric/true_coarse_count", metric.pop("true_coarse_count"))
+                "val_metric/true_coarse_count", metric.pop("true_coarse_count")
+            )
             self.log(
                 "val_metric/inlier_true_coarse_count",
-                metric.pop("inlier_true_coarse_count"))
+                metric.pop("inlier_true_coarse_count"),
+            )
             self.log(
                 "val_metric/coarse_3x3_precision",
-                metric.pop("coarse_3x3_precision"))
+                metric.pop("coarse_3x3_precision"),
+            )
             self.log(
                 "val_metric/inlier_coarse_3x3_precision",
-                metric.pop("inlier_coarse_3x3_precision"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
+                metric.pop("inlier_coarse_3x3_precision"),
+            )
+            for t, m0, m1 in zip(
+                self.hparams.end_point_thresholds,
+                metric.pop("end_point_precisions"),
+                metric.pop("inlier_end_point_precisions"),
+            ):
                 self.log(f"val_metric/end_point_precision@{t}", m0)
                 self.log(f"val_metric/inlier_end_point_precision@{t}", m1)
 
@@ -207,8 +256,10 @@ class MatchingModule(pl.LightningModule):
             figures = np.concatenate(gathered_output.pop("figures"))
             for i, figure in enumerate(figures):
                 self.logger.experiment.add_figure(
-                    f"val_plot/pair-{i}", figure,
-                    global_step=self.trainer.current_epoch)
+                    f"val_plot/pair-{i}",
+                    figure,
+                    global_step=self.trainer.current_epoch,
+                )
 
     def on_test_start(self) -> None:
         for m in self.net.modules():
@@ -219,10 +270,7 @@ class MatchingModule(pl.LightningModule):
             self.net = self.net.half()
 
     def test_step(
-        self,
-        batch: Dict[str, Any],
-        batch_idx: int,
-        dataloader_idx: int = 0
+        self, batch: Dict[str, Any], batch_idx: int, dataloader_idx: int = 0
     ) -> Dict[str, Any]:
         if self.hparams.test_preparation_enabled:
             for _ in range(50):
@@ -234,10 +282,13 @@ class MatchingModule(pl.LightningModule):
             result = self.net(batch)
         with self.test_time_profiler.profile("error"):
             error = utils.compute_error(
-                batch, result, self.hparams.pose_ransac_count,
+                batch,
+                result,
+                self.hparams.pose_ransac_count,
                 enable_loransac=self.hparams.test_enable_loransac,
                 advanced=self.hparams.advanced_metrics,
-                coarse_scale=self.net.scales[0])
+                coarse_scale=self.net.scales[0],
+            )
 
         dump = {}
         if self.hparams.dump_dir is not None:
@@ -253,46 +304,61 @@ class MatchingModule(pl.LightningModule):
         gathered_output = _flatten(outputs_by_ranks)
         del outputs_by_ranks
 
-        error = {k: np.concatenate(v)
-                 for k, v in gathered_output.pop("error").items()}
+        error = {
+            k: np.concatenate(v)
+            for k, v in gathered_output.pop("error").items()
+        }
         metric = utils.compute_metric(
-            error, self.hparams.end_point_thresholds,
-            self.hparams.epipolar_thresholds, self.hparams.pose_thresholds,
-            advanced=self.hparams.advanced_metrics)
-        for t, m in zip(self.hparams.epipolar_thresholds,
-                        metric.pop("epipolar_precisions")):
+            error,
+            self.hparams.end_point_thresholds,
+            self.hparams.epipolar_thresholds,
+            self.hparams.pose_thresholds,
+            advanced=self.hparams.advanced_metrics,
+        )
+        for t, m in zip(
+            self.hparams.epipolar_thresholds, metric.pop("epipolar_precisions")
+        ):
             self.log(f"test_metric/epipolar_precision@{t}", m)
         for t, m in zip(self.hparams.pose_thresholds, metric.pop("pose_aucs")):
             self.log(f"test_metric/pose_auc@{t}", m)
         if self.hparams.advanced_metrics:
             self.log(
-                "test_metric/coarse_precision", metric.pop("coarse_precision"))
+                "test_metric/coarse_precision", metric.pop("coarse_precision")
+            )
             self.log(
                 "test_metric/inlier_coarse_precision",
-                metric.pop("inlier_coarse_precision"))
+                metric.pop("inlier_coarse_precision"),
+            )
             self.log(
-                "test_metric/true_coarse_count",
-                metric.pop("true_coarse_count"))
+                "test_metric/true_coarse_count", metric.pop("true_coarse_count")
+            )
             self.log(
                 "test_metric/inlier_true_coarse_count",
-                metric.pop("inlier_true_coarse_count"))
+                metric.pop("inlier_true_coarse_count"),
+            )
             self.log(
                 "test_metric/coarse_3x3_precision",
-                metric.pop("coarse_3x3_precision"))
+                metric.pop("coarse_3x3_precision"),
+            )
             self.log(
                 "test_metric/inlier_coarse_3x3_precision",
-                metric.pop("inlier_coarse_3x3_precision"))
-            for t, m0, m1 in zip(self.hparams.end_point_thresholds,
-                                 metric.pop("end_point_precisions"),
-                                 metric.pop("inlier_end_point_precisions")):
+                metric.pop("inlier_coarse_3x3_precision"),
+            )
+            for t, m0, m1 in zip(
+                self.hparams.end_point_thresholds,
+                metric.pop("end_point_precisions"),
+                metric.pop("inlier_end_point_precisions"),
+            ):
                 self.log(f"test_metric/end_point_precision@{t}", m0)
                 self.log(f"test_metric/inlier_end_point_precision@{t}", m1)
 
         if self.hparams.dump_dir is not None:
-            pathlib.Path(
-                self.hparams.dump_dir).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(self.hparams.dump_dir).mkdir(
+                parents=True, exist_ok=True
+            )
             np.save(
-                self.hparams.dump_dir + "/test_result", gathered_output["dump"])
+                self.hparams.dump_dir + "/test_result", gathered_output["dump"]
+            )
 
         if self.trainer.global_rank == 0:
             print(self.test_time_profiler.summary())
@@ -300,8 +366,10 @@ class MatchingModule(pl.LightningModule):
     def configure_optimizers(self) -> Dict[str, Any]:
         optimizer = self.hparams.optimizer(self.parameters())
         scheduler = self.hparams.scheduler(optimizer)
-        return {"optimizer": optimizer,
-                "lr_scheduler": {"scheduler": scheduler}}
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {"scheduler": scheduler},
+        }
 
     def optimizer_step(
         self,
@@ -311,12 +379,15 @@ class MatchingModule(pl.LightningModule):
         optimizer_idx=0,
         optimizer_closure=None,
         on_tpu=False,
-        using_lbfgs=False
+        using_lbfgs=False,
     ) -> None:
         if self.trainer.global_step <= self.hparams.warmup_step_count:
-            scale = (self.hparams.warmup_ratio +
-                     self.trainer.global_step / self.hparams.warmup_step_count *
-                     (1 - self.hparams.warmup_ratio))
+            scale = (
+                self.hparams.warmup_ratio
+                + self.trainer.global_step
+                / self.hparams.warmup_step_count
+                * (1 - self.hparams.warmup_ratio)
+            )
             lr = scale * self.hparams.optimizer.keywords["lr"]
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
