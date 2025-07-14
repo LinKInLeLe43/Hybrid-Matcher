@@ -3,10 +3,10 @@ import pathlib
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-import pytorch_lightning as pl
 import torch
-from torch import distributed as dist
-from torch import nn
+import torch.nn as nn
+from pytorch_lightning import LightningModule
+from torch.distributed import all_gather_object
 
 from src.models import utils
 from src.models.components.nets.new_matcher.homo.utils.dense_match import (
@@ -33,7 +33,7 @@ def _flatten(outputs_by_ranks: List[List[Dict[str, Any]]]) -> Dict[str, Any]:
     return gathered_output
 
 
-class MatchingModule(pl.LightningModule):
+class MatchingModule(LightningModule):
     def __init__(
         self,
         net: nn.Module,
@@ -198,7 +198,7 @@ class MatchingModule(pl.LightningModule):
 
     def validation_epoch_end(self, outputs: List[Dict[str, Any]]) -> None:
         outputs_by_ranks = [[] for _ in range(self.trainer.world_size)]
-        dist.all_gather_object(outputs_by_ranks, outputs)
+        all_gather_object(outputs_by_ranks, outputs)
         gathered_output = _flatten(outputs_by_ranks)
         del outputs_by_ranks
 
@@ -300,7 +300,7 @@ class MatchingModule(pl.LightningModule):
 
     def test_epoch_end(self, outputs: List[Dict[str, Any]]) -> None:
         outputs_by_ranks = [[] for _ in range(self.trainer.world_size)]
-        dist.all_gather_object(outputs_by_ranks, outputs)
+        all_gather_object(outputs_by_ranks, outputs)
         gathered_output = _flatten(outputs_by_ranks)
         del outputs_by_ranks
 
