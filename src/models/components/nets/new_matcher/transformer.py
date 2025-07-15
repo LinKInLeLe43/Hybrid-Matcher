@@ -107,13 +107,14 @@ class TransformerBlock(Module):
         rope: Optional[Module] = None,
         mask: Optional[Tensor] = None,
     ) -> Tensor:
-        n, _, h, w = x0.shape
+        n, h, w, _ = x0.shape
 
         x0_, x1_ = x0, x1
         if self.stride > 1:
-            x0_, x1_ = self.down_q(x0), self.down_kv(x1)
+            x0_, x1_ = x0.permute(0, 3, 1, 2), x1.permute(0, 3, 1, 2)
+            x0_, x1_ = self.down_q(x0_), self.down_kv(x1_)
+            x0_, x1_ = x0_.permute(0, 2, 3, 1), x1_.permute(0, 2, 3, 1)
             h, w = h // self.stride, w // self.stride
-        x0_, x1_ = x0_.permute(0, 2, 3, 1), x1_.permute(0, 2, 3, 1)
         q, k, v = self.q_proj(x0_), self.k_proj(x1_), self.v_proj(x1_)
         if rope is not None:
             q, k = rope.rel_pe(q), rope.rel_pe(k)
@@ -126,21 +127,17 @@ class TransformerBlock(Module):
             .transpose(-3, -2)
             .flatten(start_dim=-2)
         )
-        message = (
-            self.norm1(self.merge(message))
-            .transpose(-2, -1)
-            .unflatten(-1, (h, w))
-        )
+        message = self.norm1(self.merge(message)).unflatten(-2, (h, w))
         if self.stride > 1:
-            message = message.contiguous()
+            message = message.permute(0, 3, 1, 2).contiguous()
             message = F.interpolate(
                 message,
                 scale_factor=self.stride,
                 mode="bilinear",
                 align_corners=False,
-            )
-        message = torch.cat([x0, message], dim=1).permute(0, 2, 3, 1)
-        x0 = x0 + self.norm2(self.mlp(message)).permute(0, 3, 1, 2)
+            ).permute(0, 2, 3, 1)
+        message = torch.cat([x0, message], dim=-1)
+        x0 = x0 + self.norm2(self.mlp(message))
         return x0
 
 
