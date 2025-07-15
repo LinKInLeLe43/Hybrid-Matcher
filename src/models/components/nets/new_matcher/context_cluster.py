@@ -1,7 +1,6 @@
 import copy
 from typing import List, Optional, Sequence, Tuple
 
-import einops
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -54,7 +53,6 @@ class SelfClusterBlock(Module):
         assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.num_anchors = num_anchors
         self.num_folds = num_folds
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
@@ -65,17 +63,17 @@ class SelfClusterBlock(Module):
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         n, _, h, w = x.shape
-        fc, fh, fw = self.num_heads, self.num_folds, self.num_folds
+        fh, fw = self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
-        m = n * fc * fh * fw
+        m = n * self.num_heads * fh * fw
 
         x = x.permute(0, 2, 3, 1)
-        x0 = einops.rearrange(
-            self.proj(x),
-            "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw",
-            fc=fc,
-            fh=fh,
-            fw=fw,
+        x0 = (
+            self.proj(x)
+            .view(n, fh, sh, fw, sw, self.num_heads, self.head_dim * 2)
+            .permute(0, 5, 1, 3, 6, 2, 4)
+            .contiguous()
+            .flatten(end_dim=3)
         )
         x1 = self.center_proposal(x0)
         x0_point, x0_value = (
