@@ -49,14 +49,13 @@ class SelfClusterBlock(Module):
         num_anchors: int,
         num_folds: int,
         bias: bool = True,
-        type: str = "original",
     ) -> None:
         super().__init__()
+        assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.num_anchors = num_anchors
         self.num_folds = num_folds
-        self.type = type
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
         self.center_proposal = nn.AdaptiveMaxPool2d(num_anchors)
@@ -69,7 +68,6 @@ class SelfClusterBlock(Module):
         fc, fh, fw = self.num_heads, self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
         m, s = n * fc * fh * fw, self.num_anchors**2
-        device = x.device
 
         x = x.permute(0, 2, 3, 1)
         x0 = einops.rearrange(
@@ -79,15 +77,19 @@ class SelfClusterBlock(Module):
             fh=fh,
             fw=fw,
         )
-        center = self.center_proposal(x0)
-        x0 = x0.flatten(start_dim=2).transpose(1, 2)
-        center = center.flatten(start_dim=2).transpose(1, 2)
-        x_point, x_value = x0.chunk(2, dim=2)
-        center_point, center_value = center.chunk(2, dim=2)
+        x1 = self.center_proposal(x0)
+        x0_point, x0_value = (
+            x0.view(m, self.head_dim * 2, sh * sw)
+            .transpose(-2, -1)
+            .chunk(2, dim=-1)
+        )
+        x1_point, x1_value = (
+            x1.view(m, self.head_dim * 2, -1).transpose(-2, -1).chunk(2, dim=-1)
+        )
 
-        x_point = F.normalize(x_point, dim=2)
-        center_point = F.normalize(center_point, dim=2)
-        similarity = x_point @ center_point.transpose(-2, -1)
+        x0_point = F.normalize(x0_point, dim=-1)
+        x1_point = F.normalize(x1_point, dim=-1)
+        similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
             mask = einops.repeat(
@@ -99,59 +101,26 @@ class SelfClusterBlock(Module):
                 s=s,
             )
             similarity.masked_fill_(~mask, float("-inf"))
-        similarity.sigmoid_()
+        similarity = similarity.sigmoid()
+
         max_sim_values, max_sim_idxes = similarity.max(dim=2)
-
-        if self.type == "flattened_index":
-            max_sim_idxes = (
-                max_sim_idxes + s * torch.arange(m, device=device)[:, None]
-            )
-            max_sim_values, max_sim_idxes, x_value, center_value = [
-                x.flatten(end_dim=1)
-                for x in [max_sim_values, max_sim_idxes, x_value, center_value]
-            ]
-
-            cat_ones = torch.ones_like(x_value[:, [0]])
-            cat_x_value = torch.cat([x_value, cat_ones], dim=1)
-            cat_ones = torch.ones_like(center_value[:, [0]])
-            cat_center_value = torch.cat([center_value, cat_ones], dim=1)
-            aggregated = cat_center_value.index_add_(
-                0, max_sim_idxes, max_sim_values[:, None] * cat_x_value
-            )
-            aggregated = aggregated[:, :-1] / aggregated[:, -1:]
-            dispatched = max_sim_values[:, None] * aggregated.index_select(
-                0, max_sim_idxes
-            )
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                sh=sh,
-                sw=sw,
-            )
-        elif self.type == "original":
-            mask = torch.zeros_like(similarity)
-            mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-            similarity = (mask * similarity)[..., None]
-
-            aggregated = center_value + (
-                similarity * x_value[:, :, None, :]
-            ).sum(dim=1)
-            aggregated /= 1 + similarity.sum(dim=1)
-            dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
-            dispatched = einops.rearrange(
-                dispatched,
-                "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                sh=sh,
-                sw=sw,
-            )
-        else:
-            raise NotImplementedError("")
+        mask = torch.zeros_like(similarity)
+        mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
+        similarity = (mask * similarity)[..., None]
+        aggregated = x1_value + (similarity * x0_value[:, :, None, :]).sum(
+            dim=1
+        )
+        aggregated /= 1 + similarity.sum(dim=1)
+        dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
+        dispatched = einops.rearrange(
+            dispatched,
+            "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
+            fc=fc,
+            fh=fh,
+            fw=fw,
+            sh=sh,
+            sw=sw,
+        )
         dispatched = self.merge(dispatched)
         return dispatched
 
