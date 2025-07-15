@@ -46,44 +46,43 @@ class SelfClusterBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        center_size: int,
-        fold_size: int,
+        num_anchors: int,
+        num_folds: int,
         bias: bool = True,
         type: str = "original",
     ) -> None:
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.center_size = center_size
-        self.fold_size = fold_size
+        self.num_anchors = num_anchors
+        self.num_folds = num_folds
         self.type = type
 
         self.proj = nn.Linear(dim, dim * 2, bias=bias)
-        self.center_proposal = nn.AdaptiveMaxPool2d(center_size)
+        self.center_proposal = nn.AdaptiveMaxPool2d(num_anchors)
         self.merge = nn.Linear(dim, dim, bias=bias)
-
         self.alpha = nn.Parameter(torch.ones(1))
         self.beta = nn.Parameter(torch.zeros(1))
 
     def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
-        fc, fh, fw = self.num_heads, self.fold_size, self.fold_size
-        n, c, h, w = x.shape
+        n, _, h, w = x.shape
+        fc, fh, fw = self.num_heads, self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
-        m, s = n * fc * fh * fw, self.center_size**2
+        m, s = n * fc * fh * fw, self.num_anchors**2
         device = x.device
 
-        x = self.proj(x.permute(0, 2, 3, 1))
-        x = einops.rearrange(
-            x,
+        x = x.permute(0, 2, 3, 1)
+        x0 = einops.rearrange(
+            self.proj(x),
             "n (fh sh) (fw sw) (fc sc) -> (n fc fh fw) sc sh sw",
             fc=fc,
             fh=fh,
             fw=fw,
         )
-        center = self.center_proposal(x)
-        x = x.flatten(start_dim=2).transpose(1, 2)
+        center = self.center_proposal(x0)
+        x0 = x0.flatten(start_dim=2).transpose(1, 2)
         center = center.flatten(start_dim=2).transpose(1, 2)
-        x_point, x_value = x.chunk(2, dim=2)
+        x_point, x_value = x0.chunk(2, dim=2)
         center_point, center_value = center.chunk(2, dim=2)
 
         x_point = F.normalize(x_point, dim=2)
@@ -294,7 +293,7 @@ class LocalCoC(Module):
                 point_reducer = nn.Identity()
             self.point_reducers.append(point_reducer)
 
-            layer = nn.Sequential()
+            layer = nn.ModuleList()
             for _ in range(blocks_counts[i]):
                 block = LocalClusterBlock(
                     layer_depths[i],
@@ -318,13 +317,21 @@ class LocalCoC(Module):
                 nn.init.constant_(m.weight, 1.0)
                 nn.init.constant_(m.bias, 0.0)
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(
+        self, x: Tensor, mask: Optional[Tensor] = None
+    ) -> Tuple[Tensor, Tensor]:
+        scale = 1
         outs = []
-        for point_reducer, layer in zip(self.point_reducers, self.layers):
-            x = point_reducer(x)
-            x = layer(x)
+        for i in range(len(self.scales)):
+            mask_ = None
+            if mask is not None:
+                scale = scale * self.scales[i]
+                mask_ = F.max_pool2d(mask.float(), scale).bool()
+            x = self.point_reducers[i](x)
+            for block in self.layers[i]:
+                x = block(x, mask_)
             outs.append(x)
-        return outs[0], outs[-1]
+        return outs
 
 
 class MergeBlock(Module):
