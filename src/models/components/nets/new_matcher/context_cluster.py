@@ -67,7 +67,7 @@ class SelfClusterBlock(Module):
         n, _, h, w = x.shape
         fc, fh, fw = self.num_heads, self.num_folds, self.num_folds
         sh, sw = h // fh, w // fw
-        m, s = n * fc * fh * fw, self.num_anchors**2
+        m = n * fc * fh * fw
 
         x = x.permute(0, 2, 3, 1)
         x0 = einops.rearrange(
@@ -92,13 +92,11 @@ class SelfClusterBlock(Module):
         similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
-            mask = einops.repeat(
-                mask,
-                "n (fh sh) (fw sw) -> (n fc fh fw) (sh sw) s",
-                fc=fc,
-                fh=fh,
-                fw=fw,
-                s=s,
+            mask = (
+                mask.view(n, 1, fh, sh, fw, sw)
+                .transpose(-3, -2)
+                .expand(-1, self.num_heads, -1, -1, -1, -1)
+                .view(m, -1, 1)
             )
             similarity.masked_fill_(~mask, float("-inf"))
         similarity = similarity.sigmoid()
@@ -112,14 +110,11 @@ class SelfClusterBlock(Module):
         )
         aggregated /= 1 + similarity.sum(dim=1)
         dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
-        dispatched = einops.rearrange(
-            dispatched,
-            "(n fc fh fw) (sh sw) sc -> n (fh sh) (fw sw) (fc sc)",
-            fc=fc,
-            fh=fh,
-            fw=fw,
-            sh=sh,
-            sw=sw,
+        dispatched = (
+            dispatched.view(n, self.num_heads, fh, fw, sh, sw, self.head_dim)
+            .permute(0, 2, 4, 3, 5, 1, 6)
+            .contiguous()
+            .view(n, h, w, -1)
         )
         dispatched = self.merge(dispatched)
         return dispatched
