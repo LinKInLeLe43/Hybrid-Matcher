@@ -100,14 +100,15 @@ class SelfClusterBlock(Module):
         similarity = similarity.sigmoid()
 
         max_sim_values, max_sim_idxes = similarity.max(dim=2)
-        mask = torch.zeros_like(similarity)
-        mask.scatter_(2, max_sim_idxes[:, :, None], 1.0)
-        similarity = (mask * similarity)[..., None]
-        aggregated = x1_value + (similarity * x0_value[:, :, None, :]).sum(
-            dim=1
+        mask = torch.zeros_like(similarity).scatter_(
+            2, max_sim_idxes[:, :, None], 1.0
         )
-        aggregated /= 1 + similarity.sum(dim=1)
-        dispatched = (similarity * aggregated[:, None, :, :]).sum(dim=2)
+        similarity = (mask * similarity)[..., None]
+        aggregated = x1_value[:, None, :, :] + (
+            x0_value[:, :, None, :] * similarity
+        ).sum(dim=1, keepdim=True)
+        aggregated = aggregated / (1 + similarity.sum(dim=1, keepdim=True))
+        dispatched = (similarity * aggregated).sum(dim=2)
         dispatched = (
             dispatched.view(n, self.num_heads, fh, fw, sh, sw, self.head_dim)
             .permute(0, 2, 4, 3, 5, 1, 6)
