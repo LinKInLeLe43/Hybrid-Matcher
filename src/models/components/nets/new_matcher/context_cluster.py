@@ -195,8 +195,10 @@ class CrossClusterBlock(Module):
             similarity.masked_fill_(~mask, float("-inf"))
         similarity = similarity.sigmoid()
 
-        n_range = torch.arange(n, device=x0.device)[:, :, None]
-        head_range = torch.arange(self.num_heads, device=x0.device)[:, None, :]
+        n_range = torch.arange(n, device=x0.device)[:, None, None]
+        head_range = torch.arange(self.num_heads, device=x0.device)[
+            None, :, None
+        ]
         max_sim, indices = similarity.max(dim=-1)
         dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
         dispatched = dispatched.transpose(-3, -2).contiguous().view(n, h, w, -1)
@@ -306,42 +308,6 @@ class LocalCoC(Module):
 
             initial_depth = layer_depths[i]
 
-        # TODO: check FPN design
-        # self.layer1_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[0]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False))
-        # self.layer0_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[0]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[0], layer_depths[0], 3, padding=1, bias=False))
-        # self.layer2_up = nn.Conv2d(
-        #     layer_depths[2], layer_depths[2], 1, bias=False)
-        # self.layer1_up = nn.Conv2d(
-        #     layer_depths[1], layer_depths[2], 1, bias=False)
-        # self.layer1_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[2], layer_depths[2], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[2]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[2], layer_depths[1], 3, padding=1, bias=False))
-        # self.layer0_up = nn.Conv2d(
-        #     layer_depths[0], layer_depths[1], 1, bias=False)
-        # self.layer0_out = nn.Sequential(
-        #     nn.Conv2d(
-        #         layer_depths[1], layer_depths[1], 3, padding=1, bias=False),
-        #     nn.BatchNorm2d(layer_depths[1]),
-        #     nn.LeakyReLU(inplace=True),
-        #     nn.Conv2d(
-        #         layer_depths[1], layer_depths[0], 3, padding=1, bias=False))
-
         # TODO: check weight init
         for m in self.modules():
             if isinstance(m, (nn.Conv2d, nn.Linear)):
@@ -359,24 +325,6 @@ class LocalCoC(Module):
             x = layer(x)
             outs.append(x)
         return outs[0], outs[-1]
-
-        # x1 = x1 + F.interpolate(
-        #     x2, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x1 = self.layer1_out(x1)
-        # x0 = x0 + F.interpolate(
-        #     x1, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # x0 = self.layer0_out(x0)
-        # return x2, x0
-        # new_x2 = self.layer2_up(x2)
-        # new_x1 = self.layer1_up(x1)
-        # new_x1 += F.interpolate(
-        #     new_x2, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # new_x1 = self.layer1_out(new_x1)
-        # new_x0 = self.layer0_up(x0)
-        # new_x0 += F.interpolate(
-        #     new_x1, scale_factor=2.0, mode="bilinear", align_corners=True)
-        # new_x0 = self.layer0_out(new_x0)
-        # return new_x2, new_x0
 
 
 class MergeBlock(Module):
@@ -448,22 +396,16 @@ class GlobalCoC(Module):
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        xy_mask01 = xy_mask10 = yy_mask00 = yy_mask11 = yy_mask01 = (
-            yy_mask10
-        ) = None
+        mask00 = mask11 = mask01 = mask10 = None
         if mask0 is not None and mask1 is not None:
-            x0_mask = F.max_pool2d(mask0.float(), 2).bool()
-            x1_mask = F.max_pool2d(mask1.float(), 2).bool()
-            y0_mask = F.max_pool2d(mask0.float(), 4).bool()
-            y1_mask = F.max_pool2d(mask1.float(), 4).bool()
-
             n = mask0.shape[0]
-            xy_mask01 = x0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            xy_mask10 = x1_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
-            yy_mask00 = y0_mask.view(n, 1, -1, 1) & y0_mask.view(n, 1, 1, -1)
-            yy_mask11 = y1_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            yy_mask01 = y0_mask.view(n, 1, -1, 1) & y1_mask.view(n, 1, 1, -1)
-            yy_mask10 = yy_mask01.transpose(-1, -2)
+            mask0 = F.max_pool2d(mask0.float(), 4).bool()
+            mask1 = F.max_pool2d(mask1.float(), 4).bool()
+
+            mask00 = mask0.view(n, 1, -1, 1) & mask0.view(n, 1, 1, -1)
+            mask11 = mask1.view(n, 1, -1, 1) & mask1.view(n, 1, 1, -1)
+            mask01 = mask0.view(n, 1, -1, 1) & mask1.view(n, 1, 1, -1)
+            mask10 = mask01.transpose(-1, -2)
 
         x0_16x, x0_32x = x0_list
         x1_16x, x1_32x = x1_list
@@ -475,10 +417,10 @@ class GlobalCoC(Module):
         ):
             x0_16x, x0_32x = merge_block(x0_16x, x0_32x)
             x1_16x, x1_32x = merge_block(x1_16x, x1_32x)
-            x0_16x = global_block(x0_16x, x1_32x, mask=xy_mask01)
-            x1_16x = global_block(x1_16x, x0_32x, mask=xy_mask10)
-            x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=yy_mask00)
-            x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=yy_mask11)
-            x0_16x = cross_block(x0_16x, x1_16x, mask=yy_mask01)
-            x1_16x = cross_block(x1_16x, x0_16x, mask=yy_mask10)
+            x0_16x = global_block(x0_16x, x1_32x, mask=mask1)
+            x1_16x = global_block(x1_16x, x0_32x, mask=mask0)
+            x0_16x = self_block(x0_16x, x0_16x, rope=rope, mask=mask00)
+            x1_16x = self_block(x1_16x, x1_16x, rope=rope, mask=mask11)
+            x0_16x = cross_block(x0_16x, x1_16x, mask=mask01)
+            x1_16x = cross_block(x1_16x, x0_16x, mask=mask10)
         return x0_16x, x1_16x
