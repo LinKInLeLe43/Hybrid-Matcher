@@ -173,17 +173,20 @@ class CrossClusterBlock(Module):
         self, x0: Tensor, x1: Tensor, mask: Optional[Tensor] = None
     ) -> Tensor:
         n, _, h, w = x0.shape
+        m = n * self.num_heads
 
         x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         x0_point = (
             self.proj0(x0)
             .view(n, -1, self.num_heads, self.head_dim)
             .transpose(-3, -2)
+            .flatten(end_dim=1)
         )
         x1_point, x1_value = (
             self.proj1(x1)
             .view(n, -1, self.num_heads, self.head_dim * 2)
             .transpose(-3, -2)
+            .flatten(end_dim=1)
             .chunk(2, dim=-1)
         )
         x0_point = F.normalize(x0_point, dim=-1)
@@ -191,16 +194,23 @@ class CrossClusterBlock(Module):
         similarity = x0_point @ x1_point.transpose(-2, -1)
         similarity = self.alpha * similarity + self.beta
         if mask is not None:
+            mask = (
+                mask.view(n, 1, -1)
+                .expand(-1, self.num_heads, -1)
+                .view(m, 1, -1)
+            )
             similarity.masked_fill_(~mask, float("-inf"))
         similarity = similarity.sigmoid()
 
-        n_range = torch.arange(n, device=x0.device)[:, None, None]
-        head_range = torch.arange(self.num_heads, device=x0.device)[
-            None, :, None
-        ]
+        m_range = torch.arange(m, device=x0.device)[:, None]
         max_sim, indices = similarity.max(dim=-1)
-        dispatched = max_sim[..., None] * x1_value[n_range, head_range, indices]
-        dispatched = dispatched.transpose(-3, -2).contiguous().view(n, h, w, -1)
+        dispatched = max_sim[..., None] * x1_value[m_range, indices]
+        dispatched = (
+            dispatched.view(n, self.num_heads, -1, self.head_dim)
+            .transpose(-3, -2)
+            .contiguous()
+            .view(n, h, w, -1)
+        )
         dispatched = self.merge(dispatched)
         return dispatched
 
