@@ -1,9 +1,0 @@
-[2025-06-01 13:53:52,462][__main__][INFO] - [rank: 0] Instantiating model <src.models.MatchingModule>
-[2025-06-01 13:53:52,722][__main__][INFO] - [rank: 0] Instantiating datamodule <src.data.MatchingDataModule>
-[2025-06-01 13:53:52,799][__main__][INFO] - [rank: 0] Instantiating callbacks...
-[2025-06-01 13:53:52,799][src.utils.instantiators][INFO] - [rank: 0] Instantiating callback <pytorch_lightning.callbacks.LearningRateMonitor>
-[2025-06-01 13:53:52,800][src.utils.instantiators][INFO] - [rank: 0] Instantiating callback <pytorch_lightning.callbacks.ModelCheckpoint>
-[2025-06-01 13:53:52,803][src.utils.instantiators][INFO] - [rank: 0] Instantiating callback <pytorch_lightning.callbacks.RichModelSummary>
-[2025-06-01 13:53:52,803][src.utils.instantiators][INFO] - [rank: 0] Instantiating callback <pytorch_lightning.callbacks.RichProgressBar>
-[2025-06-01 13:53:52,804][__main__][INFO] - [rank: 0] Instantiating loggers...
-[2025-06-01 13:53:52,804][src.utils.instantiators][INFO] - [rank: 0] Instantiating callback <pytorch_lightning.loggers.tensorboard.TensorBoardLogger>

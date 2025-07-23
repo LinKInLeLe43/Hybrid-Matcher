@@ -7,25 +7,25 @@ requires-python = ">=3.8"
 packages = ["casp"]
 
 [tool.ruff]
-line-length = 79
+line-length = 80
 select = [
     "E",  # pycodestyle errors
-    "W",  # pycodestyle warnings
     "F",  # pyflakes
-    "I",  # isort
+    "W",  # pycodestyle warnings
+    "C90",  # mccabe
     "B",  # flake8-bugbear
+    "A",  # flake8-builtins
     "C4",  # flake8-comprehensions
+    "I",  # isort
+    "SIM",  # flake8-simplify
     "UP",  # pyupgrade
     "N",  # PEP8-naming
     "PERF",  # Perflint
     "RUF",  # Ruff-specific rules
     "ANN",  # flake8-annotations
 ]
-ignore = [
-    "N812",  # lowercase-imported-as-non-lowercase
-]
 
 [tool.ruff.format]
 skip-magic-trailing-comma = true
+docstring-code-line-length = 80
 docstring-code-format = true
-docstring-code-line-length = 79
