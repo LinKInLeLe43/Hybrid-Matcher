@@ -6,14 +6,6 @@ defaults:
     - _self_
 
 model:
-    net:
-        rope:
-            train_size:
-                - ${data.train_dataset.image_size}
-                - ${data.train_dataset.image_size}
-            test_size:
-                - ${data.test_dataset.image_size}
-                - ${data.test_dataset.image_size}
     optimizer:
         _target_: torch.optim.AdamW
         _partial_: true

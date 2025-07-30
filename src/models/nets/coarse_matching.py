@@ -237,7 +237,6 @@ class CoarseMatching(nn.Module):
         x1: torch.Tensor,
         y0: torch.Tensor,
         y1: torch.Tensor,
-        encoding: torch.Tensor,
         x0_mask: Optional[torch.Tensor] = None,
         x1_mask: Optional[torch.Tensor] = None,
         y0_mask: Optional[torch.Tensor] = None,
@@ -256,7 +255,7 @@ class CoarseMatching(nn.Module):
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
         _y0, _y1, idxes0_to_1, idxes1_to_0, similarity = self.decoder(
-            x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
+            x0, x1, y0, y1, mask0=x0_mask, mask1=x1_mask
         )
         y0 = (
             _y0.reshape(n, fh0, fw0, sh, sw, -1)

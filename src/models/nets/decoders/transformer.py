@@ -5,6 +5,8 @@ import torch
 from torch import Tensor, nn
 from torch.nn import Module
 
+from ..positional_encoding import RoPESinePositionalEncoding
+
 try:
     # deprecated after torch 2.3.0, see https://github.com/pytorch/pytorch/releases/tag/v2.3.0
     from torch.backends.cuda import sdp_kernel
@@ -101,6 +103,9 @@ class SelfBlock(Module):
                 bias=bias,
             )
         self.qkv_proj = nn.Linear(dim, 3 * dim, bias=bias)
+        self.rope = RoPESinePositionalEncoding(
+            self.head_dim, num_heads, (832, 832)
+        )
         self.out_proj = nn.Linear(dim, dim, bias=bias)
         self.ffn = nn.Sequential(
             nn.Linear(2 * dim, 2 * dim, bias=bias),
@@ -109,12 +114,7 @@ class SelfBlock(Module):
             nn.Linear(2 * dim, dim, bias=bias),
         )
 
-    def forward(
-        self,
-        x: Tensor,
-        encoding: Optional[Tensor] = None,
-        mask: Optional[Tensor] = None,
-    ) -> Tensor:
+    def forward(self, x: Tensor, mask: Optional[Tensor] = None) -> Tensor:
         _, h, w, c = x.shape
 
         _x = x
@@ -128,12 +128,9 @@ class SelfBlock(Module):
             .transpose(1, 2)
             .unbind(dim=-1)
         )
-        if encoding is not None:
-            encoding = (
-                encoding[:h, :w, : (c // 2)]
-                .flatten(end_dim=1)
-                .unflatten(-1, (self.num_heads, self.head_dim // 2))
-                .transpose(0, 1)
+        if self.rope is not None:
+            encoding = self.rope()[:, :h, :w, : (c // 2)].flatten(
+                start_dim=1, end_dim=2
             )
             q = apply_rotary_emb(q, encoding)
             k = apply_rotary_emb(k, encoding)
@@ -256,13 +253,12 @@ class TransformerLayer(Module):
         self,
         x0: Tensor,
         x1: Tensor,
-        encoding: Optional[Tensor] = None,
         mask00: Optional[Tensor] = None,
         mask11: Optional[Tensor] = None,
         mask01: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor]:
-        x0 = self.self_block(x0, encoding=encoding, mask=mask00)
-        x1 = self.self_block(x1, encoding=encoding, mask=mask11)
+        x0 = self.self_block(x0, mask=mask00)
+        x1 = self.self_block(x1, mask=mask11)
         x0, x1 = self.cross_block(x0, x1, mask=mask01)
         return x0, x1
 

@@ -45,7 +45,6 @@ class Decoder(Module):
         x1: Tensor,
         y0: Tensor,
         y1: Tensor,
-        encoding: Tensor,
         mask0: Optional[Tensor] = None,
         mask1: Optional[Tensor] = None,
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
@@ -55,7 +54,7 @@ class Decoder(Module):
         x0, x1 = x0.permute(0, 2, 3, 1), x1.permute(0, 2, 3, 1)
         if mask0 is None and mask1 is None:
             for layer in self.x_layers:
-                x0, x1 = layer(x0, x1, encoding)
+                x0, x1 = layer(x0, x1)
         elif not self.enable_crop:
             mask0 = mask0.flatten(start_dim=1)
             mask1 = mask1.flatten(start_dim=1)
@@ -63,7 +62,7 @@ class Decoder(Module):
             mask11 = mask1[:, None, :, None] & mask1[:, None, None, :]
             mask01 = mask0[:, None, :, None] & mask1[:, None, None, :]
             for layer in self.x_layers:
-                x0, x1 = layer(x0, x1, encoding, mask00, mask11, mask01)
+                x0, x1 = layer(x0, x1, mask00, mask11, mask01)
         else:
             _x0, _x1 = torch.zeros_like(x0), torch.zeros_like(x1)
             for b in range(n):
@@ -71,7 +70,7 @@ class Decoder(Module):
                 h1, w1 = [mask1[b].sum(dim=t).amax() for t in [0, 1]]
                 b_x0, b_x1 = x0[[b], :h0, :w0], x1[[b], :h1, :w1]
                 for layer in self.x_layers:
-                    b_x0, b_x1 = layer(b_x0, b_x1, encoding)
+                    b_x0, b_x1 = layer(b_x0, b_x1)
                 _x0[[b], :h0, :w0], _x1[[b], :h1, :w1] = b_x0, b_x1
             x0, x1 = _x0, _x1
 

@@ -3,12 +3,6 @@ _target_: src.models.MatchingModule
 net:
     _target_: src.models.nets.CasP
     encoder: "repvgg_a1"
-    rope:
-        _target_: src.models.nets.RoPESinePositionalEncoding
-        depth: 256
-        train_size: ???
-        test_size: ???
-        fp16: ${fp16}
     coarse_matching:
         _target_: src.models.nets.CoarseMatching
         decoder:

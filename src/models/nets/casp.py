@@ -14,7 +14,6 @@ class CasP(Module):
     def __init__(
         self,
         encoder: str,
-        rope: Module,
         coarse_matching: Module,
         num_coarse_matchings: int,
         extra_scale: Optional[int] = None,
@@ -22,7 +21,6 @@ class CasP(Module):
         super().__init__()
         self.encoder = Encoder(encoder)
         self.encoder.scales = (8, 4)
-        self.rope = rope
         self.num_coarse_matchings = num_coarse_matchings
         self.coarse_matchings = nn.ModuleList(
             [deepcopy(coarse_matching) for _ in range(num_coarse_matchings)]
@@ -77,7 +75,6 @@ class CasP(Module):
 
         x0_16x, x1_16x = x0_list.pop(-1), x1_list.pop(-1)
         x0_8x_ori, x1_8x_ori = x0_8x, x1_8x = x0_list.pop(-1), x1_list.pop(-1)
-        encoding = self.rope.get_encoding()
 
         if self.training:
             coarse_cls_heatmap = []
@@ -88,7 +85,6 @@ class CasP(Module):
                 x1_16x,
                 x0_8x_ori,
                 x1_8x_ori,
-                encoding,
                 x0_mask=mask0_16x,
                 x1_mask=mask1_16x,
                 y0_mask=mask0_8x,
