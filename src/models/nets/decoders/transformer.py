@@ -15,6 +15,15 @@ except ImportError:
     SDPA_AVAILABLE = False
 
 
+def apply_rotary_emb(x: Tensor, encoding: Tensor) -> Tensor:
+    x_complex = torch.view_as_complex(
+        x.float().unflatten(-1, (-1, 2)).contiguous()
+    )
+    encoding = torch.polar(torch.ones_like(encoding), encoding)
+    x = torch.view_as_real(x_complex * encoding).flatten(start_dim=-2).to(x)
+    return x
+
+
 class Attention(Module):
     def __init__(
         self, enable_sdpa: bool = False, enable_flash: bool = False
@@ -100,15 +109,6 @@ class SelfBlock(Module):
             nn.Linear(2 * dim, dim, bias=bias),
         )
 
-    def _rotate_half(self, x: Tensor) -> Tensor:
-        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        rotated_x = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
-        return rotated_x
-
-    def _apply_rotary_encoding(self, x: Tensor, encoding: Tensor) -> Tensor:
-        x = x * encoding[0] + self._rotate_half(x) * encoding[1]
-        return x
-
     def forward(
         self,
         x: Tensor,
@@ -130,13 +130,13 @@ class SelfBlock(Module):
         )
         if encoding is not None:
             encoding = (
-                encoding[:, :h, :w, :c]
-                .flatten(start_dim=1, end_dim=2)
-                .unflatten(-1, (self.num_heads, self.head_dim))
-                .transpose(1, 2)
+                encoding[:h, :w, : (c // 2)]
+                .flatten(end_dim=1)
+                .unflatten(-1, (self.num_heads, self.head_dim // 2))
+                .transpose(0, 1)
             )
-            q = self._apply_rotary_encoding(q, encoding)
-            k = self._apply_rotary_encoding(k, encoding)
+            q = apply_rotary_emb(q, encoding)
+            k = apply_rotary_emb(k, encoding)
         message = self.attention(q, k, v, mask=mask)
         message = self.out_proj(message.transpose(1, 2).flatten(start_dim=-2))
         message = message.unflatten(1, (h, w))

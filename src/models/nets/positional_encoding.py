@@ -75,33 +75,21 @@ class RoPESinePositionalEncoding(Module):
             .flatten(start_dim=-2)
             .permute(2, 0, 1)
         )
-        sin = sin.repeat_interleave(2, dim=2)
-        cos = cos.repeat_interleave(2, dim=2)
+        # sin = sin.repeat_interleave(2, dim=2)
+        # cos = cos.repeat_interleave(2, dim=2)
+        freqs = torch.stack([y, x], dim=-1).flatten(start_dim=-2)
 
         if fp16:
-            pe, sin, cos = pe.half(), sin.half(), cos.half()
+            pe = pe.half()
 
         self.register_buffer("pe", pe, persistent=False)
-        self.register_buffer("sin", sin, persistent=False)
-        self.register_buffer("cos", cos, persistent=False)
-
-    def _rotate_half(self, x: Tensor) -> Tensor:
-        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
-        out = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
-        return out
+        self.register_buffer("freqs", freqs, persistent=False)
+        # self.register_buffer("cos", cos, persistent=False)
 
     def abs_pe(self, x: Tensor) -> Tensor:
         _, c, h, w = x.shape
         out = x + self.pe[:c, :h, :w]
         return out
 
-    def rel_pe(self, x: Tensor) -> Tensor:
-        _, h, w, c = x.shape
-        out = self.cos[:h, :w, :c] * x + self.sin[
-            :h, :w, :c
-        ] * self._rotate_half(x)
-        return out
-
     def get_encoding(self) -> Tensor:
-        encoding = torch.stack([self.cos, self.sin])
-        return encoding
+        return self.freqs
