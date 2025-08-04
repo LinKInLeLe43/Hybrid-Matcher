@@ -125,6 +125,26 @@ class CoarseMatching(nn.Module):
             matching_idxes, gt_idxes))
         return train_idxes, matching_idxes
 
+    def gen_gt_mask(
+        self,
+        score: torch.Tensor,
+        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        k,
+    ):
+        mask = torch.zeros_like(score, dtype=torch.bool)
+        mask[gt_idxes] = True
+        score = score.masked_fill(~mask, float("inf")).flatten(start_dim=-2)
+        _, indices = (-score).topk(k, dim=-1)
+        new_mask = (
+            torch.zeros_like(score, dtype=torch.bool)
+            .scatter_(-1, indices, True)
+            .reshape_as(mask)
+        )
+        new_mask[~mask] = False
+        if new_mask.sum() == 0:
+            new_mask[:, 0, 0] = True
+        return new_mask
+
     @torch.no_grad()
     def _create_coarse_matching(
         self,
@@ -146,6 +166,7 @@ class CoarseMatching(nn.Module):
             mask &= (score == score.amax(dim=2, keepdim=True)) & (
                 score == score.amax(dim=1, keepdim=True)
             )
+            coarse_gt_mask = self.gen_gt_mask(score, gt_idxes, 1024)
             train_idxes, matching_idxes = self._sample_for_train(
                 max_count, mask.nonzero(as_tuple=True), gt_idxes)
             b_idxes, i_idxes, j_idxes = train_idxes
@@ -181,6 +202,7 @@ class CoarseMatching(nn.Module):
             j_idxes = idxes0_to_1[b_idxes, i_idxes]
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
+            coarse_gt_mask = None
 
         points0 = torch.stack(
             [i_idxes % size0[1], i_idxes // size0[1]], dim=1
@@ -194,6 +216,7 @@ class CoarseMatching(nn.Module):
             "points1": points1,
             "scores": scores,
             "coarse_cls_idxes": train_idxes,
+            "coarse_gt_mask": coarse_gt_mask
         }
         if coarse_recall_mask is not None:
             result["coarse_recall"] = coarse_recall_mask[gt_idxes]
