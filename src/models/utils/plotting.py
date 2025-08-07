@@ -1,4 +1,5 @@
-from typing import List, Optional, Tuple, Union
+import os.path as osp
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -99,3 +100,50 @@ def make_matching_figure(
         image0, image1, points0, points1, colors, text=text, **kwargs
     )
     return figure
+
+
+def make_evaluation_figures(
+    batch: Dict[str, Any],
+    result: Dict[str, Any],
+    error: Dict[str, Any],
+    sym_epi_threshold: float,
+) -> List[Figure]:
+    figures = []
+    for b in range(len(batch["name0"])):
+        path0 = osp.join(batch["root"][b], batch["name0"][b])
+        path1 = osp.join(batch["root"][b], batch["name1"][b])
+
+        mask = result["coarse_cls_indices"][0] == b
+        points0 = result["points0"][mask].cpu().numpy()
+        points1 = result["points1"][mask].cpu().numpy()
+
+        sym_epi_errors_per_batch = error["sym_epi_errors_per_batch"][b]
+        rel_R_errors = error["rel_R_errors"][b]
+        rel_t_errors = error["rel_t_errors"][b]
+        mask = sym_epi_errors_per_batch < sym_epi_threshold
+        total = len(mask)
+        correct = mask.sum().item()
+        precision = correct / total if total != 0 else 0.0
+        text = [
+            f"#matches: {total}",
+            f"precision({sym_epi_threshold:.0e}): "
+            f"{100.0 * precision:.1f}% ({correct}/{total})",
+            f"ΔR: {rel_R_errors:.1f}° Δt: {rel_t_errors:.1f}°",
+        ]
+
+        fixed_size = None
+        if "scale0" not in batch and "scale1" not in batch:
+            fixed_size = batch["image0"].shape[-1], batch["image0"].shape[-2]
+        figures.append(
+            make_matching_figure(
+                path0,
+                path1,
+                points0,
+                points1,
+                sym_epi_errors_per_batch,
+                sym_epi_threshold,
+                text=text,
+                fixed_size=fixed_size,
+            )
+        )
+    return figures

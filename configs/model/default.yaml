@@ -1,0 +1,9 @@
+defaults:
+    - net: ???
+    - _self_
+
+_target_: src.models.MatchingModule
+metric_thresholds: ???
+rel_pose_ransac_config: ???
+test_task: null
+test_fp16_precision: ${fp16}

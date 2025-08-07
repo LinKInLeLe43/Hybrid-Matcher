@@ -1,0 +1,18 @@
+_target_: src.data.MatchingDataModule
+test_config:
+    list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
+    npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
+    dataset_builder:
+        _target_: src.data.datasets.ScanNetDataset
+        _partial_: true
+        data_root: "${paths.data_dir}/scannet/test"
+        mode: "${model.net.config.data_mode}"
+        intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
+        fp16: ${fp16}
+    sampler_builder:
+        _target_: torch.utils.data.DistributedSampler
+        _partial_: true
+        shuffle: false
+num_workers: 8
+seed: ${seed}
+parallel: true

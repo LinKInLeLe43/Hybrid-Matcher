@@ -1,5 +1,12 @@
-gradio==4.44.1
+hydra-colorlog
+hydra-core
+pytorch-lightning==1.9.5
+tensorboard
+
+h5py
+joblib
 kornia==0.7.0
 matplotlib
-omegaconf
 opencv-python-headless==4.10.0.84
+poselib
+rich

@@ -1,0 +1,20 @@
+# @package _global_
+
+defaults:
+    - override /model/net: casp
+    - override /data: scannet
+    - _self_
+
+model:
+    net:
+        config:
+            train_size: 640
+            test_size: 640
+    metric_thresholds:
+        sym_epi_prec: [5e-4, 1e-4]
+        rel_pose_auc: [5, 10, 20]
+    rel_pose_ransac_config:
+        estimator: "opencv"
+        num_repeats: 5
+        params:
+            method: "RANSAC"

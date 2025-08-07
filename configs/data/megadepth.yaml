@@ -1,0 +1,19 @@
+_target_: src.data.MatchingDataModule
+test_config:
+    list_path: "${paths.data_dir}/megadepth/index/trainvaltest_list/val_list.txt"
+    npz_root: "${paths.data_dir}/megadepth/index/scene_info_val_1500"
+    dataset_builder:
+        _target_: src.data.datasets.MegaDepthDataset
+        _partial_: true
+        data_root: "${paths.data_dir}/megadepth/test"
+        mode: "${model.net.config.data_mode}"
+        image_size: 1152
+        image_factor: 32
+        mask_factor: 8
+        fp16: ${fp16}
+    sampler_builder:
+        _target_: torch.utils.data.DistributedSampler
+        _partial_: true
+        shuffle: false
+num_workers: 8
+seed: ${seed}

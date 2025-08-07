@@ -1,0 +1,20 @@
+# @package _global_
+
+defaults:
+    - override /model/net: casp
+    - override /data: megadepth
+    - _self_
+
+model:
+    net:
+        config:
+            train_size: 832
+            test_size: ${data.test_config.dataset_builder.image_size}
+    metric_thresholds:
+        sym_epi_prec: [1e-4, 5e-4]
+        rel_pose_auc: [5, 10, 20]
+    rel_pose_ransac_config:
+        estimator: "opencv"
+        num_repeats: 5
+        params:
+            method: "RANSAC"
