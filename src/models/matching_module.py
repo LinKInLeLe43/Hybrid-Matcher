@@ -107,33 +107,33 @@ class MatchingModule(LightningModule):
         )
         coarse_gt_points1 = supervision.pop("gt_points1")
         result = self.net(batch, gt_indices=supervision["coarse_gt_idxes"])
-        supervision.update(
-            create_fine_supervision(
-                batch,
-                (s1, 1),
-                result["coarse_cls_indices"],
-                offset=0.5,
-                return_coor=True,
-            )
-        )
-        supervision["fine_gt_biases"] = compute_reg_gt_biases(
-            supervision.pop("gt_points0_to_1"),
-            supervision.pop("gt_points1"),
-            result["fine_cls_indices"],
-            s2,
-            self.net.fine_reg_matching.window_size,
-        )
-        supervision.update(
-            compute_dense_gt_biases(
-                batch,
-                result,
-                self.dense_matcher,
-                coarse_gt_points1,
-                result["coarse_cls_indices"],
-                s2,
-                self.net.fine_reg_matching.window_size,
-            )
-        )
+        # supervision.update(
+        #     create_fine_supervision(
+        #         batch,
+        #         (s1, 1),
+        #         result["coarse_cls_indices"],
+        #         offset=0.5,
+        #         return_coor=True,
+        #     )
+        # )
+        # supervision["fine_gt_biases"] = compute_reg_gt_biases(
+        #     supervision.pop("gt_points0_to_1"),
+        #     supervision.pop("gt_points1"),
+        #     result["fine_cls_indices"],
+        #     s2,
+        #     self.net.fine_reg_matching.window_size,
+        # )
+        # supervision.update(
+        #     compute_dense_gt_biases(
+        #         batch,
+        #         result,
+        #         self.dense_matcher,
+        #         coarse_gt_points1,
+        #         result["coarse_cls_indices"],
+        #         s2,
+        #         self.net.fine_reg_matching.window_size,
+        #     )
+        # )
 
         loss = self.loss(
             **result,
