@@ -1,0 +1,12 @@
+_target_: src.models.losses.CasPLoss
+coarse_cls_sparse: false
+coarse_cls_loss_pos_weight: 0.5
+coarse_cls_loss_neg_weight: 0.5
+extra_coarse_cls_sparse: false
+extra_coarse_cls_loss_pos_weight: 0.5
+extra_coarse_cls_loss_neg_weight: 0.5
+fine_cls_sparse: true
+fine_cls_loss_pos_weight: 0.25
+fine_cls_loss_neg_weight: 0.25
+fine_reg_loss_weight: 1.0
+dense_reg_loss_weight: 1.0

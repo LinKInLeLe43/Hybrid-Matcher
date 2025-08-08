@@ -1,8 +1,16 @@
 defaults:
     - net: ???
+    - loss: ???
     - _self_
 
 _target_: src.models.MatchingModule
+optimizer: ???
+scheduler: ???
+train_batch_size_per_gpu: ${data.train_batch_size_per_gpu}
+canonical_batch_size: ???
+canonical_learning_rate: ???
+canonical_warmup_step_count: ???
+warmup_ratio: ???
 metric_thresholds: ???
 rel_pose_ransac_config: ???
 test_task: null

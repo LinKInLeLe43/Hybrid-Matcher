@@ -100,6 +100,8 @@ class CasP(Module):
 
         points0 = torch.stack([i_indices % w0, i_indices // w0], dim=-1).float()
         points1 = torch.stack([j_indices % w1, j_indices // w1], dim=-1).float()
+        coarse_points0 = points0 * scale_coarse
+        coarse_points1 = points1 * scale_coarse
         points0 = points0 * scale_coarse + results["fine_cls_biases0"]
         points1 = (
             points1 * scale_coarse
@@ -107,12 +109,19 @@ class CasP(Module):
             + results["fine_reg_biases"] * scale_fine
         )
         if "scale0" in data and "scale1" in data:
+            coarse_points0 = coarse_points0 * data["scale0"][b_indices]
+            coarse_points1 = coarse_points1 * data["scale1"][b_indices]
             points0 = points0 * data["scale0"][b_indices]
             points1 = points1 * data["scale1"][b_indices]
+        results["coarse_points0"] = coarse_points0
+        results["coarse_points1"] = coarse_points1
         results["points0"], results["points1"] = points0, points1
 
     def forward(
-        self, data: Dict[str, Any], enable_crop: bool = True
+        self,
+        data: Dict[str, Any],
+        enable_crop: bool = True,
+        gt_indices: Optional[Tensor] = None,
     ) -> Dict[str, Any]:
         image0, image1 = data["image0"], data["image1"]
         mask0, mask1 = data.get("mask0"), data.get("mask1")
@@ -124,7 +133,11 @@ class CasP(Module):
 
         results.update(
             self.coarse_matching(
-                x0_list[-2:], x1_list[-2:], mask0=mask0, mask1=mask1
+                x0_list[-2:],
+                x1_list[-2:],
+                mask0=mask0,
+                mask1=mask1,
+                gt_indices=gt_indices,
             )
         )
         x0_8x, x1_8x = results.pop("x_8x")

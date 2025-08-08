@@ -1,0 +1,6 @@
+defaults:
+    - items/learning_rate_monitor
+    - items/model_checkpoint
+    - items/rich_model_summary
+    - items/rich_progress_bar
+    - _self_

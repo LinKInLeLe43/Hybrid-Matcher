@@ -77,3 +77,40 @@ def remove_border_one_side(
         out[:, :, -r:] = 0
     out = out.flatten(start_dim=-2)
     return out
+
+
+def remove_border_both_sides(
+    x: Tensor,
+    border_removal: int,
+    size0: Tuple[int, int],
+    size1: Tuple[int, int],
+    mask0: Optional[Tensor] = None,
+    mask1: Optional[Tensor] = None,
+) -> Tensor:
+    assert len(x.shape) == 3
+    r = border_removal
+    if r == 0:
+        return x
+
+    out = x.reshape(-1, *size0, *size1)
+    out[:, :r, :, :, :] = 0
+    out[:, :, :r, :, :] = 0
+    out[:, :, :, :r, :] = 0
+    out[:, :, :, :, :r] = 0
+    if mask0 is not None and mask1 is not None:
+        for b in range(len(x)):
+            b_h0 = mask0[b].sum(dim=-2).amax().int().item()
+            b_w0 = mask0[b].sum(dim=-1).amax().int().item()
+            b_h1 = mask1[b].sum(dim=-2).amax().int().item()
+            b_w1 = mask1[b].sum(dim=-1).amax().int().item()
+            out[b, b_h0 - r :, :, :, :] = 0
+            out[b, :, b_w0 - r :, :, :] = 0
+            out[b, :, :, b_h1 - r :, :] = 0
+            out[b, :, :, :, b_w1 - r :] = 0
+    else:
+        out[:, -r:, :, :, :] = 0
+        out[:, :, -r:, :, :] = 0
+        out[:, :, :, -r:, :] = 0
+        out[:, :, :, :, -r:] = 0
+    out = out.reshape_as(x)
+    return out

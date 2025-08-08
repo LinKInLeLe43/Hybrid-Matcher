@@ -1,4 +1,33 @@
 _target_: src.data.MatchingDataModule
+train_config:
+    list_path: "${paths.data_dir}/scannet/index/scene_data/train_list/scannet_all.txt"
+    npz_root: "${paths.data_dir}/scannet/index/scene_data/train"
+    dataset_builder:
+        _target_: src.data.datasets.ScanNetDataset
+        _partial_: true
+        data_root: "${paths.data_dir}/scannet/train"
+        mode: "${model.net.config.data_mode}"
+        intrinsic_path: "${paths.data_dir}/scannet/index/intrinsics.npz"
+        min_overlap_score: 0.4
+    sampler_builder:
+        _target_: src.data.samplers.RandomConcatSampler
+        _partial_: true
+        num_samples_per_scene: 200
+        seed: ${seed}
+train_batch_size_per_gpu: 1
+val_config:
+    list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
+    npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"
+    dataset_builder:
+        _target_: src.data.datasets.ScanNetDataset
+        _partial_: true
+        data_root: "${paths.data_dir}/scannet/test"
+        mode: "${model.net.config.data_mode}"
+        intrinsic_path: "${paths.data_dir}/scannet/index/scannet_test_1500/intrinsics.npz"
+    sampler_builder:
+        _target_: torch.utils.data.DistributedSampler
+        _partial_: true
+        shuffle: false
 test_config:
     list_path: "${paths.data_dir}/scannet/index/scannet_test_1500/scannet_test.txt"
     npz_root: "${paths.data_dir}/scannet/index/scannet_test_1500"

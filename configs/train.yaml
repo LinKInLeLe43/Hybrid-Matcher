@@ -1,0 +1,15 @@
+defaults:
+    - _self_
+    - model: default
+    - data: ???
+    - experiment: ???
+    - callbacks: default
+    - logger: tensorboard
+    - trainer: default
+    - paths: default
+    - hydra: default
+
+task_name: "train"
+ckpt_path: null
+seed: 66
+fp16: false

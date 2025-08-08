@@ -1,10 +1,12 @@
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
+import kornia as K
 import numpy as np
 import poselib
 import torch
+import torch.nn.functional as F
 from kornia.geometry import (
     cross_product_matrix,
     normalize_points_with_intrinsics,
@@ -12,6 +14,205 @@ from kornia.geometry import (
 )
 from numpy import ndarray
 from torch import Tensor
+
+
+def _warp_point(
+    points0: Tensor,
+    depth0: Tensor,
+    depth1: Tensor,
+    K0: Tensor,
+    K1: Tensor,
+    T0_to_1: Tensor,
+    use_bilinear: bool = False,
+    return_mask: bool = False,
+    consistent_depth_ratio: float = 0.2,
+) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+    n, h, w = depth0.shape
+
+    image_2d_points0 = points0
+    image_2d_norm_points0 = (
+        2 * (image_2d_points0 + 0.5) / points0.new_tensor([w, h]) - 1
+    )
+    image_depth0 = F.grid_sample(
+        depth0[:, None], image_2d_norm_points0[:, :, None], mode="nearest"
+    )[:, 0]
+    if use_bilinear:
+        _depth0 = torch.where(depth0 > 0.0, depth0, float("nan"))
+        _image_depth0 = F.grid_sample(
+            _depth0[:, None], image_2d_norm_points0[:, :, None], mode="bilinear"
+        )[:, 0]
+        image_depth0 = torch.where(
+            ~_image_depth0.isnan(), _image_depth0, image_depth0
+        )
+    image_3d_points0 = torch.cat(
+        [image_depth0 * image_2d_points0, image_depth0], dim=2
+    )
+
+    camera_point0 = K0.inverse() @ image_3d_points0.transpose(1, 2)
+    camera_point1 = T0_to_1[:, :3, :3] @ camera_point0 + T0_to_1[:, :3, 3:]
+
+    image_3d_points1 = (K1 @ camera_point1).transpose(1, 2)
+    image_2d_points1 = image_3d_points1[:, :, :2] / (
+        image_3d_points1[:, :, 2:] + 1e-4
+    )
+    points1 = image_2d_points1
+
+    if return_mask:
+        image_2d_norm_points1 = (
+            2 * (image_2d_points1 + 0.5) / points0.new_tensor([w, h]) - 1
+        )
+        image_depth1 = F.grid_sample(
+            depth1[:, None], image_2d_norm_points1[:, :, None], mode="nearest"
+        )[:, 0]
+        if use_bilinear:
+            _depth1 = torch.where(depth1 > 0.0, depth1, float("nan"))
+            _image_depth1 = F.grid_sample(
+                _depth1[:, None],
+                image_2d_norm_points1[:, :, None],
+                mode="bilinear",
+            )[:, 0]
+            image_depth1 = torch.where(
+                ~_image_depth1.isnan(), _image_depth1, image_depth1
+            )
+
+        depth0_mask = image_depth0[:, :, 0] != 0.0
+        depth1_mask = image_depth1[:, :, 0] != 0.0
+        consistent_mask = (
+            (image_depth1[:, :, 0] - camera_point1[:, 2, :])
+            / image_depth1[:, :, 0]
+        ).abs() < consistent_depth_ratio
+        mask = depth0_mask & depth1_mask & consistent_mask
+        return points1, mask
+    else:
+        return points1
+
+
+def _compute_end_point_errors(
+    b_idxes: Tensor,
+    fine_points0: Tensor,
+    fine_points1: Tensor,
+    depth0: Tensor,
+    depth1: Tensor,
+    K0: Tensor,
+    K1: Tensor,
+    T0_to_1: Tensor,
+    coarse_scale: int,
+    scale1: Union[int, Tensor],
+    coarse_w1: int,
+    j_idxes: Tensor,
+    inliers_per_batch: ndarray,
+    consistent_depth_ratio: float = 0.2,
+    coarse_points0: Optional[Tensor] = None,
+) -> Tuple[
+    ndarray, ndarray, ndarray, ndarray, ndarray, ndarray, ndarray, ndarray
+]:
+    n, h, w = depth0.shape
+    device = fine_points0.device
+
+    end_point_errors_per_batch = np.empty(n, dtype=object)
+    inlier_end_point_errors_per_batch = np.empty(n, dtype=object)
+    true_coarse_counts = []
+    inlier_true_coarse_counts = []
+    coarse_precisions = []
+    inlier_coarse_precisions = []
+    coarse_3x3_precisions = []
+    inlier_coarse_3x3_precisions = []
+    for b in range(n):
+        b_mask = b_idxes == b
+        b_scale1 = scale1 if isinstance(scale1, int) else scale1[b]
+
+        gt_fine_points1, mask = _warp_point(
+            fine_points0[b_mask][None],
+            depth0[[b]],
+            depth1[[b]],
+            K0[[b]],
+            K1[[b]],
+            T0_to_1[[b]],
+            return_mask=True,
+            consistent_depth_ratio=consistent_depth_ratio,
+        )
+        gt_fine_points1, mask = gt_fine_points1[0], mask[0]
+
+        gt_coarse_points1 = gt_fine_points1
+        if coarse_points0 is not None:
+            gt_coarse_points1, mask = _warp_point(
+                coarse_points0[b_mask][None],
+                depth0[[b]],
+                depth1[[b]],
+                K0[[b]],
+                K1[[b]],
+                T0_to_1[[b]],
+                return_mask=True,
+                consistent_depth_ratio=consistent_depth_ratio,
+            )
+            gt_coarse_points1, mask = gt_coarse_points1[0], mask[0]
+
+        end_point_errors = (
+            (fine_points1[b_mask][mask] - gt_fine_points1[mask]) / b_scale1
+        ).norm(dim=1)
+        end_point_errors_per_batch[b] = end_point_errors.cpu().numpy()
+
+        gt_coarse_grid1 = gt_coarse_points1[mask] / coarse_scale / b_scale1
+        gt_coarse_3x3_grid1 = gt_coarse_grid1[
+            :, None
+        ].round().long() + K.create_meshgrid(3, 3, device=device).reshape(-1, 2)
+        gt_j_3x3_idxes = (
+            coarse_w1 * gt_coarse_3x3_grid1[:, :, 1]
+            + gt_coarse_3x3_grid1[:, :, 0]
+        )
+        coarse_3x3_results = (
+            j_idxes[b_mask][mask, None] == gt_j_3x3_idxes
+        ).float()
+        true_coarse_count = 0.0
+        coarse_precision = 0.0
+        coarse_3x3_precision = 0.0
+        if len(coarse_3x3_results) != 0:
+            true_coarse_count = coarse_3x3_results[:, 3 * 3 // 2].sum().item()
+            coarse_precision = coarse_3x3_results[:, 3 * 3 // 2].mean().item()
+            coarse_3x3_precision = coarse_3x3_results.sum(dim=1).mean().item()
+        true_coarse_counts.append(true_coarse_count)
+        coarse_precisions.append(coarse_precision)
+        coarse_3x3_precisions.append(coarse_3x3_precision)
+
+        inlier_end_point_errors = end_point_errors.new_tensor([])
+        inlier_true_coarse_count = 0.0
+        inlier_coarse_precision = 0.0
+        inlier_coarse_3x3_precision = 0.0
+        if len(inliers_per_batch[b]) != 0:
+            inlier = torch.from_numpy(inliers_per_batch[b]).to(device)[mask]
+            if inlier.any():
+                inlier_end_point_errors = end_point_errors[inlier]
+                inlier_true_coarse_count = (
+                    coarse_3x3_results[inlier, 3 * 3 // 2].sum().item()
+                )
+                inlier_coarse_precision = (
+                    coarse_3x3_results[inlier, 3 * 3 // 2].mean().item()
+                )
+                inlier_coarse_3x3_precision = (
+                    coarse_3x3_results[inlier].sum(dim=1).mean().item()
+                )
+        inlier_end_point_errors_per_batch[b] = (
+            inlier_end_point_errors.cpu().numpy()
+        )
+        inlier_true_coarse_counts.append(inlier_true_coarse_count)
+        inlier_coarse_precisions.append(inlier_coarse_precision)
+        inlier_coarse_3x3_precisions.append(inlier_coarse_3x3_precision)
+    true_coarse_counts = np.array(true_coarse_counts)
+    inlier_true_coarse_counts = np.array(inlier_true_coarse_counts)
+    coarse_precisions = np.array(coarse_precisions)
+    inlier_coarse_precisions = np.array(inlier_coarse_precisions)
+    coarse_3x3_precisions = np.array(coarse_3x3_precisions)
+    inlier_coarse_3x3_precisions = np.array(inlier_coarse_3x3_precisions)
+    return (
+        end_point_errors_per_batch,
+        inlier_end_point_errors_per_batch,
+        true_coarse_counts,
+        inlier_true_coarse_counts,
+        coarse_precisions,
+        inlier_coarse_precisions,
+        coarse_3x3_precisions,
+        inlier_coarse_3x3_precisions,
+    )
 
 
 def compute_sym_epi_errors(
@@ -177,6 +378,8 @@ def compute_error(
     batch: Dict[str, Any],
     result: Dict[str, Any],
     rel_pose_ransac_config: Dict[str, Any],
+    advanced: bool = False,
+    coarse_scale: Optional[int] = None,
 ) -> Dict[str, Any]:
     identifiers = [
         "#".join(paths) for paths in zip(batch["name0"], batch["name1"])
@@ -206,6 +409,36 @@ def compute_error(
         "rel_t_errors": rel_t_errors,
         "inliers_per_batch": inliers_per_batch,
     }
+    if advanced:
+        if coarse_scale is None:
+            raise ValueError("")
+        scale1 = batch["scale1"][:, None] if "scale1" in batch else 1
+        coarse_w1 = batch["image1"].shape[3] // coarse_scale
+        (
+            error["end_point_errors_per_batch"],
+            error["inlier_end_point_errors_per_batch"],
+            error["true_coarse_counts"],
+            error["inlier_true_coarse_counts"],
+            error["coarse_precisions"],
+            error["inlier_coarse_precisions"],
+            error["coarse_3x3_precisions"],
+            error["inlier_coarse_3x3_precisions"],
+        ) = _compute_end_point_errors(
+            result["coarse_cls_indices"][0],
+            result["points0"],
+            result["points1"],
+            batch["depth0"],
+            batch["depth1"],
+            batch["K0"],
+            batch["K1"],
+            batch["T0_to_1"],
+            coarse_scale,
+            scale1,
+            coarse_w1,
+            result["coarse_cls_indices"][2],
+            inliers_per_batch,
+            coarse_points0=result.get("coarse_points0"),
+        )
     return error
 
 
@@ -239,6 +472,7 @@ def _calc_auc(errors: ndarray, thresholds: List[float]) -> List[float]:
 def compute_metric(
     error: Dict[str, Any],
     metric_thresholds: Dict[str, Any],
+    advanced: bool = False,
 ) -> Dict[str, Any]:
     unique_indices = np.unique(error["identifiers"], return_index=True)[1]
     metric = {}
@@ -257,4 +491,35 @@ def compute_metric(
     values = _calc_auc(errors, thresholds)
     for threshold, value in zip(thresholds, values):
         metric[f"rel_pose_auc@{threshold}"] = value
+
+    if advanced:
+        errors = error["end_point_errors_per_batch"][unique_indices]
+        thresholds = metric_thresholds["end_point_prec"]
+        values = _calc_precision(errors, thresholds)
+        for threshold, value in zip(thresholds, values):
+            metric[f"end_point_prec@{threshold}"] = value
+
+        errors = error["inlier_end_point_errors_per_batch"][unique_indices]
+        values = _calc_precision(errors, thresholds)
+        for threshold, value in zip(thresholds, values):
+            metric[f"end_point_inlier_prec@{threshold}"] = value
+
+        metric["coarse_prec@1"] = error["coarse_precisions"][
+            unique_indices
+        ].mean()
+        metric["coarse_inlier_prec@1"] = error["inlier_coarse_precisions"][
+            unique_indices
+        ].mean()
+        metric["coarse_prec@9"] = error["coarse_3x3_precisions"][
+            unique_indices
+        ].mean()
+        metric["coarse_inlier_prec@9"] = error["inlier_coarse_3x3_precisions"][
+            unique_indices
+        ].mean()
+        metric["num_true_coarse"] = error["true_coarse_counts"][
+            unique_indices
+        ].mean()
+        metric["num_true_coarse_inlier"] = error["inlier_true_coarse_counts"][
+            unique_indices
+        ].mean()
     return metric
