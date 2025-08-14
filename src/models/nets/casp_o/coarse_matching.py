@@ -150,7 +150,7 @@ class CoarseMatching(Module):
 
         if self.training:
             for i in reversed(range(len(similarity_list))):
-                similarity = similarity_list[i]
+                similarity = torch.stack(similarity_list[i])
                 if mask0 is not None and mask1 is not None:
                     if i != len(similarity_list) - 1:
                         mask0, mask1 = mask0.float(), mask1.float()
@@ -161,7 +161,8 @@ class CoarseMatching(Module):
                 heatmap0_to_1 = similarity.softmax(dim=-1)
                 heatmap1_to_0 = similarity.softmax(dim=-2)
                 similarity_list[i] = heatmap0_to_1 * heatmap1_to_0
-            results["coarse_cls_heatmap"] = heatmap = similarity_list[-1]
+            heatmap = similarity_list[-1][-1]
+            results["coarse_cls_heatmap"] = similarity_list[-1]
             results["extra_coarse_cls_heatmap"] = similarity_list[-2]
         else:
             attended0_to_1 = gather_attended(x1, indices0_to_1)

@@ -19,9 +19,10 @@ config:
             - ${...dim_list.2}
             - ${...dim_list.1}
         num_heads_list: [8, 4]
-        num_layers_list: [4, 2]
         stride_list: [2]
+        num_layers_list: [2, 1]
         topk_list: [8]
+        num_iters: 2
         global_patch_size: 2
         factor: 16
         train_size: ${..train_size}

@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch import Tensor
 from torch.nn import Module
 
+from ..encoders.repvgg import create_RepVGG_A0
 from ..positional_encoding import SinusoidalPositionalEncoding
 from ..submodules import PyramidFuser
 from ..utils import crop_to_mask, pad_to_mask, patchify, unpatchify
@@ -145,6 +146,7 @@ class Decoder(Module):
         stride_list: List[int],
         num_layers_list: List[int],
         topk_list: List[int],
+        num_iters: int,
         global_patch_size: int,
         factor: int,
         train_size: int,
@@ -155,7 +157,7 @@ class Decoder(Module):
         self.stride_list = stride_list
         factor = factor * global_patch_size
 
-        self.global_decoder = GlobalDecoder(
+        global_decoder = GlobalDecoder(
             dim_list[0],
             num_heads_list[0],
             num_layers_list[0],
@@ -165,9 +167,9 @@ class Decoder(Module):
             test_size=test_size,
             **kwargs,
         )
-        self.region_selective_decoders = nn.ModuleList()
+        region_selective_decoders = nn.ModuleList()
         for i in range(len(dim_list) - 1):
-            self.region_selective_decoders.append(
+            region_selective_decoders.append(
                 RegionSelectiveDecoder(
                     dim_list[i : i + 2],
                     num_heads_list[i + 1],
@@ -177,6 +179,26 @@ class Decoder(Module):
                     **kwargs,
                 )
             )
+        conv_maaker = create_RepVGG_A0()
+        conv_net = nn.Sequential()
+        for i in reversed(range(len(dim_list) - 1)):
+            conv_maaker.in_planes = dim_list[i + 1]
+            conv_net.append(
+                nn.Sequential(
+                    *conv_maaker._make_stage(dim_list[i], 4, stride_list[i])
+                )
+            )
+        decoder = nn.ModuleDict(
+            {
+                "global_decoder": global_decoder,
+                "region_selective_decoders": region_selective_decoders,
+                "conv_net": conv_net,
+            }
+        )
+        self.decoders = nn.ModuleList(
+            [deepcopy(decoder) for _ in range(num_iters)]
+        )
+        self.decoders[-1].pop("conv_net")
 
         self.init_weights()
 
@@ -200,37 +222,44 @@ class Decoder(Module):
             mask0_global = F.max_pool2d(mask0_global, stride_global).bool()
             mask1_global = F.max_pool2d(mask1_global, stride_global).bool()
 
-        x0, x1 = self.global_decoder(
-            x0_list[0],
-            x1_list[0],
-            enable_crop=enable_crop,
-            mask0=mask0_global,
-            mask1=mask1_global,
-        )
+        n = len(self.stride_list)
+        similarity_list = [[] for _ in range(n + 1)]
+        for decoder in self.decoders:
+            is_last = "conv_net" not in decoder
 
-        n = len(self.region_selective_decoders)
-        similarity_list = []
-        for i in range(n):
-            x0, x1, indices0_to_1, indices1_to_0, similarity = (
-                self.region_selective_decoders[i](
+            x0, x1 = decoder["global_decoder"](
+                x0_list[0],
+                x1_list[0],
+                enable_crop=enable_crop,
+                mask0=mask0_global,
+                mask1=mask1_global,
+            )
+
+            for i in range(n):
+                x0, x1, indices0_to_1, indices1_to_0, similarity = decoder[
+                    "region_selective_decoders"
+                ][i](
                     [x0, x0_list[i + 1]],
                     [x1, x1_list[i + 1]],
-                    enable_unpatchify=i != n - 1,
+                    enable_unpatchify=(not is_last)
+                    or (i != n - 1)
+                    or self.training,
                 )
-            )
-            similarity_list.append(similarity)
+                similarity_list[i].append(similarity)
 
-        grid_size0 = tuple(x0_list[-2].shape[-2:])
-        grid_size1 = tuple(x1_list[-2].shape[-2:])
-        if self.training:
-            x0 = unpatchify(x0, grid_size0, self.stride_list[-1])
-            x1 = unpatchify(x1, grid_size1, self.stride_list[-1])
-            scale = x0.shape[1] ** -0.5
-            x0_, x1_ = x0.flatten(start_dim=2), x1.flatten(start_dim=2)
-            similarity = x0_.transpose(-2, -1) @ x1_ * scale
-        else:
-            similarity = None
-        similarity_list.append(similarity)
+            grid_size0 = tuple(x0_list[-2].shape[-2:])
+            grid_size1 = tuple(x1_list[-2].shape[-2:])
+            if self.training:
+                scale = x0.shape[1] ** -0.5
+                x0_, x1_ = x0.flatten(start_dim=2), x1.flatten(start_dim=2)
+                similarity = x0_.transpose(-2, -1) @ x1_ * scale
+            else:
+                similarity = None
+            similarity_list[-1].append(similarity)
+
+            if not is_last:
+                x0_list[0] = x0_list[0] + decoder["conv_net"](x0)
+                x1_list[0] = x1_list[0] + decoder["conv_net"](x1)
 
         results = {
             "x0": x0,
