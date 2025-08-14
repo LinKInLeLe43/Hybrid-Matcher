@@ -149,30 +149,20 @@ class CoarseMatching(Module):
         results = {}
 
         if self.training:
-            x0 = unpatchify(x0, grid_size0, self.stride)
-            x1 = unpatchify(x1, grid_size1, self.stride)
-            x0_, x1_ = x0.flatten(start_dim=-2), x1.flatten(start_dim=-2)
-            similarity = x0_.transpose(-2, -1) @ x1_ * scale
-            if mask0 is not None and mask1 is not None:
-                mask = mask0.reshape(n, -1, 1) & mask1.reshape(n, 1, -1)
-                similarity.masked_fill_(~mask, -inf)
-            heatmap0_to_1 = similarity.softmax(dim=-1)
-            heatmap1_to_0 = similarity.softmax(dim=-2)
-            heatmap = heatmap0_to_1 * heatmap1_to_0
-            results["coarse_cls_heatmap"] = heatmap
-
             for i in reversed(range(len(similarity_list))):
                 similarity = similarity_list[i]
                 if mask0 is not None and mask1 is not None:
-                    mask0, mask1 = mask0.float(), mask1.float()
-                    mask0 = F.max_pool2d(mask0, self.stride_list[i]).bool()
-                    mask1 = F.max_pool2d(mask1, self.stride_list[i]).bool()
+                    if i != len(similarity_list) - 1:
+                        mask0, mask1 = mask0.float(), mask1.float()
+                        mask0 = F.max_pool2d(mask0, self.stride_list[i]).bool()
+                        mask1 = F.max_pool2d(mask1, self.stride_list[i]).bool()
                     mask = mask0.reshape(n, -1, 1) & mask1.reshape(n, 1, -1)
                     similarity.masked_fill_(~mask, -inf)
-                extra_heatmap0_to_1 = similarity.softmax(dim=-1)
-                extra_heatmap1_to_0 = similarity.softmax(dim=-2)
-                extra_heatmap = extra_heatmap0_to_1 * extra_heatmap1_to_0
-                results["extra_coarse_cls_heatmap"] = extra_heatmap
+                heatmap0_to_1 = similarity.softmax(dim=-1)
+                heatmap1_to_0 = similarity.softmax(dim=-2)
+                similarity_list[i] = heatmap0_to_1 * heatmap1_to_0
+            results["coarse_cls_heatmap"] = heatmap = similarity_list[-1]
+            results["extra_coarse_cls_heatmap"] = similarity_list[-2]
         else:
             attended0_to_1 = gather_attended(x1, indices0_to_1)
             attended1_to_0 = gather_attended(x0, indices1_to_0)

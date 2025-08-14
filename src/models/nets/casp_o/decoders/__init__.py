@@ -99,7 +99,6 @@ class RegionSelectiveDecoder(Module):
         assert len(dim_list) == 2
         self.stride = stride
         self.topk = topk
-        self.scale = dim_list[0] ** -0.5
 
         self.fuser = PyramidFuser(dim_list)
         layer = RegionSelectiveTransformerLayer(
@@ -118,10 +117,11 @@ class RegionSelectiveDecoder(Module):
         assert len(x0_list) == len(x1_list) == 2
         grid_size0 = tuple(x0_list[0].shape[-2:])
         grid_size1 = tuple(x1_list[0].shape[-2:])
+        scale = x0_list[0].shape[1] ** -0.5
 
         x0_prior = x0_list[0].flatten(start_dim=2)
         x1_prior = x1_list[0].flatten(start_dim=2)
-        similarity = x0_prior.transpose(-2, -1) @ x1_prior * self.scale
+        similarity = x0_prior.transpose(-2, -1) @ x1_prior * scale
         _, indices0_to_1 = similarity.topk(self.topk, dim=-1)
         _, indices1_to_0 = similarity.transpose(-2, -1).topk(self.topk, dim=-1)
         if not self.training:
@@ -152,7 +152,7 @@ class Decoder(Module):
         **kwargs,
     ) -> None:
         super().__init__()
-        self.global_patch_size = global_patch_size
+        self.stride_list = stride_list
         factor = factor * global_patch_size
 
         self.global_decoder = GlobalDecoder(
@@ -195,7 +195,7 @@ class Decoder(Module):
     ) -> Dict[str, Any]:
         mask0_global = mask1_global = None
         if mask0 is not None and mask1 is not None:
-            stride_global = 2 ** (len(x0_list) - 1)
+            stride_global = torch.tensor(self.stride_list).prod().int().item()
             mask0_global, mask1_global = mask0.float(), mask1.float()
             mask0_global = F.max_pool2d(mask0_global, stride_global).bool()
             mask1_global = F.max_pool2d(mask1_global, stride_global).bool()
@@ -222,6 +222,16 @@ class Decoder(Module):
 
         grid_size0 = tuple(x0_list[-2].shape[-2:])
         grid_size1 = tuple(x1_list[-2].shape[-2:])
+        if self.training:
+            x0 = unpatchify(x0, grid_size0, self.stride_list[-1])
+            x1 = unpatchify(x1, grid_size1, self.stride_list[-1])
+            scale = x0.shape[1] ** -0.5
+            x0_, x1_ = x0.flatten(start_dim=2), x1.flatten(start_dim=2)
+            similarity = x0_.transpose(-2, -1) @ x1_ * scale
+        else:
+            similarity = None
+        similarity_list.append(similarity)
+
         results = {
             "x0": x0,
             "x1": x1,
