@@ -78,7 +78,7 @@ class SelfBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        stride: int = 1,
+        patch_size: int = 1,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
@@ -87,11 +87,11 @@ class SelfBlock(Module):
         assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.stride = stride
+        self.patch_size = patch_size
 
-        if stride > 1:
+        if patch_size > 1:
             self.patch_embed = nn.Conv2d(
-                dim, dim, stride, stride=stride, groups=dim, bias=bias
+                dim, dim, patch_size, stride=patch_size, groups=dim, bias=bias
             )
             # self.patch_embed1 = nn.MaxPool2d(stride, stride=stride)
         self.qkv_proj = nn.Linear(dim, dim * 3, bias=bias)
@@ -117,10 +117,10 @@ class SelfBlock(Module):
         mask = mask[:, None] if mask is not None else None
 
         x_ = x
-        if self.stride > 1:
+        if self.patch_size > 1:
             x_ = x.permute(0, 3, 1, 2)
             x_ = self.patch_embed(x_).permute(0, 2, 3, 1)
-            h, w = h // self.stride, w // self.stride
+            h, w = h // self.patch_size, w // self.patch_size
 
         q, k, v = (
             self.qkv_proj(x_)
@@ -142,11 +142,11 @@ class SelfBlock(Module):
             .reshape(n, h, w, c)
         )
         message = self.norm1(self.out_proj(message))
-        if self.stride > 1:
+        if self.patch_size > 1:
             message = message.permute(0, 3, 1, 2).contiguous()
             message = F.interpolate(
                 message,
-                scale_factor=self.stride,
+                scale_factor=self.patch_size,
                 mode="bilinear",
                 align_corners=False,
             ).permute(0, 2, 3, 1)
@@ -159,7 +159,7 @@ class CrossBlock(Module):
         self,
         dim: int,
         num_heads: int,
-        stride: int = 1,
+        patch_size: int = 1,
         enable_sdpa: bool = False,
         enable_flash: bool = False,
         bias: bool = False,
@@ -168,11 +168,11 @@ class CrossBlock(Module):
         assert dim % num_heads == 0, "`dim` should be divisible by `num_heads`."
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.stride = stride
+        self.patch_size = patch_size
 
-        if stride > 1:
+        if patch_size > 1:
             self.patch_embed = nn.Conv2d(
-                dim, dim, stride, stride=stride, groups=dim, bias=bias
+                dim, dim, patch_size, stride=patch_size, groups=dim, bias=bias
             )
             # self.patch_embed1 = nn.MaxPool2d(stride, stride=stride)
         self.qkv_proj = nn.Linear(dim, dim * 3, bias=bias)
@@ -197,11 +197,11 @@ class CrossBlock(Module):
         mask10 = mask01.transpose(-2, -1) if mask is not None else None
 
         x0_, x1_ = x0, x1
-        if self.stride > 1:
+        if self.patch_size > 1:
             x0_, x1_ = x0_.permute(0, 3, 1, 2), x1_.permute(0, 3, 1, 2)
             x0_ = self.patch_embed(x0_).permute(0, 2, 3, 1)
             x1_ = self.patch_embed(x1_).permute(0, 2, 3, 1)
-            h0, w0, h1, w1 = [t // self.stride for t in [h0, w0, h1, w1]]
+            h0, w0, h1, w1 = [t // self.patch_size for t in [h0, w0, h1, w1]]
 
         q0, k0, v0 = (
             self.qkv_proj(x0_)
@@ -227,18 +227,18 @@ class CrossBlock(Module):
         )
         message0 = self.norm1(self.out_proj(message0))
         message1 = self.norm1(self.out_proj(message1))
-        if self.stride > 1:
+        if self.patch_size > 1:
             message0 = message0.permute(0, 3, 1, 2).contiguous()
             message1 = message1.permute(0, 3, 1, 2).contiguous()
             message0 = F.interpolate(
                 message0,
-                scale_factor=self.stride,
+                scale_factor=self.patch_size,
                 mode="bilinear",
                 align_corners=False,
             ).permute(0, 2, 3, 1)
             message1 = F.interpolate(
                 message1,
-                scale_factor=self.stride,
+                scale_factor=self.patch_size,
                 mode="bilinear",
                 align_corners=False,
             ).permute(0, 2, 3, 1)

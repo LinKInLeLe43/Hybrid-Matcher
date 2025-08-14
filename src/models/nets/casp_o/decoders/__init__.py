@@ -20,21 +20,23 @@ class GlobalDecoder(Module):
         dim: int,
         num_heads: int,
         num_layers: int,
-        stride: int,
+        patch_size: int,
         factor: int,
         train_size: int,
         test_size: Optional[int] = None,
         **kwargs,
     ) -> None:
         super().__init__()
-        self.stride = stride
+        self.patch_size = patch_size
 
-        layer = TransformerLayer(dim, num_heads, stride=stride, **kwargs)
+        layer = TransformerLayer(
+            dim, num_heads, patch_size=patch_size, **kwargs
+        )
         self.layers = nn.ModuleList(
             [deepcopy(layer) for _ in range(num_layers)]
         )
         encoding = SinusoidalPositionalEncoding(
-            dim, factor, train_size, test_size=test_size
+            dim, factor, patch_size, train_size, test_size=test_size
         )
         self.encodings = nn.ModuleList([encoding for _ in range(num_layers)])
 
@@ -53,7 +55,9 @@ class GlobalDecoder(Module):
             for b in range(n):
                 b_x0, b_x1 = x0_list[b], x1_list[b]
                 for layer, encoding in zip(self.layers, self.encodings):
-                    encoding0, encoding1 = encoding(b_x0), encoding(b_x1)
+                    b_size0 = tuple(b_x0.shape[1:3])
+                    b_size1 = tuple(b_x1.shape[1:3])
+                    encoding0, encoding1 = encoding(b_size0), encoding(b_size1)
                     b_x0, b_x1 = layer(
                         b_x0, b_x1, encoding0=encoding0, encoding1=encoding1
                     )
@@ -63,15 +67,16 @@ class GlobalDecoder(Module):
         else:
             mask00 = mask11 = mask01 = None
             if mask0 is not None and mask1 is not None:
-                if self.stride > 1:
+                if self.patch_size > 1:
                     mask0, mask1 = mask0.float(), mask1.float()
-                    mask0 = F.max_pool2d(mask0, self.stride).bool()
-                    mask1 = F.max_pool2d(mask1, self.stride).bool()
+                    mask0 = F.max_pool2d(mask0, self.patch_size).bool()
+                    mask1 = F.max_pool2d(mask1, self.patch_size).bool()
                 mask00 = mask0.reshape(n, -1, 1) & mask0.reshape(n, 1, -1)
                 mask11 = mask1.reshape(n, -1, 1) & mask1.reshape(n, 1, -1)
                 mask01 = mask0.reshape(n, -1, 1) & mask1.reshape(n, 1, -1)
             for layer, encoding in zip(self.layers, self.encodings):
-                encoding0, encoding1 = encoding(x0), encoding(x1)
+                size0, size1 = tuple(x0.shape[1:3]), tuple(x1.shape[1:3])
+                encoding0, encoding1 = encoding(size0), encoding(size1)
                 x0, x1 = layer(
                     x0,
                     x1,
@@ -148,21 +153,19 @@ class Decoder(Module):
         topk_list: List[int],
         num_iters: int,
         global_patch_size: int,
-        factor: int,
         train_size: int,
         test_size: Optional[int] = None,
         **kwargs,
     ) -> None:
         super().__init__()
         self.stride_list = stride_list
-        factor = factor * global_patch_size
 
         global_decoder = GlobalDecoder(
             dim_list[0],
             num_heads_list[0],
             num_layers_list[0],
             global_patch_size,
-            factor,
+            16,
             train_size,
             test_size=test_size,
             **kwargs,
