@@ -218,15 +218,18 @@ def create_fine_supervision(
 @torch.no_grad()
 def compute_reg_gt_biases(
     points0_to_1: torch.Tensor,
+    points1_to_0: torch.Tensor,
+    points0: torch.Tensor,
     points1: torch.Tensor,
-    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    fine_scale: int,
-    window_size: int
+    idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
 ) -> torch.Tensor:
     b_idxes, i_idxes, j_idxes = idxes
 
-    gt_biases = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
-    gt_biases /= fine_scale * (window_size // 2)
+    gt_biases1 = points0_to_1[b_idxes, i_idxes] - points1[b_idxes, j_idxes]
+    gt_biases1 /= 8.0
+    gt_biases0 = points1_to_0[b_idxes, j_idxes] - points0[b_idxes, i_idxes]
+    gt_biases0 /= 8.0
+    gt_biases = torch.cat([gt_biases1, gt_biases0])
     return gt_biases
 
 

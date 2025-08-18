@@ -7,6 +7,7 @@ from torch.nn import Module
 from .coarse_matching import CoarseMatching
 from .decoders import Decoder
 from .encoders import Encoder
+from .fine_matching import FineMatching
 
 
 class CasP_O(Module):
@@ -19,6 +20,7 @@ class CasP_O(Module):
         self.encoder = Encoder(**config["encoder"])
         self.decoder = Decoder(**config["decoder"])
         self.coarse_matching = CoarseMatching(**config["coarse_matching"])
+        self.fine_matching = FineMatching()
 
     @torch.no_grad()
     def update_points(
@@ -34,20 +36,16 @@ class CasP_O(Module):
         points1 = torch.stack([j_indices % w1, j_indices // w1], dim=-1).float()
         coarse_points0 = points0 * scale_coarse
         coarse_points1 = points1 * scale_coarse
-        # points0 = points0 * scale_coarse + results["fine_cls_biases0"]
-        # points1 = (
-        #     points1 * scale_coarse
-        #     + results["fine_cls_biases1"]
-        #     + results["fine_reg_biases"] * scale_fine
-        # )
+        fine_points0 = coarse_points0 + results["fine_reg_biases0"]
+        fine_points1 = coarse_points1 + results["fine_reg_biases1"]
         if "scale0" in data and "scale1" in data:
             coarse_points0 = coarse_points0 * data["scale0"][b_indices]
             coarse_points1 = coarse_points1 * data["scale1"][b_indices]
-            # points0 = points0 * data["scale0"][b_indices]
-            # points1 = points1 * data["scale1"][b_indices]
+            fine_points0 = fine_points0 * data["scale0"][b_indices]
+            fine_points1 = fine_points1 * data["scale1"][b_indices]
         results["coarse_points0"] = coarse_points0
         results["coarse_points1"] = coarse_points1
-        results["points0"], results["points1"] = coarse_points0, coarse_points1
+        results["points0"], results["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -71,6 +69,16 @@ class CasP_O(Module):
             **results, mask0=mask0, mask1=mask1, gt_indices=gt_indices
         )
         x0_8x, x1_8x = results.pop("x_8x")
+
+        results.update(
+            self.fine_matching(
+                x0_list[-2],
+                x1_list[-2],
+                x0_8x,
+                x1_8x,
+                results["coarse_cls_indices"],
+            )
+        )
 
         self.update_points(data, results)
         return results
