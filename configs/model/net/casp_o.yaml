@@ -10,7 +10,7 @@ coarse_matching:
     _target_: src.models.nets.casp_o.CoarseMatching
     decoder:
         _target_: src.models.nets.casp_o.decoders.Decoder
-        stride: 2
+        patch_size: 2
         topk: 8
         dims:
             - 256

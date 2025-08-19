@@ -9,12 +9,10 @@ from torch.nn import Module
 
 # from src.models.nets.casp.homo.utils.dense_match import DenseMatch
 from src.models.utils import (
-    compute_dense_gt_biases,
     compute_error,
     compute_metric,
     compute_reg_gt_biases,
     create_coarse_supervision,
-    create_fine_supervision,
     make_evaluation_figures,
 )
 
@@ -106,11 +104,7 @@ class MatchingModule(LightningModule):
             batch, s1, extra_scale=s0, return_coor=True
         )
         # coarse_gt_points1 = supervision.pop("gt_points1")
-        result = self.net(
-            batch,
-            gt_idxes=supervision["coarse_gt_idxes"],
-            extra_gt_idxes=supervision.get("extra_coarse_gt_idxes"),
-        )
+        result = self.net(batch, gt_indices=supervision["coarse_gt_idxes"])
         # supervision.update(
         #     create_fine_supervision(
         #         batch,
@@ -125,7 +119,8 @@ class MatchingModule(LightningModule):
             supervision.pop("gt_points1_to_0"),
             supervision.pop("gt_points0"),
             supervision.pop("gt_points1"),
-            result["coarse_cls_indices"])
+            result["coarse_cls_indices"],
+        )
         # supervision.update(
         #     compute_dense_gt_biases(
         #         batch,

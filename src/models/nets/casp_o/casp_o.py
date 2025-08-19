@@ -129,8 +129,7 @@ class CasP_O(Module):
     def forward(
         self,
         data: Dict[str, Any],
-        gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
-        extra_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
+        gt_indices: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
     ) -> Dict[str, Any]:
         mask0_8x, mask1_8x = data.get("mask0_8x"), data.get("mask1_8x")
         mask0_16x, mask1_16x = data.get("mask0_16x"), data.get("mask1_16x")
@@ -155,8 +154,7 @@ class CasP_O(Module):
                 x1_mask=mask1_16x,
                 y0_mask=mask0_8x,
                 y1_mask=mask1_8x,
-                x_gt_idxes=extra_gt_idxes,
-                y_gt_idxes=gt_idxes,
+                y_gt_idxes=gt_indices,
                 only_decode=not (self.training or is_last),
             )
             (x0_8x, x0_16x), (x1_8x, x1_16x) = results.pop("x")

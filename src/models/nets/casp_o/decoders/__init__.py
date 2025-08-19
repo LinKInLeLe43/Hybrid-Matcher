@@ -13,7 +13,7 @@ from .transformer import RegionSelectiveTransformerLayer, TransformerLayer
 class Decoder(Module):
     def __init__(
         self,
-        stride: int,
+        patch_size: int,
         topk: int,
         dims: Sequence[int],
         num_x_layers: int,
@@ -23,18 +23,18 @@ class Decoder(Module):
     ) -> None:
         super().__init__()
         assert len(dims) == 2
-        self.stride = stride
+        self.stride = patch_size
         self.topk = topk
         self.dims = dims
         self.enable_crop = enable_crop
         self.scale = dims[0] ** -0.5
 
-        x_layer = TransformerLayer(dims[0], stride=2, **kwargs)
+        x_layer = TransformerLayer(dims[0], patch_size=patch_size, **kwargs)
         self.x_layers = nn.ModuleList(
             [deepcopy(x_layer) for _ in range(num_x_layers)]
         )
         self.fuser = PyramidFuser(dims)
-        y_layer = RegionSelectiveTransformerLayer(stride, dims[1], **kwargs)
+        y_layer = RegionSelectiveTransformerLayer(2, dims[1], **kwargs)
         self.y_layers = nn.ModuleList(
             [deepcopy(y_layer) for _ in range(num_y_layers)]
         )

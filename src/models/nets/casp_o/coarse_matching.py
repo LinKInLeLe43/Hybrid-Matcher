@@ -1,18 +1,15 @@
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
-import einops
 import torch
-from kornia import create_meshgrid
-from torch import nn
-from torch.nn import functional as F
+import torch.nn.functional as F
+from kornia.utils.grid import create_meshgrid
+from torch import Tensor
+from torch.nn import Module
 
 
-class CoarseMatching(nn.Module):
+class CoarseMatching(Module):
     def __init__(
-        self,
-        decoder: nn.Module,
-        threshold: float = 0.2,
-        border_removal: int = 2,
+        self, decoder: Module, threshold: float = 0.2, border_removal: int = 2
     ) -> None:
         super().__init__()
         self.stride = decoder.stride
@@ -23,22 +20,35 @@ class CoarseMatching(nn.Module):
         self.train_percent = 0.2
         self.train_min_gt_count = 200
 
-        delta_indices = create_meshgrid(
+        grid = create_meshgrid(
             self.stride,
             self.stride,
             normalized_coordinates=False,
             dtype=torch.long,
         ).flatten(end_dim=-2)
-        self.register_buffer("delta_indices", delta_indices, persistent=False)
+        self.register_buffer("delta_indices", grid, persistent=False)
+
+    def map_indices(self, x: Tensor, size: Sequence[int], fw: int) -> Tensor:
+        row = (x[..., None] // fw) * self.stride + self.delta_indices[:, 1]
+        col = (x[..., None] % fw) * self.stride + self.delta_indices[:, 0]
+        out = row * fw * self.stride + col
+        out = (
+            out.unflatten(1, size)
+            .repeat_interleave(self.stride, dim=1)
+            .repeat_interleave(self.stride, dim=2)
+            .flatten(start_dim=1, end_dim=2)
+            .flatten(start_dim=-2)
+        )
+        return out
 
     def _remove_border_for_train(
         self,
-        x: torch.Tensor,
+        x: Tensor,
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-    ) -> Tuple[torch.Tensor, int]:
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+    ) -> Tuple[Tensor, int]:
         r = self.border_removal
         (h0, w0), (h1, w1) = size0, size1
 
@@ -71,11 +81,8 @@ class CoarseMatching(nn.Module):
         return out, max_count
 
     def _remove_border_for_eval(
-        self,
-        x: torch.Tensor,
-        size: Tuple[int, int],
-        mask: Optional[torch.Tensor],
-    ) -> torch.Tensor:
+        self, x: Tensor, size: Tuple[int, int], mask: Optional[Tensor]
+    ) -> Tensor:
         r = self.border_removal
 
         if r == 0:
@@ -100,12 +107,9 @@ class CoarseMatching(nn.Module):
     def _sample_for_train(
         self,
         max_count: int,
-        matching_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    ) -> Tuple[
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-    ]:
+        matching_idxes: Tuple[Tensor, Tensor, Tensor],
+        gt_idxes: Tuple[Tensor, Tensor, Tensor],
+    ) -> Tuple[Tuple[Tensor, Tensor, Tensor], Tuple[Tensor, Tensor, Tensor]]:
         device = matching_idxes[0].device
 
         train_count = int(self.train_percent * max_count)
@@ -135,18 +139,15 @@ class CoarseMatching(nn.Module):
         return train_idxes, matching_idxes
 
     @torch.no_grad()
-    def _create_coarse_matching(
+    def create_coarse_matching(
         self,
-        score: Union[
-            torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ],
+        score: Union[Tensor, Tuple[Tensor, Tensor, Tensor]],
         size0: Tuple[int, int],
         size1: Tuple[int, int],
-        mask0: Optional[torch.Tensor],
-        mask1: Optional[torch.Tensor],
-        gt_idxes: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        mask0: Optional[Tensor],
+        mask1: Optional[Tensor],
+        gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]],
     ) -> Dict[str, Any]:
-        coarse_recall_mask = None
         if self.training and gt_idxes is not None:
             score, idxes0_to_1, idxes1_to_0 = score
             mask, max_count = self._remove_border_for_train(
@@ -170,10 +171,6 @@ class CoarseMatching(nn.Module):
             idxes1_to_0 = idxes1_to_0.gather(1, sub_idxes1_to_0[:, None, :])[
                 :, 0, :
             ]
-            if gt_idxes is not None:
-                coarse_recall_mask = self.create_bidirectional_mask(
-                    idxes0_to_1[:, :, None], idxes1_to_0[:, None, :]
-                )
             idxes0_to_1 = self._remove_border_for_eval(
                 idxes0_to_1, size0, mask0
             )
@@ -192,59 +189,20 @@ class CoarseMatching(nn.Module):
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
         result = {"scores": scores, "coarse_cls_indices": train_idxes}
-        if coarse_recall_mask is not None:
-            result["coarse_recall"] = coarse_recall_mask[gt_idxes]
         return result
-
-    def create_bidirectional_mask(
-        self, indices0_to_1: torch.Tensor, indices1_to_0: torch.Tensor
-    ) -> torch.Tensor:
-        n, l0, _ = indices0_to_1.shape
-        _, _, l1 = indices1_to_0.shape
-        device = indices0_to_1.device
-
-        b_indices = torch.arange(n)[:, None, None]
-        i_indices = torch.arange(l0)[None, :, None]
-        j_indices = torch.arange(l1)[None, None, :]
-
-        mask = torch.zeros(n, l0, l1, device=device)
-        mask[b_indices, i_indices, indices0_to_1] += 0.5
-        mask[b_indices, indices1_to_0, j_indices] += 0.5
-        mask.eq_(1.0)
-        return mask
-
-    def map_indices(
-        self, x: torch.Tensor, size: Sequence[int], fw: int
-    ) -> torch.Tensor:
-        row = (x[..., None] // fw) * self.stride + self.delta_indices[:, 1]
-        col = (x[..., None] % fw) * self.stride + self.delta_indices[:, 0]
-        out = row * fw * self.stride + col
-        out = (
-            out.unflatten(1, size)
-            .repeat_interleave(self.stride, dim=1)
-            .repeat_interleave(self.stride, dim=2)
-            .flatten(start_dim=1, end_dim=2)
-            .flatten(start_dim=-2)
-        )
-        return out
 
     def forward(
         self,
-        x0: torch.Tensor,
-        x1: torch.Tensor,
-        y0: torch.Tensor,
-        y1: torch.Tensor,
-        encoding: torch.Tensor,
-        x0_mask: Optional[torch.Tensor] = None,
-        x1_mask: Optional[torch.Tensor] = None,
-        y0_mask: Optional[torch.Tensor] = None,
-        y1_mask: Optional[torch.Tensor] = None,
-        x_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
-        y_gt_idxes: Optional[
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-        ] = None,
+        x0: Tensor,
+        x1: Tensor,
+        y0: Tensor,
+        y1: Tensor,
+        encoding: Tensor,
+        x0_mask: Optional[Tensor] = None,
+        x1_mask: Optional[Tensor] = None,
+        y0_mask: Optional[Tensor] = None,
+        y1_mask: Optional[Tensor] = None,
+        y_gt_idxes: Optional[Tuple[Tensor, Tensor, Tensor]] = None,
         only_decode: bool = False,
     ) -> Dict[str, Any]:
         n, c, h0, w0 = y0.shape
@@ -267,15 +225,14 @@ class CoarseMatching(nn.Module):
             .reshape(n, c, h1, w1)
         )
 
-        result = {}
-        result["extra_idxes0_to_1"] = idxes0_to_1
+        results = {}
 
         _idxes0_to_1 = self.map_indices(idxes0_to_1, (fh0, fw0), fw1)
         _idxes1_to_0 = self.map_indices(idxes1_to_0, (fh1, fw1), fw0)
         _idxes1_to_0 = _idxes1_to_0.transpose(1, 2)
-        result["x"] = (out0_list, out1_list)
+        results["x"] = (out0_list, out1_list)
         if only_decode:
-            return result
+            return results
 
         if self.training:
             confidence0_to_1 = F.softmax(similarity, dim=2).nan_to_num()
@@ -290,7 +247,7 @@ class CoarseMatching(nn.Module):
                 .reshape(n, h0 * w0, h1 * w1)
             )
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
-            result["extra_coarse_cls_heatmap"] = 0.5 * confidence
+            results["extra_coarse_cls_heatmap"] = 0.5 * confidence
 
             y0 = y0.flatten(start_dim=2).transpose(1, 2) * self.scale
             y1 = y1.flatten(start_dim=2).transpose(1, 2)
@@ -304,7 +261,7 @@ class CoarseMatching(nn.Module):
             confidence = confidence0_to_1 * confidence1_to_0
             confidence = confidence.clamp(min=1e-6, max=1 - 1e-6).log()
             score = confidence, _idxes0_to_1, _idxes1_to_0
-            result["coarse_cls_heatmap"] = confidence + result.pop(
+            results["coarse_cls_heatmap"] = confidence + results.pop(
                 "extra_coarse_cls_heatmap"
             )
         else:
@@ -347,17 +304,9 @@ class CoarseMatching(nn.Module):
                 _idxes1_to_0,
             )
 
-        result.update(
-            self._create_coarse_matching(
+        results.update(
+            self.create_coarse_matching(
                 score, (h0, w0), (h1, w1), y0_mask, y1_mask, y_gt_idxes
             )
         )
-        result["extra_idxes0_to_1"] = einops.repeat(
-            result["extra_idxes0_to_1"],
-            "n (fh fw) k -> n (fh sh fw sw) k",
-            fh=h0 // 2,
-            sh=2,
-            fw=w0 // 2,
-            sw=2,
-        )[result["coarse_cls_indices"][0], result["coarse_cls_indices"][1]]
-        return result
+        return results
