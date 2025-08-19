@@ -3,6 +3,4 @@
 model_checkpoint:
     _target_: pytorch_lightning.callbacks.ModelCheckpoint
     dirpath: "${paths.output_dir}/checkpoints"
-    filename: ???
-    monitor: ???
     verbose: true

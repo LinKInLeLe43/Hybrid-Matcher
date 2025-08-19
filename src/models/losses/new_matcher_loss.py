@@ -1,7 +1,10 @@
+from math import pi
 from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
+
+from .real_nvp import RealNVP
 
 
 def _focal_loss(  # TODO: support NLL
@@ -10,7 +13,7 @@ def _focal_loss(  # TODO: support NLL
     gamma: float = 2.0
 ) -> torch.Tensor:
     # TODO: check alpha in ELoFTR
-    output = -alpha * (1 - x).pow(gamma) * x.log()
+    output = -alpha * x
     return output
 
 
@@ -44,7 +47,7 @@ def _compute_cls_loss(
         if weight is not None:
             weight[0, 0, 0] = 0.0
 
-    heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
+    # heatmap = heatmap.clamp(min=1e-6, max=1 - 1e-6)
     pos_losses = _focal_loss(heatmap[pos_mask])
     if weight is not None:
         pos_losses *= weight[pos_mask]
@@ -127,7 +130,47 @@ def _compute_flow_loss(  # TODO: change name to gaussian NLL
     return loss
 
 
-class CasPLoss(nn.Module):  # TODO: change name
+def _compute_rle_loss(
+    pred_mu: torch.Tensor,
+    pred_sigma: torch.Tensor,
+    gt_mu: torch.Tensor,
+    flow_model: nn.Module,
+    use_residual: bool = True,
+    residual_distribution: str = "laplace",
+    loss_weight: float = 1.0,
+) -> torch.Tensor:
+    m = len(pred_mu)
+
+    if m == 0:
+        return pred_mu.new_tensor(1.0)
+
+    mask = (pred_mu.abs().amax(dim=1) < 0.5) & (gt_mu.abs().amax(dim=1) < 0.5)
+    if not mask.any():
+        mask[0] = True
+        loss_weight = 0.0
+
+    pred_mu, pred_sigma, gt_mu = [
+        t[mask] for t in [pred_mu, pred_sigma, gt_mu]
+    ]
+    bar_mu = (pred_mu - gt_mu) / (pred_sigma + 1e-9)
+    log_sigma = pred_sigma.log()
+    log_prob_phi = flow_model.log_prob(bar_mu)[:, None]
+    log_prob_q = 0.0
+    if use_residual:
+        if residual_distribution == "laplace":
+            log_prob_q = -(pred_sigma * 2).log() - bar_mu.abs()
+        elif residual_distribution == "gaussian":
+            log_prob_q = (
+                -(pred_sigma * (pi * 2) ** 0.5).log() - bar_mu**2 * 0.5
+            )
+        else:
+            raise ValueError("")
+    losses = log_sigma - log_prob_phi - log_prob_q
+    loss = losses.mean() * loss_weight
+    return loss
+
+
+class NewMatcherLoss(nn.Module):  # TODO: change name
     def __init__(
         self,
         coarse_cls_sparse: Optional[bool] = None,
@@ -141,7 +184,8 @@ class CasPLoss(nn.Module):  # TODO: change name
         fine_cls_loss_neg_weight: Optional[float] = None,
         fine_reg_loss_weight: Optional[float] = None,
         dense_reg_loss_weight: Optional[float] = None,
-        flow_loss_weight: Optional[float] = None
+        flow_loss_weight: Optional[float] = None,
+        rle_loss_weight: Optional[float] = None,
     ) -> None:
         super().__init__()
         self.coarse_cls_sparse = coarse_cls_sparse
@@ -156,6 +200,10 @@ class CasPLoss(nn.Module):  # TODO: change name
         self.fine_reg_loss_weight = fine_reg_loss_weight
         self.dense_reg_loss_weight = dense_reg_loss_weight
         self.flow_loss_weight = flow_loss_weight
+        self.rle_loss_weight = rle_loss_weight
+
+        if rle_loss_weight is not None:
+            self.flow_model = RealNVP()
 
     def forward(
         self,
@@ -175,6 +223,9 @@ class CasPLoss(nn.Module):  # TODO: change name
         flows_with_uncertainties1: Optional[torch.Tensor] = None,
         gt_flows0: Optional[torch.Tensor] = None,
         gt_flows1: Optional[torch.Tensor] = None,
+        pred_mu: Optional[torch.Tensor] = None,
+        pred_sigma: Optional[torch.Tensor] = None,
+        gt_mu: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         extra_mask0: Optional[torch.Tensor] = None,
@@ -188,11 +239,17 @@ class CasPLoss(nn.Module):  # TODO: change name
             self.coarse_cls_loss_pos_weight is not None and
             self.coarse_cls_loss_neg_weight is not None):
             if coarse_cls_heatmap is not None and coarse_gt_mask is not None:
-                coarse_cls_loss = _compute_cls_loss(
-                    self.coarse_cls_sparse, coarse_cls_heatmap, coarse_gt_mask,
-                    loss_pos_weight=self.coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.coarse_cls_loss_neg_weight,
-                    mask0=mask0, mask1=mask1)
+                coarse_cls_loss = 0.0
+                for _coarse_cls_heatmap in coarse_cls_heatmap:
+                    coarse_cls_loss += _compute_cls_loss(
+                        self.coarse_cls_sparse,
+                        _coarse_cls_heatmap,
+                        coarse_gt_mask,
+                        loss_pos_weight=self.coarse_cls_loss_pos_weight,
+                        loss_neg_weight=self.coarse_cls_loss_neg_weight,
+                        mask0=mask0,
+                        mask1=mask1,
+                    )
                 total_loss += coarse_cls_loss
                 loss["scalar"]["coarse_cls_loss"] = (
                     coarse_cls_loss.detach().cpu())
@@ -202,12 +259,17 @@ class CasPLoss(nn.Module):  # TODO: change name
             self.extra_coarse_cls_loss_neg_weight is not None):
             if (extra_coarse_cls_heatmap is not None and
                 extra_coarse_gt_mask is not None):
-                extra_coarse_cls_loss = _compute_cls_loss(
-                    self.extra_coarse_cls_sparse, extra_coarse_cls_heatmap,
-                    extra_coarse_gt_mask,
-                    loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
-                    loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
-                    mask0=extra_mask0, mask1=extra_mask1)
+                extra_coarse_cls_loss = 0.0
+                for _extra_coarse_cls_heatmap in extra_coarse_cls_heatmap:
+                    extra_coarse_cls_loss += _compute_cls_loss(
+                        self.extra_coarse_cls_sparse,
+                        _extra_coarse_cls_heatmap,
+                        extra_coarse_gt_mask,
+                        loss_pos_weight=self.extra_coarse_cls_loss_pos_weight,
+                        loss_neg_weight=self.extra_coarse_cls_loss_neg_weight,
+                        mask0=extra_mask0,
+                        mask1=extra_mask1,
+                    )
                 total_loss += extra_coarse_cls_loss
                 loss["scalar"]["extra_coarse_cls_loss"] = (
                     extra_coarse_cls_loss.detach().cpu())
@@ -255,6 +317,14 @@ class CasPLoss(nn.Module):  # TODO: change name
                 flow_loss = (flow_loss0 + flow_loss1) / 2
                 total_loss += flow_loss
                 loss["scalar"]["flow_loss"] = flow_loss.detach().cpu()
+
+        if self.rle_loss_weight is not None:
+            if pred_mu is not None and pred_sigma is not None and gt_mu is not None:
+                rle_loss = _compute_rle_loss(
+                    pred_mu, pred_sigma, gt_mu, self.flow_model,
+                    loss_weight=self.rle_loss_weight)
+                total_loss += rle_loss
+                loss["scalar"]["rle_loss"] = rle_loss.detach().cpu()
 
         loss["loss"] = total_loss
         loss["scalar"]["total_loss"] = (

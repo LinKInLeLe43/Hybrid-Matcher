@@ -1,149 +1,142 @@
-import os.path as osp
-from typing import Any, Callable, Dict, List, Optional
+import functools
+from os import path
+from typing import List
 
+import joblib
 import numpy as np
-from joblib import Parallel, delayed
-from numpy.random import RandomState
-from pytorch_lightning import LightningDataModule
-from rich.progress import Progress
-from torch.utils.data import ConcatDataset, DataLoader, Dataset
+from numpy import random
+import pytorch_lightning as pl
+from rich import progress
+from torch.utils import data
 
-from src.utils import RankedLogger
-
-from .utils import rich_joblib
-
-log = RankedLogger(__name__, rank_zero_only=True)
+from src import utils
+from src.data import utils as data_utils
 
 
-class MatchingDataModule(LightningDataModule):
+class MatchingDataModule(pl.LightningDataModule):
     def __init__(
         self,
-        train_config: Dict[str, Any],
+        train_npz_root: str,
+        train_list_path: str,
+        train_dataset: functools.partial,
+        train_sampler: functools.partial,
         train_batch_size_per_gpu: int,
-        val_config: Dict[str, Any],
-        test_config: Dict[str, Any],
-        num_workers: int,
+        val_npz_root: str,
+        val_list_path: str,
+        val_dataset: functools.partial,
+        val_sampler: functools.partial,
+        test_npz_root: str,
+        test_list_path: str,
+        test_dataset: functools.partial,
+        test_sampler: functools.partial,
+        workers_count: int,
+        pin_memory: bool = True,
         seed: int = 66,
-        parallel: bool = False,
+        parallel: bool = False
     ) -> None:
         super().__init__()
-        self.train_config = train_config
-        self.train_batch_size_per_gpu = train_batch_size_per_gpu
-        self.val_config = val_config
-        self.test_config = test_config
-        self.num_workers = num_workers
-        self.seed = seed
-        self.parallel = parallel
+        self.save_hyperparameters(logger=False)
 
-        self.train_dataset: Optional[Dataset] = None
-        self.val_dataset: Optional[Dataset] = None
-        self.test_dataset: Optional[Dataset] = None
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
 
-    def _get_local_split(self, items: List[Any]) -> List[Any]:
-        permuted_items = RandomState(self.seed).permutation(items)
-        remainder = len(items) % self.trainer.world_size
-        if remainder != 0:
-            pad_size = self.trainer.world_size - remainder
-            pad_items = RandomState(self.seed).choice(items, size=pad_size)
-            permuted_items = np.concatenate([permuted_items, pad_items])
+    def _create_concat_dataset(
+        self,
+        dataset: functools.partial,
+        npz_paths: List[str]
+    ) -> data.ConcatDataset:
+        with progress.Progress(disable=self.trainer.global_rank != 0) as p:
+            if self.hparams.parallel:
+                p.add_task("Loading scenes...", total=len(npz_paths))
+                with data_utils.rich_joblib(p):
+                    parallel = joblib.Parallel(
+                        n_jobs=self.hparams.workers_count)
+                    datasets = parallel(joblib.delayed(dataset)(path)
+                                        for path in npz_paths)
+            else:
+                npz_paths = p.track(npz_paths, description="Loading scenes...")
+                datasets = [dataset(path) for path in npz_paths]
+        dataset = data.ConcatDataset(datasets)
+        return dataset
 
-        num_per_rank = len(permuted_items) // self.trainer.world_size
-        start = num_per_rank * self.trainer.global_rank
-        end = start + num_per_rank
-        local_items = list(permuted_items[start:end])
-        return local_items
+    def _split_names_per_rank(self, names: List[str]) -> List[str]:
+        new_names = random.RandomState(self.hparams.seed).permutation(names)
+        rest_count = len(names) % self.trainer.world_size
+        if rest_count != 0:
+            padding_count = self.trainer.world_size - rest_count
+            padding_names = random.RandomState(self.hparams.seed).choice(
+                names, size=padding_count)
+            new_names = np.concatenate([new_names, padding_names])
 
-    def _get_npz_paths(
-        self, scene_list_path: str, npz_root: str, split: bool = False
+        count_per_rank = len(new_names) // self.trainer.world_size
+        start_idx = self.trainer.global_rank * count_per_rank
+        end_idx = start_idx + count_per_rank
+        names_per_rank = list(new_names[start_idx:end_idx])
+        return names_per_rank
+
+    def _create_npz_paths(
+        self,
+        npz_root: str,
+        scene_list_path: str,
+        split: bool
     ) -> List[str]:
-        with open(scene_list_path) as f:
-            names = f.read().splitlines()
+        with open(scene_list_path, "r") as f:
+            names = [name for name in f.read().splitlines()]
         if split:
-            names = self._get_local_split(names)
-        n = len(names)
-        log.info(f"{n} scene{'s' if n != 1 else ''} assigned per rank")
+            names = self._split_names_per_rank(names)
+        # log.info(f"{len(names)} scenes assigned per rank.")
 
         npz_paths = []
         for name in names:
-            if osp.splitext(name)[1] != ".npz":
-                name = name + ".npz"
-            npz_paths.append(osp.join(npz_root, name))
+            if path.splitext(name)[1] != ".npz":
+                name += ".npz"
+            npz_paths.append(path.join(npz_root, name))
         return npz_paths
-
-    def _make_concat_dataset(
-        self, dataset_builder: Callable[[str], Dataset], npz_paths: List[str]
-    ) -> ConcatDataset:
-        with Progress(disable=self.trainer.global_rank != 0) as progress:
-            if self.parallel:
-                progress.add_task("Loading scenes...", total=len(npz_paths))
-                with rich_joblib(progress):
-                    parallel = Parallel(n_jobs=self.num_workers)
-                    datasets = parallel(
-                        delayed(dataset_builder)(path) for path in npz_paths
-                    )
-            else:
-                npz_paths = progress.track(
-                    npz_paths, description="Loading scenes..."
-                )
-                datasets = [dataset_builder(path) for path in npz_paths]
-        concat_dataset = ConcatDataset(datasets)
-        return concat_dataset
 
     def setup(self, stage: str) -> None:
         if stage == "fit":
-            train_npz_paths = self._get_npz_paths(
-                self.train_config["list_path"],
-                self.train_config["npz_root"],
-                split=True,
-            )
-            self.train_dataset = self._make_concat_dataset(
-                self.train_config["dataset_builder"], train_npz_paths
-            )
-            val_npz_paths = self._get_npz_paths(
-                self.val_config["list_path"],
-                self.val_config["npz_root"],
-                split=False,
-            )
-            self.val_dataset = self._make_concat_dataset(
-                self.val_config["dataset_builder"], val_npz_paths
-            )
+            train_npz_paths = self._create_npz_paths(
+                self.hparams.train_npz_root, self.hparams.train_list_path, True)
+            self.train_dataset = self._create_concat_dataset(
+                self.hparams.train_dataset, train_npz_paths)
+            val_npz_paths = self._create_npz_paths(
+                self.hparams.val_npz_root, self.hparams.val_list_path, False)
+            self.val_dataset = self._create_concat_dataset(
+                self.hparams.val_dataset, val_npz_paths)
+            # log.info(f"Train and validation `Dataset`s created.")
 
         if stage == "test":
-            test_npz_paths = self._get_npz_paths(
-                self.test_config["list_path"],
-                self.test_config["npz_root"],
-                split=False,
-            )
-            self.test_dataset = self._make_concat_dataset(
-                self.test_config["dataset_builder"], test_npz_paths
-            )
+            test_npz_paths = self._create_npz_paths(
+                self.hparams.test_npz_root, self.hparams.test_list_path, False)
+            self.test_dataset = self._create_concat_dataset(
+                self.hparams.test_dataset, test_npz_paths)
+            # log.info(f"Test `Dataset` created.")
 
-    def train_dataloader(self) -> DataLoader:
-        dataloader = DataLoader(
+    def train_dataloader(self) -> data.DataLoader:
+        dataloader = data.DataLoader(
             self.train_dataset,
-            batch_size=self.train_batch_size_per_gpu,
-            sampler=self.train_config["sampler_builder"](self.train_dataset),
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+            batch_size=self.hparams.train_batch_size_per_gpu,
+            sampler=self.hparams.train_sampler(self.train_dataset),
+            num_workers=self.hparams.workers_count,
+            pin_memory=self.hparams.pin_memory)
+        # log.info("Train `Sampler` and `DataLoader` created. "
+        #          "(should not re-create between epochs)")
         return dataloader
 
-    def val_dataloader(self) -> DataLoader:
-        dataloader = DataLoader(
-            self.val_dataset,
-            batch_size=1,
-            sampler=self.val_config["sampler_builder"](self.val_dataset),
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+    def val_dataloader(self) -> data.DataLoader:
+        dataloader = data.DataLoader(
+            self.val_dataset, batch_size=1,
+            sampler=self.hparams.val_sampler(self.val_dataset),
+            num_workers=self.hparams.workers_count,
+            pin_memory=self.hparams.pin_memory)
+        # log.info("Validation `Sampler` and `DataLoader` created.")
         return dataloader
 
-    def test_dataloader(self) -> DataLoader:
-        dataloader = DataLoader(
-            self.test_dataset,
-            batch_size=1,
-            sampler=self.test_config["sampler_builder"](self.test_dataset),
-            num_workers=self.num_workers,
-            pin_memory=True,
-        )
+    def test_dataloader(self) -> data.DataLoader:
+        dataloader = data.DataLoader(
+            self.test_dataset, batch_size=1,
+            sampler=self.hparams.test_sampler(self.test_dataset),
+            num_workers=self.hparams.workers_count, pin_memory=True)
+        # log.info("Test `Sampler` and `DataLoader` created.")
         return dataloader

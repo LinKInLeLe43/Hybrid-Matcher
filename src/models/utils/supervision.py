@@ -90,8 +90,8 @@ def create_coarse_supervision(
     biprojection_mask[:, 0] = False
     b_idxes, i_idxes = biprojection_mask.nonzero(as_tuple=True)
     j_idxes = idxes0_to_1[b_idxes, i_idxes]
-    gt_idxes = (torch.stack([b_idxes, i_idxes, j_idxes])if len(b_idxes) != 0
-                else torch.zeros(3, 1, dtype=torch.long, device=device))
+    gt_idxes = ((b_idxes, i_idxes, j_idxes) if len(b_idxes) != 0
+                else 3 * (torch.tensor([0], device=device),))
     gt_mask = torch.zeros((n, l0, l1), dtype=torch.bool, device=device)
     gt_mask[b_idxes, i_idxes, j_idxes] = True
     supervision = {"coarse_gt_idxes": gt_idxes, "coarse_gt_mask": gt_mask}
@@ -106,7 +106,7 @@ def create_coarse_supervision(
             -1, fh0, stride, fw0, stride, fh1, stride, fw1, stride)
         gt_mask = gt_mask.sum(dim=(2, 4, 6, 8)).bool()
         gt_mask = gt_mask.reshape(-1, fh0 * fw0, fh1 * fw1)
-        gt_idxes = gt_mask.nonzero().transpose(-2, -1)
+        gt_idxes = gt_mask.nonzero(as_tuple=True)
         supervision["extra_coarse_gt_mask"] = gt_mask
         supervision["extra_coarse_gt_idxes"] = gt_idxes
 

@@ -160,11 +160,6 @@ class FineMatching(Module):
         self.coord_length = 16
 
         # network
-        self.coarse_conv = nn.Sequential(
-            self._make_layer(BasicBlock, dim // 2, dim // 2, stride=1),
-            conv1x1(dim // 2, dim),
-            nn.BatchNorm2d(dim),
-        )
         self.fine_conv = nn.Sequential(
             self._make_layer(BasicBlock, dim // 2, dim // 2, stride=1),
             conv1x1(dim // 2, dim),
@@ -216,7 +211,6 @@ class FineMatching(Module):
             }
             return out
 
-        feat_c0, feat_c1 = self.coarse_conv(feat_c0), self.coarse_conv(feat_c1)
         feat_f0, feat_f1 = self.fine_conv(feat_f0), self.fine_conv(feat_f1)
         feat0 = (feat_f0 + feat_c0).flatten(start_dim=-2)[
             None, b_indices, :, i_indices

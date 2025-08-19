@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Tuple
 
 import torch
@@ -5,64 +6,102 @@ from torch import Tensor
 from torch.nn import Module
 
 
-class SinusoidalPositionalEncoding(Module):
+class SinePositionalEncoding(Module):
     def __init__(
         self,
-        dim: int,
-        factor: int,
-        patch_size: int,
-        train_size: int,
-        test_size: Optional[int] = None,
+        depth: int,
+        train_size: Tuple[int, int],
+        test_size: Optional[Tuple[int, int]] = None,
     ) -> None:
         super().__init__()
-        self.factor = factor // 8
-        self.patch_size = patch_size
-        self.train_size = train_size // 8
-        self.test_size = test_size // 8 if test_size is not None else None
-        stride = self.factor * patch_size
+        max_shape = 256, 256
 
-        theta = 10000
-        freqs = (
-            -torch.tensor(theta).log() * torch.arange(0, dim, 4) / dim
-        ).exp()
-        h, w = 256 // stride, 256 // stride
-        freqs_y = ((torch.arange(h) + 0.5) * stride)[:, None, None] * freqs
-        freqs_x = ((torch.arange(w) + 0.5) * stride)[None, :, None] * freqs
-        freqs_y, freqs_x = freqs_y.expand(-1, w, -1), freqs_x.expand(h, -1, -1)
-        if test_size is not None:
-            if test_size > train_size:
-                freqs_y = freqs_y * (train_size - 1) / (test_size - 1)
-                freqs_x = freqs_x * (train_size - 1) / (test_size - 1)
-        else:
-            self.register_buffer("freqs_y", freqs_y, persistent=False)
-            self.register_buffer("freqs_x", freqs_x, persistent=False)
+        factor = torch.arange(depth // 4)[:, None, None]
+        factor = (-math.log(10000.0) / (depth // 4) * factor).exp()
 
-        freqs_sin = torch.stack(
-            [t.sin() for t in [freqs_y, freqs_x]], dim=-1
-        ).flatten(start_dim=-2)
-        freqs_cos = torch.stack(
-            [t.cos() for t in [freqs_y, freqs_x]], dim=-1
-        ).flatten(start_dim=-2)
-        encoding = torch.stack([freqs_sin, freqs_cos], dim=-1).flatten(
-            start_dim=-2
+        x = factor * torch.ones(max_shape).cumsum(1)
+        y = factor * torch.ones(max_shape).cumsum(0)
+
+        if test_size is not None and test_size != train_size:
+            x *= train_size[1] / test_size[1]
+            y *= train_size[0] / test_size[0]
+
+        positional_encoding = torch.zeros((depth, *max_shape))
+        positional_encoding[0::4, ...] = x.sin()
+        positional_encoding[1::4, ...] = x.cos()
+        positional_encoding[2::4, ...] = y.sin()
+        positional_encoding[3::4, ...] = y.cos()
+        self.register_buffer(
+            "positional_encoding", positional_encoding, persistent=False
         )
-        self.register_buffer("encoding", encoding, persistent=False)
 
-    def forward(self, size: Tuple[int, int]) -> Tensor:
-        h, w = size[0] // self.patch_size, size[1] // self.patch_size
-        test_size = max(size[0] * self.factor, size[1] * self.factor)
-        if self.test_size is None and test_size > self.train_size:
-            freqs_y = self.freqs_y * (self.train_size - 1) / (test_size - 1)
-            freqs_x = self.freqs_x * (self.train_size - 1) / (test_size - 1)
-            freqs_sin = torch.stack(
-                [t.sin() for t in [freqs_y, freqs_x]], dim=-1
-            ).flatten(start_dim=-2)
-            freqs_cos = torch.stack(
-                [t.cos() for t in [freqs_y, freqs_x]], dim=-1
-            ).flatten(start_dim=-2)
-            encoding = torch.stack([freqs_sin, freqs_cos], dim=-1).flatten(
-                start_dim=-2
-            )[:h, :w]
-        else:
-            encoding = self.encoding[:h, :w]
+    def forward(self, x: Tensor) -> Tensor:
+        _, _, h, w = x.shape
+        pe = self.positional_encoding[None, :, :h, :w]
+        out = x + pe
+        return out
+
+
+class RoPESinePositionalEncoding(Module):
+    def __init__(
+        self,
+        depth: int,
+        train_size: Tuple[int, int],
+        test_size: Optional[Tuple[int, int]] = None,
+        fp16: bool = False,
+    ) -> None:
+        super().__init__()
+        max_shape = 256, 256
+
+        factor = torch.arange(depth // 4)[None, None, :]
+        factor = (-math.log(10000.0) / (depth // 4) * factor).exp()
+
+        x = factor * torch.ones(max_shape).cumsum(1)[:, :, None]
+        y = factor * torch.ones(max_shape).cumsum(0)[:, :, None]
+
+        if test_size is not None and test_size != train_size:
+            x *= train_size[1] / test_size[1]
+            y *= train_size[0] / test_size[0]
+
+        sin = torch.zeros((*max_shape, depth // 2))
+        cos = torch.zeros((*max_shape, depth // 2))
+        sin[..., 0::2] = y.sin()
+        sin[..., 1::2] = x.sin()
+        cos[..., 0::2] = y.cos()
+        cos[..., 1::2] = x.cos()
+
+        pe = (
+            torch.stack([sin, cos], dim=-1)
+            .flatten(start_dim=-2)
+            .permute(2, 0, 1)
+        )
+        sin = sin.repeat_interleave(2, dim=2)
+        cos = cos.repeat_interleave(2, dim=2)
+
+        if fp16:
+            pe, sin, cos = pe.half(), sin.half(), cos.half()
+
+        self.register_buffer("pe", pe, persistent=False)
+        self.register_buffer("sin", sin, persistent=False)
+        self.register_buffer("cos", cos, persistent=False)
+
+    def _rotate_half(self, x: Tensor) -> Tensor:
+        x1, x2 = x.unflatten(-1, (-1, 2)).unbind(dim=-1)
+        out = torch.stack([-x2, x1], dim=-1).flatten(start_dim=-2)
+        return out
+
+    def abs_pe(self, x: Tensor) -> Tensor:
+        _, c, h, w = x.shape
+        out = x + self.pe[:c, :h, :w]
+        return out
+
+    def rel_pe(self, x: Tensor) -> Tensor:
+        _, h, w, c = x.shape
+        out = self.cos[:h, :w, :c] * x + self.sin[
+            :h, :w, :c
+        ] * self._rotate_half(x)
+        return out
+
+    def get_encoding(self) -> Tensor:
+        encoding = torch.stack([self.cos, self.sin])
         return encoding
