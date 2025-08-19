@@ -101,9 +101,11 @@ class CoarseMatching(nn.Module):
         self,
         max_count: int,
         matching_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]
-    ) -> Tuple[Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-               Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+        gt_idxes: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ) -> Tuple[
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
         device = matching_idxes[0].device
 
         train_count = int(self.train_percent * max_count)
@@ -113,16 +115,23 @@ class CoarseMatching(nn.Module):
             matching_subidxes = torch.arange(matching_count, device=device)
         else:
             matching_subidxes = torch.randint(
-                matching_count, (rest_count,), device=device)
+                matching_count, (rest_count,), device=device
+            )
             matching_count = rest_count
         gt_subidxes = torch.randint(
-            gt_count, (train_count - matching_count,), device=device)
+            gt_count, (train_count - matching_count,), device=device
+        )
 
-        matching_idxes = tuple(map(
-            lambda x: x[matching_subidxes], matching_idxes))
-        train_idxes = tuple(map(
-            lambda x, y: torch.cat([x, y[gt_subidxes]]),
-            matching_idxes, gt_idxes))
+        matching_idxes = tuple(
+            map(lambda x: x[matching_subidxes], matching_idxes)
+        )
+        train_idxes = tuple(
+            map(
+                lambda x, y: torch.cat([x, y[gt_subidxes]]),
+                matching_idxes,
+                gt_idxes,
+            )
+        )
         return train_idxes, matching_idxes
 
     @torch.no_grad()
@@ -147,7 +156,8 @@ class CoarseMatching(nn.Module):
                 score == score.amax(dim=1, keepdim=True)
             )
             train_idxes, matching_idxes = self._sample_for_train(
-                max_count, mask.nonzero(as_tuple=True), gt_idxes)
+                max_count, mask.nonzero(as_tuple=True), gt_idxes
+            )
             b_idxes, i_idxes, j_idxes = train_idxes
             scores = score[train_idxes]
         else:
@@ -181,20 +191,7 @@ class CoarseMatching(nn.Module):
             j_idxes = idxes0_to_1[b_idxes, i_idxes]
             train_idxes = matching_idxes = b_idxes, i_idxes, j_idxes
             scores = values0_to_1[b_idxes, i_idxes]
-
-        points0 = torch.stack(
-            [i_idxes % size0[1], i_idxes // size0[1]], dim=1
-        ).float()
-        points1 = torch.stack(
-            [j_idxes % size1[1], j_idxes // size1[1]], dim=1
-        ).float()
-        result = {
-            "idxes": train_idxes,
-            "points0": points0,
-            "points1": points1,
-            "scores": scores,
-            "coarse_cls_idxes": train_idxes,
-        }
+        result = {"scores": scores, "coarse_cls_indices": train_idxes}
         if coarse_recall_mask is not None:
             result["coarse_recall"] = coarse_recall_mask[gt_idxes]
         return result
@@ -256,9 +253,7 @@ class CoarseMatching(nn.Module):
         fh0, fw0, fh1, fw1 = [t // self.stride for t in [h0, w0, h1, w1]]
 
         out0_list, out1_list, idxes0_to_1, idxes1_to_0, similarity = (
-            self.decoder(
-                x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask
-            )
+            self.decoder(x0, x1, y0, y1, encoding, mask0=x0_mask, mask1=x1_mask)
         )
         _y0, _y1 = out0_list[0], out1_list[0]
         out0_list[0] = y0 = (
@@ -364,5 +359,5 @@ class CoarseMatching(nn.Module):
             sh=2,
             fw=w0 // 2,
             sw=2,
-        )[result["idxes"][0], result["idxes"][1]]
+        )[result["coarse_cls_indices"][0], result["coarse_cls_indices"][1]]
         return result

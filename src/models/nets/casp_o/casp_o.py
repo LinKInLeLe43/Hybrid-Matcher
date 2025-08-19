@@ -109,7 +109,7 @@ class CasP_O(Module):
         # scale_fine = self.scales[1] * (self.fine_reg_matching.window_size // 2)
         w0 = data["image0"].shape[-1] // scale_coarse
         w1 = data["image1"].shape[-1] // scale_coarse
-        b_indices, i_indices, j_indices = results["idxes"]
+        b_indices, i_indices, j_indices = results["coarse_cls_indices"]
 
         points0 = torch.stack([i_indices % w0, i_indices // w0], dim=-1).float()
         points1 = torch.stack([j_indices % w1, j_indices // w1], dim=-1).float()
@@ -192,7 +192,11 @@ class CasP_O(Module):
 
         results.update(
             self.fine_matching(
-                x0_8x_ori, x1_8x_ori, x0_8x, x1_8x, results["coarse_cls_idxes"]
+                x0_8x_ori,
+                x1_8x_ori,
+                x0_8x,
+                x1_8x,
+                results["coarse_cls_indices"],
             )
         )
 
