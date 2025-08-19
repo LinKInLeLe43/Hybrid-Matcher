@@ -1,12 +1,13 @@
 defaults:
     - _self_
-    - model: ???
+    - model: default
     - data: ???
+    - experiment: ???
     - trainer: default
     - paths: default
     - hydra: default
 
 task_name: "eval"
 ckpt_path: ???
-seed: ???
+seed: 66
 fp16: false

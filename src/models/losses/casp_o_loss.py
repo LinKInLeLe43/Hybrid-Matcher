@@ -1,10 +1,9 @@
-from math import pi
 from typing import Any, Dict, Optional
 
 import torch
 from torch import nn
 
-from .real_nvp import RealNVP
+from ..nets.casp_o.submodules import RealNVP
 
 
 def _focal_loss(  # TODO: support NLL
@@ -149,9 +148,7 @@ def _compute_rle_loss(
         mask[0] = True
         loss_weight = 0.0
 
-    pred_mu, pred_sigma, gt_mu = [
-        t[mask] for t in [pred_mu, pred_sigma, gt_mu]
-    ]
+    pred_mu, pred_sigma, gt_mu = [t[mask] for t in [pred_mu, pred_sigma, gt_mu]]
     bar_mu = (pred_mu - gt_mu) / (pred_sigma + 1e-9)
     log_sigma = pred_sigma.log()
     log_prob_phi = flow_model.log_prob(bar_mu)[:, None]
@@ -161,7 +158,7 @@ def _compute_rle_loss(
             log_prob_q = -(pred_sigma * 2).log() - bar_mu.abs()
         elif residual_distribution == "gaussian":
             log_prob_q = (
-                -(pred_sigma * (pi * 2) ** 0.5).log() - bar_mu**2 * 0.5
+                -(pred_sigma * (torch.pi * 2) ** 0.5).log() - bar_mu**2 * 0.5
             )
         else:
             raise ValueError("")
@@ -170,7 +167,7 @@ def _compute_rle_loss(
     return loss
 
 
-class NewMatcherLoss(nn.Module):  # TODO: change name
+class CasP_O_Loss(nn.Module):  # TODO: change name
     def __init__(
         self,
         coarse_cls_sparse: Optional[bool] = None,
@@ -221,11 +218,11 @@ class NewMatcherLoss(nn.Module):  # TODO: change name
         dense_valid_mask: Optional[torch.Tensor] = None,
         flows_with_uncertainties0: Optional[torch.Tensor] = None,
         flows_with_uncertainties1: Optional[torch.Tensor] = None,
-        gt_flows0: Optional[torch.Tensor] = None,
-        gt_flows1: Optional[torch.Tensor] = None,
         pred_mu: Optional[torch.Tensor] = None,
         pred_sigma: Optional[torch.Tensor] = None,
         gt_mu: Optional[torch.Tensor] = None,
+        gt_flows0: Optional[torch.Tensor] = None,
+        gt_flows1: Optional[torch.Tensor] = None,
         mask0: Optional[torch.Tensor] = None,
         mask1: Optional[torch.Tensor] = None,
         extra_mask0: Optional[torch.Tensor] = None,

@@ -1,1 +1,1 @@
-from .new_matcher_loss import NewMatcherLoss
+from .casp_o_loss import CasP_O_Loss

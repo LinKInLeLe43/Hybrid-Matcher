@@ -8,7 +8,7 @@ train_dataset:
     _target_: src.data.components.datasets.MegaDepthDataset
     _partial_: true
     data_root: "${paths.data_dir}/megadepth/train"
-    image_size: 640
+    image_size: 832
     image_factor: 32
     mask_factors: [8, 16, 32]
 

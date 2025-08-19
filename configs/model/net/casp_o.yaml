@@ -1,0 +1,22 @@
+_target_: src.models.nets.CasP_O
+encoder: "repvgg"
+rope:
+    _target_: src.models.nets.casp_o.RoPESinePositionalEncoding
+    depth: 256
+    train_size: ???
+    test_size: ???
+    fp16: ${fp16}
+coarse_matching:
+    _target_: src.models.nets.casp_o.CoarseMatching
+    decoder:
+        _target_: src.models.nets.casp_o.decoders.Decoder
+        stride: 2
+        topk: 8
+        dims:
+            - 256
+            - 128
+        num_x_layers: 2
+        num_y_layers: 1
+        num_heads: 8
+num_coarse_matchings: 2
+extra_scale: 16

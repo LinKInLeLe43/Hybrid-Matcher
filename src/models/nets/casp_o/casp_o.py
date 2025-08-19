@@ -57,7 +57,7 @@ class CasP_O(Module):
         extra_scale: Optional[int] = None,
     ) -> None:
         super().__init__()
-        self.encoder = Encoder(encoder)
+        self.encoder = Encoder(encoder, [64, 128, 256], [2, 4, 14])
         self.encoder.scales = (8, 4)
         self.rope = rope
         self.num_coarse_matchings = num_coarse_matchings
@@ -102,31 +102,29 @@ class CasP_O(Module):
             Conv2d_BN_Act(self.block_dims[-1], self.block_dims[-1], 1),
         )
 
-    def _scale_points(
-        self,
-        result: Dict[str, Any],
-        scale0: Optional[Tensor] = None,
-        scale1: Optional[Tensor] = None,
+    def update_points(
+        self, data: Dict[str, Any], results: Dict[str, Any]
     ) -> None:
-        b_idxes = result["idxes"][0]
+        scale_coarse = self.scales[0]
+        # scale_fine = self.scales[1] * (self.fine_reg_matching.window_size // 2)
+        w0 = data["image0"].shape[-1] // scale_coarse
+        w1 = data["image1"].shape[-1] // scale_coarse
+        b_indices, i_indices, j_indices = results["idxes"]
 
-        coarse_points0 = self.scales[0] * result["points0"]
-        coarse_points1 = self.scales[0] * result["points1"]
-
-        biases0 = result.pop("fine_reg_biases0")
-        biases1 = result.pop("fine_reg_biases1")
-
-        fine_points0 = coarse_points0 + biases0
-        fine_points1 = coarse_points1 + biases1
-
-        if scale0 is not None and scale1 is not None:
-            coarse_points0 *= scale0[b_idxes]
-            fine_points0 *= scale0[b_idxes]
-            coarse_points1 *= scale1[b_idxes]
-            fine_points1 *= scale1[b_idxes]
-        result["coarse_points0"] = coarse_points0
-        result["coarse_points1"] = coarse_points1
-        result["points0"], result["points1"] = fine_points0, fine_points1
+        points0 = torch.stack([i_indices % w0, i_indices // w0], dim=-1).float()
+        points1 = torch.stack([j_indices % w1, j_indices // w1], dim=-1).float()
+        coarse_points0 = points0 * scale_coarse
+        coarse_points1 = points1 * scale_coarse
+        fine_points0 = coarse_points0 + results["fine_reg_biases0"]
+        fine_points1 = coarse_points1 + results["fine_reg_biases1"]
+        if "scale0" in data and "scale1" in data:
+            coarse_points0 = coarse_points0 * data["scale0"][b_indices]
+            coarse_points1 = coarse_points1 * data["scale1"][b_indices]
+            fine_points0 = fine_points0 * data["scale0"][b_indices]
+            fine_points1 = fine_points1 * data["scale1"][b_indices]
+        results["coarse_points0"] = coarse_points0
+        results["coarse_points1"] = coarse_points1
+        results["points0"], results["points1"] = fine_points0, fine_points1
 
     def forward(
         self,
@@ -147,7 +145,7 @@ class CasP_O(Module):
             coarse_cls_heatmap = []
         for i in range(self.num_coarse_matchings):
             is_last = i == self.num_coarse_matchings - 1
-            result = self.coarse_matchings[i](
+            results = self.coarse_matchings[i](
                 x0_16x,
                 x1_16x,
                 x0_8x_ori,
@@ -161,9 +159,9 @@ class CasP_O(Module):
                 y_gt_idxes=gt_idxes,
                 only_decode=not (self.training or is_last),
             )
-            (x0_8x, x0_16x), (x1_8x, x1_16x) = result.pop("x")
+            (x0_8x, x0_16x), (x1_8x, x1_16x) = results.pop("x")
             if self.training:
-                coarse_cls_heatmap.append(result.pop("coarse_cls_heatmap"))
+                coarse_cls_heatmap.append(results.pop("coarse_cls_heatmap"))
 
             if not is_last:
                 if x0_8x.shape == x1_8x.shape:
@@ -178,7 +176,7 @@ class CasP_O(Module):
                         x1_16x = module(x1_16x)
 
         if self.training:
-            result["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
+            results["coarse_cls_heatmap"] = torch.stack(coarse_cls_heatmap)
 
         f8, f16 = torch.cat([x0_8x, x1_8x]), torch.cat([x0_16x, x1_16x])
 
@@ -192,20 +190,27 @@ class CasP_O(Module):
 
         x0_8x, x1_8x = f8.chunk(2)
 
-        result.update(
+        results.update(
             self.fine_matching(
-                x0_8x_ori, x1_8x_ori, x0_8x, x1_8x, result["coarse_cls_idxes"]
+                x0_8x_ori, x1_8x_ori, x0_8x, x1_8x, results["coarse_cls_idxes"]
             )
         )
 
-        self._scale_points(result, data.get("scale0"), data.get("scale1"))
-        return result
+        self.update_points(data, results)
+        return results
+
+    def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
+        for k in list(state_dict.keys()):
+            if k.startswith("net."):
+                new_k = k.replace("net.", "", 1)
+                state_dict[new_k] = state_dict.pop(k)
+        return super().load_state_dict(state_dict)
 
 
 if __name__ == "__main__":
     from omegaconf import OmegaConf
 
-    config = OmegaConf.load("configs/model/casp_o.yaml").config
+    config = OmegaConf.load("configs/model/net/casp_o.yaml").config
     net = CasP_O(config).eval()
     mask0 = torch.zeros(1, 832 // 8, 832 // 8, dtype=torch.bool)
     mask1 = torch.zeros(1, 832 // 8, 832 // 8, dtype=torch.bool)

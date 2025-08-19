@@ -1,0 +1,18 @@
+defaults:
+    - net: ???
+    - loss: ???
+    - _self_
+
+_target_: src.models.MatchingModule
+optimizer: ???
+scheduler: ???
+train_batch_size_per_gpu: ${data.train_batch_size_per_gpu}
+test_fp16_precision: ${fp16}
+canonical_batch_size: ???
+canonical_learning_rate: ???
+canonical_warmup_step_count: ???
+warmup_ratio: ???
+end_point_thresholds: ???
+epipolar_thresholds: ???
+pose_ransac_count: ???
+pose_thresholds: ???
