@@ -35,8 +35,8 @@ class MegaDepthDataset(data.Dataset):
         self.seed = seed
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
+        self.scene_info = dict(self.scene_info)
         self.pair_idxes = self.scene_info.pop("pair_infos")
-        self.pair_idxes = dict(self.pair_idxes)
         self.pair_idxes = [pair_info[0] for pair_info in self.pair_idxes
                            if pair_info[1] > min_overlap_score]
         self.depth_max_size = 2000
@@ -91,8 +91,8 @@ class MegaDepthDataset(data.Dataset):
         else:
             modality = self.modality_list[0]
         image_path0 = path.join(self.data_root, image_name0)
-        image_path1 = path.join(self.modality_list[modality], image_name1)
-        if modality == "event":
+        image_path1 = path.join(self.modality_to_root[modality], image_name1)
+        if modality == "event" or modality == "sketch" or modality == "paint":
             image_path1 = path.splitext(image_path1)[0] + ".png"
         image0, mask0, scale0 = self._read_image(image_path0)
         image1, mask1, scale1 = self._read_image(image_path1)
