@@ -8,6 +8,14 @@ from torch.nn import functional as F
 from src.models.utils.metrics import _warp_point as _warp_point1
 
 
+def apply_H(points, H):
+    ones = torch.ones_like(points[..., :1])
+    kp_h = torch.cat([points, ones], dim=-1)
+    kp_w = (H @ kp_h.transpose(1, 2)).transpose(1, 2)
+    kp_w = kp_w[..., :2] / (kp_w[..., 2:] + 1e-8)
+    return kp_w
+
+
 def _mask_out_of_bound(x: torch.Tensor, h: int, w: int) -> None:
     x[(x[:, :, 0] < 0) | (x[:, :, 0] >= w) |
       (x[:, :, 1] < 0) | (x[:, :, 1] >= h)] = 0
@@ -65,10 +73,14 @@ def create_coarse_supervision(
         points0[~mask0.flatten(start_dim=1)] = 0.0
         points1[~mask1.flatten(start_dim=1)] = 0.0
 
+    points0_raw = apply_H(points0, torch.linalg.inv(batch["H0"]))
+    points1_raw = apply_H(points1, torch.linalg.inv(batch["H1"]))
     points0_to_1 = _warp_point(
-        points0, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
+        points0_raw, batch["depth0"], batch["K0"], batch["K1"], batch["T0_to_1"])
     points1_to_0 = _warp_point(
-        points1, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
+        points1_raw, batch["depth1"], batch["K1"], batch["K0"], batch["T1_to_0"])
+    points0_to_1 = apply_H(points0_to_1, batch["H1"])
+    points1_to_0 = apply_H(points1_to_0, batch["H0"])
     flows0 = coors0_to_1 = points0_to_1 / scale1
     flows1 = coors1_to_0 = points1_to_0 / scale0
 
@@ -181,12 +193,16 @@ def create_fine_supervision(
         b_mask = b_idxes == b
         b_points0 = points0[b_mask].reshape(1, -1, 2)
         b_points1 = points1[b_mask].reshape(1, -1, 2)
+        b_points0_raw = apply_H(b_points0, torch.linalg.inv(batch["H0"][[b]]))
+        b_points1_raw = apply_H(b_points1, torch.linalg.inv(batch["H1"][[b]]))
         b_points0_to_1 = _warp_point(
-            b_points0, batch["depth0"][[b]], batch["K0"][[b]], batch["K1"][[b]],
+            b_points0_raw, batch["depth0"][[b]], batch["K0"][[b]], batch["K1"][[b]],
             batch["T0_to_1"][[b]])
         b_points1_to_0 = _warp_point(
-            b_points1, batch["depth1"][[b]], batch["K1"][[b]], batch["K0"][[b]],
+            b_points1_raw, batch["depth1"][[b]], batch["K1"][[b]], batch["K0"][[b]],
             batch["T1_to_0"][[b]])
+        b_points0_to_1 = apply_H(b_points0_to_1, batch["H1"][[b]])
+        b_points1_to_0 = apply_H(b_points1_to_0, batch["H0"][[b]])
         points0_to_1[b_mask] = b_points0_to_1.reshape(-1, ww, 2)
         points1_to_0[b_mask] = b_points1_to_0.reshape(-1, ww, 2)
     coors0_to_1 = points0_to_1 / scale1

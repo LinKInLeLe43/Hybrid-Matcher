@@ -31,6 +31,7 @@ val_dataset:
   image_size: ${data.train_dataset.image_size}
   image_factor: ${data.train_dataset.image_factor}
   mask_factors: ${data.train_dataset.mask_factors}
+  homo: false
 
 val_sampler:
   _target_: torch.utils.data.DistributedSampler
@@ -49,6 +50,7 @@ test_dataset:
   image_factor: ${data.train_dataset.image_factor}
   mask_factors: ${data.train_dataset.mask_factors}
   fp16: ${fp16}
+  homo: false
 
 test_sampler:
   _target_: torch.utils.data.DistributedSampler

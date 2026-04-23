@@ -9,6 +9,9 @@ import torch
 from torch.nn import functional as F
 from torch.utils import data
 
+from .sample_homo import sample_homography_sap
+from kornia.geometry import homography_warp, normalize_homography, normal_transform_pixel
+
 
 class MegaDepthDataset(data.Dataset):
     def __init__(
@@ -21,6 +24,7 @@ class MegaDepthDataset(data.Dataset):
         modality_list: Optional[List[str]] = None,
         fp16: bool = False,
         load_depth: bool = True,
+        homo: bool = True,
         min_overlap_score: float = 0.0,
         seed: int = 66,
     ) -> None:
@@ -32,6 +36,7 @@ class MegaDepthDataset(data.Dataset):
         self.modality_list = modality_list or ["visible"]
         self.fp16 = fp16
         self.load_depth = load_depth
+        self.homo = homo
         self.seed = seed
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
@@ -61,6 +66,25 @@ class MegaDepthDataset(data.Dataset):
         new_w, new_h = int(round(k * w)), int(round(k * h))
         new_w = int(new_w // self.image_factor * self.image_factor)
         new_h = int(new_h // self.image_factor * self.image_factor)
+
+        if self.homo:
+            homo_sampled = sample_homography_sap(h, w) # 3*3
+            homo_sampled_normed = normalize_homography(
+                torch.from_numpy(homo_sampled[None]).to(torch.float32),
+                (h, w),
+                (h, w),
+            )
+
+            image = torch.from_numpy(image).float()[None, None] / 255
+            homo_warpped_image = homography_warp(
+                image, # 1 * C * H * W
+                torch.linalg.inv(homo_sampled_normed),
+                (h, w),
+            )
+            image = (homo_warpped_image[0].permute(1,2,0).numpy() * 255).astype(np.uint8)
+        else:
+            homo_sampled = torch.eye(3,3)
+
         image = cv2.resize(image, (new_w, new_h))
         scale = np.array([w / new_w, h / new_h])
 
@@ -71,7 +95,7 @@ class MegaDepthDataset(data.Dataset):
 
         mask = np.zeros((length, length), dtype=np.bool_)
         mask[:new_h, :new_w] = True
-        return padded_image, mask, scale
+        return padded_image, mask, scale, homo_sampled
 
     def _read_depth(self, path: str) -> np.ndarray:
         depth = np.array(h5py.File(path, "r")["depth"])
@@ -94,8 +118,8 @@ class MegaDepthDataset(data.Dataset):
         image_path1 = path.join(self.modality_to_root[modality], image_name1)
         if modality == "event" or modality == "sketch" or modality == "paint":
             image_path1 = path.splitext(image_path1)[0] + ".png"
-        image0, mask0, scale0 = self._read_image(image_path0)
-        image1, mask1, scale1 = self._read_image(image_path1)
+        image0, mask0, scale0, H0 = self._read_image(image_path0)
+        image1, mask1, scale1, H1 = self._read_image(image_path1)
         image0, image1 = image0[None], image1[None]
 
         K0, K1 = self.scene_info["intrinsics"][idxes].copy()
@@ -111,6 +135,8 @@ class MegaDepthDataset(data.Dataset):
                 "mask1": mask1,
                 "scale0": scale0,
                 "scale1": scale1,
+                "H0": H0,
+                "H1": H1,
                 "K0": K0,
                 "K1": K1,
                 "T0_to_1": T0_to_1,
