@@ -24,7 +24,7 @@ class MegaDepthDataset(data.Dataset):
         modality_list: Optional[List[str]] = None,
         fp16: bool = False,
         load_depth: bool = True,
-        homo: bool = True,
+        aug: bool = True,
         min_overlap_score: float = 0.0,
         seed: int = 66,
     ) -> None:
@@ -36,7 +36,7 @@ class MegaDepthDataset(data.Dataset):
         self.modality_list = modality_list or ["visible"]
         self.fp16 = fp16
         self.load_depth = load_depth
-        self.homo = homo
+        self.aug = aug
         self.seed = seed
 
         self.scene_info = np.load(npz_path, allow_pickle=True)
@@ -68,7 +68,7 @@ class MegaDepthDataset(data.Dataset):
         new_w = int(new_w // self.image_factor * self.image_factor)
         new_h = int(new_h // self.image_factor * self.image_factor)
 
-        if self.homo and use_homo:
+        if self.aug and use_homo:
             homo_sampled = sample_homography_sap(h, w) # 3*3
             homo_sampled_normed = normalize_homography(
                 torch.from_numpy(homo_sampled[None]).to(torch.float32),
@@ -116,7 +116,7 @@ class MegaDepthDataset(data.Dataset):
         else:
             modality = self.modality_list[0]
         modality_swap = random.choice([True, False])
-        if modality_swap:
+        if self.aug and modality_swap:
             root0, root1 = self.modality_to_root[modality], self.data_root
         else:
             root0, root1 = self.data_root, self.modality_to_root[modality]

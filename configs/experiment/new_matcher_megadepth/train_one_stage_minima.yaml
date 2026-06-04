@@ -19,5 +19,6 @@ data:
 model:
   canonical_learning_rate: 8e-4
   loss:
+    dense_reg_loss_weight: null
     coarse_cls_sparse: false
     extra_coarse_cls_sparse: false
