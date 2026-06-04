@@ -57,7 +57,8 @@ class MegaDepthDataset(data.Dataset):
 
     def _read_image(
         self,
-        path: str
+        path: str,
+        use_homo: bool = False
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         image = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
         h, w = image.shape
@@ -67,7 +68,7 @@ class MegaDepthDataset(data.Dataset):
         new_w = int(new_w // self.image_factor * self.image_factor)
         new_h = int(new_h // self.image_factor * self.image_factor)
 
-        if self.homo:
+        if self.homo and use_homo:
             homo_sampled = sample_homography_sap(h, w) # 3*3
             homo_sampled_normed = normalize_homography(
                 torch.from_numpy(homo_sampled[None]).to(torch.float32),
@@ -114,12 +115,25 @@ class MegaDepthDataset(data.Dataset):
             modality = random.choice(self.modality_list)
         else:
             modality = self.modality_list[0]
-        image_path0 = path.join(self.data_root, image_name0)
-        image_path1 = path.join(self.modality_to_root[modality], image_name1)
+        modality_swap = random.choice([True, False])
+        if modality_swap:
+            root0, root1 = self.modality_to_root[modality], self.data_root
+        else:
+            root0, root1 = self.data_root, self.modality_to_root[modality]
+        image_path0 = path.join(root0, image_name0)
+        image_path1 = path.join(root1, image_name1)
         if modality == "event" or modality == "sketch" or modality == "paint":
-            image_path1 = path.splitext(image_path1)[0] + ".png"
-        image0, mask0, scale0, H0 = self._read_image(image_path0)
-        image1, mask1, scale1, H1 = self._read_image(image_path1)
+            if modality_swap:
+                image_path0 = path.splitext(image_path0)[0] + ".png"
+            else:
+                image_path1 = path.splitext(image_path1)[0] + ".png"
+        homo_swap = random.choice([True, False])
+        if homo_swap:
+            use_homo0, use_homo1 = True, False
+        else:
+            use_homo0, use_homo1 = False, True
+        image0, mask0, scale0, H0 = self._read_image(image_path0, use_homo=use_homo0)
+        image1, mask1, scale1, H1 = self._read_image(image_path1, use_homo=use_homo1)
         image0, image1 = image0[None], image1[None]
 
         K0, K1 = self.scene_info["intrinsics"][idxes].copy()

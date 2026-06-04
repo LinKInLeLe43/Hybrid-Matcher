@@ -52,7 +52,7 @@ def compute_homography_sap(h, w, angle=0, tx=0, ty=0, scale=1, k0=1, k1=0, v0=0,
 
 
 def sample_homography_sap(
-    h, w, angle=180, tx=0.25, ty=0.25, scale=2.0, k1=0.1, v0=0.5, v1=0.5
+    h, w, angle=15, tx=0.25, ty=0.25, scale=2.0, k1=0.1, v0=0.5, v1=0.5
 ):
     angle = np.random.uniform(-1 * angle, angle)
     tx = np.random.uniform(-1 * tx, tx)
